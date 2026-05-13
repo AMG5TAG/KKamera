@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Platform, Alert, Image,
+  ScrollView, Platform, Alert, Image, Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -48,6 +48,10 @@ export default function LoginScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://kkamera.app")}>
+        <Ionicons name="chevron-back" size={18} color={PRIMARY} />
+        <Text style={styles.homeBtnText}>kkamera.app</Text>
+      </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Logo */}
         <View style={styles.logoWrap}>
@@ -169,4 +173,6 @@ const styles = StyleSheet.create({
   privacyRow: { flexDirection: "row", justifyContent: "center", gap: 8, alignItems: "center" },
   privacyLink: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
   privacySep: { color: "#555" },
+  homeBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, gap: 2 },
+  homeBtnText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

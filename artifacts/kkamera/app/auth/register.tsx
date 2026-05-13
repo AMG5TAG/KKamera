@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Platform,
+  ScrollView, Platform, Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -50,9 +50,15 @@ export default function RegisterScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      </TouchableOpacity>
+      <View style={styles.topRow}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://kkamera.app")}>
+          <Ionicons name="chevron-back" size={18} color={PRIMARY} />
+          <Text style={styles.homeBtnText}>kkamera.app</Text>
+        </TouchableOpacity>
+      </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Create Account</Text>
         <Text style={styles.subtitle}>Start your 14-day free trial — no credit card needed</Text>
@@ -123,7 +129,10 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
+  topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingRight: 8 },
   backBtn: { padding: 16 },
+  homeBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, gap: 2 },
+  homeBtnText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium" },
   content: { paddingHorizontal: 28, paddingBottom: 40 },
   title: { fontSize: 26, fontFamily: "Inter_700Bold", color: "white", marginBottom: 6 },
   subtitle: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 20 },
