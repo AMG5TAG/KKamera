@@ -144,15 +144,23 @@ export default function CameraScreen() {
         </View>
       )}
 
-      {/* Zoom controls */}
-      <View style={styles.zoomContainer}>
-        {[1, 2, 5].map(z => (
+      {/* Zoom controls — Liquid Glass */}
+      <View
+        style={[
+          styles.zoomGlass,
+          Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
+        ]}
+      >
+        {([0.5, 1, 2, 5] as number[]).map(z => (
           <TouchableOpacity
             key={z}
-            style={[styles.zoomBtn, zoom === z && styles.zoomBtnActive]}
+            style={[styles.zoomPill, zoom === z && styles.zoomPillActive]}
             onPress={() => setZoom(z)}
+            activeOpacity={0.75}
           >
-            <Text style={[styles.zoomText, zoom === z && styles.zoomTextActive]}>{z}×</Text>
+            <Text style={[styles.zoomPillText, zoom === z && styles.zoomPillTextActive]}>
+              {z === 0.5 ? "·5" : `${z}×`}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -171,11 +179,21 @@ export default function CameraScreen() {
 
       {/* Bottom controls */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 16) }]}>
-        {/* Mode selector */}
-        <View style={styles.modeSelector}>
+        {/* Mode selector — Liquid Glass */}
+        <View
+          style={[
+            styles.modeGlass,
+            Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
+          ]}
+        >
           {(["photo", "video"] as CameraMode[]).map(m => (
-            <TouchableOpacity key={m} onPress={() => setMode(m)} style={styles.modeBtn}>
-              <Text style={[styles.modeText, mode === m && styles.modeTextActive]}>
+            <TouchableOpacity
+              key={m}
+              onPress={() => setMode(m)}
+              style={[styles.modePill, mode === m && styles.modePillActive]}
+              activeOpacity={0.75}
+            >
+              <Text style={[styles.modePillText, mode === m && styles.modePillTextActive]}>
                 {m === "photo" ? "PHOTO" : "VIDEO"}
               </Text>
             </TouchableOpacity>
@@ -238,11 +256,53 @@ const styles = StyleSheet.create({
     borderRadius: 14, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",
   },
   uploadStatusText: { fontSize: 11, fontFamily: "Inter_500Medium" },
-  zoomContainer: { position: "absolute", bottom: 200, alignSelf: "center", flexDirection: "row", gap: 6 },
-  zoomBtn: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 16, backgroundColor: "rgba(0,0,0,0.5)" },
-  zoomBtnActive: { backgroundColor: "rgba(177,152,112,0.8)" },
-  zoomText: { color: "rgba(255,255,255,0.7)", fontSize: 13, fontFamily: "Inter_500Medium" },
-  zoomTextActive: { color: "white" },
+  zoomGlass: {
+    position: "absolute",
+    bottom: 208,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    borderRadius: 50,
+    backgroundColor: "rgba(18,14,10,0.52)",
+    borderWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.28)",
+    borderBottomColor: "rgba(0,0,0,0.35)",
+    borderLeftColor: "rgba(255,255,255,0.14)",
+    borderRightColor: "rgba(0,0,0,0.20)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 16,
+    shadowOpacity: 0.45,
+    elevation: 8,
+  },
+  zoomPill: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 50,
+    minWidth: 44,
+    alignItems: "center",
+  },
+  zoomPillActive: {
+    backgroundColor: "rgba(255,255,255,0.93)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    shadowOpacity: 0.35,
+    elevation: 5,
+  },
+  zoomPillText: {
+    color: "rgba(255,255,255,0.65)",
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.3,
+  },
+  zoomPillTextActive: {
+    color: "#1a1208",
+    fontFamily: "Inter_700Bold",
+  },
   filterRow: {
     position: "absolute", bottom: 180, left: 0, right: 0,
     flexDirection: "row", paddingHorizontal: 16,
@@ -255,10 +315,52 @@ const styles = StyleSheet.create({
     position: "absolute", bottom: 0, left: 0, right: 0,
     backgroundColor: "rgba(0,0,0,0.8)", paddingTop: 12,
   },
-  modeSelector: { flexDirection: "row", justifyContent: "center", gap: 24, marginBottom: 16 },
-  modeBtn: { paddingVertical: 4 },
-  modeText: { color: "rgba(255,255,255,0.4)", fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
-  modeTextActive: { color: "white" },
+  modeGlass: {
+    flexDirection: "row",
+    alignSelf: "center",
+    alignItems: "center",
+    gap: 2,
+    marginBottom: 14,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+    borderRadius: 50,
+    backgroundColor: "rgba(18,14,10,0.52)",
+    borderWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.28)",
+    borderBottomColor: "rgba(0,0,0,0.35)",
+    borderLeftColor: "rgba(255,255,255,0.14)",
+    borderRightColor: "rgba(0,0,0,0.20)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 16,
+    shadowOpacity: 0.45,
+    elevation: 8,
+  },
+  modePill: {
+    paddingHorizontal: 22,
+    paddingVertical: 8,
+    borderRadius: 50,
+    minWidth: 88,
+    alignItems: "center",
+  },
+  modePillActive: {
+    backgroundColor: "rgba(255,255,255,0.93)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    shadowOpacity: 0.3,
+    elevation: 5,
+  },
+  modePillText: {
+    color: "rgba(255,255,255,0.5)",
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.8,
+  },
+  modePillTextActive: {
+    color: "#1a1208",
+    letterSpacing: 1.8,
+  },
   captureRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 40, marginBottom: 8 },
   sideBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   captureBtn: {
