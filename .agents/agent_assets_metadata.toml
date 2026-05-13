@@ -5,10 +5,10 @@ outputs = []
 id = "idqYc8zwtldtaiu08Bta5"
 uri = "file://artifacts/kkamera/assets/images/icon.png"
 type = "image"
-title = "generated_image"
+title = "kkamera app icon"
 
 [[generated]]
 id = "qTqjIP5vNoo2vBhm52u1Z"
 uri = "file://artifacts/kkamera/assets/images/splash.png"
 type = "image"
-title = "generated_image"
+title = "kkamera splash screen"

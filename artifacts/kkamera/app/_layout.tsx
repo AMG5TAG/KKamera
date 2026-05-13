@@ -6,6 +6,7 @@ import {
   useFonts,
 } from "@expo-google-fonts/inter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import Head from "expo-router/head";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
@@ -182,6 +183,18 @@ export default function RootLayout() {
               <UploadProvider>
                 <SubscriptionProvider>
                   <AppWithPush>
+                    {Platform.OS === "web" && (
+                      <Head>
+                        <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+                        <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+                        <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
+                        <link rel="shortcut icon" href="/favicon.ico" />
+                        <meta name="apple-mobile-web-app-capable" content="yes" />
+                        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+                        <meta name="apple-mobile-web-app-title" content="KKamera" />
+                        <meta name="theme-color" content="#0d0b08" />
+                      </Head>
+                    )}
                     <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
                       <RootLayoutNav />
                     </GestureHandlerRootView>

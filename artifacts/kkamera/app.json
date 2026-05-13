@@ -9,13 +9,23 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/images/icon.png",
+      "image": "./assets/images/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#0d0b08"
     },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "app.kkamera",
+      "splash": {
+        "image": "./assets/images/splash.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#0d0b08",
+        "dark": {
+          "image": "./assets/images/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#0d0b08"
+        }
+      },
       "infoPlist": {
         "NSCameraUsageDescription": "KKamera uses the camera to capture photos and videos for direct cloud upload.",
         "NSMicrophoneUsageDescription": "KKamera uses the microphone to record audio with your videos.",
@@ -26,6 +36,20 @@
     },
     "android": {
       "package": "app.kkamera",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#0d0b08"
+      },
+      "splash": {
+        "image": "./assets/images/splash.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#0d0b08",
+        "dark": {
+          "image": "./assets/images/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#0d0b08"
+        }
+      },
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
@@ -36,7 +60,7 @@
       ]
     },
     "web": {
-      "favicon": "./assets/images/icon.png",
+      "favicon": "./public/icons/favicon-32.png",
       "bundler": "metro",
       "output": "single",
       "backgroundColor": "#0d0b08"
