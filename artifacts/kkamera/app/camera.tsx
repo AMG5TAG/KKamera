@@ -3,6 +3,8 @@ import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
   Animated, Easing, StatusBar, Alert,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -47,6 +49,7 @@ export default function CameraScreen() {
   const cameraRef = useRef<CameraView>(null);
   const captureScale = useRef(new Animated.Value(1)).current;
   const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const baseZoom = useRef(0);
   const [recordSeconds, setRecordSeconds] = useState(0);
   const zoomBarOpacity = useRef(new Animated.Value(0)).current;
   const zoomHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -58,6 +61,21 @@ export default function CameraScreen() {
       Animated.timing(zoomBarOpacity, { toValue: 0, duration: 350, easing: Easing.in(Easing.quad), useNativeDriver: true }).start();
     }, 2500);
   }, [zoomBarOpacity]);
+
+  const applyZoom = useCallback((scale: number) => {
+    const next = Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.5));
+    setZoom(next);
+    triggerZoomBar();
+  }, [triggerZoomBar]);
+
+  const saveBaseZoom = useCallback(() => {
+    baseZoom.current = zoom;
+  }, [zoom]);
+
+  const pinchGesture = Gesture.Pinch()
+    .onStart(() => { runOnJS(saveBaseZoom)(); })
+    .onUpdate((e) => { runOnJS(applyZoom)(e.scale); })
+    .onEnd(() => { runOnJS(saveBaseZoom)(); });
 
   // Request permissions on mount
   useEffect(() => {
@@ -176,6 +194,7 @@ export default function CameraScreen() {
   const filterColor = FILTER_COLORS[FILTERS[selectedFilter] ?? "None"];
 
   return (
+    <GestureDetector gesture={pinchGesture}>
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
@@ -318,6 +337,7 @@ export default function CameraScreen() {
         </View>
       </View>
     </View>
+    </GestureDetector>
   );
 }
 
