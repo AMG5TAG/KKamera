@@ -51,15 +51,12 @@ export default function CameraScreen() {
   const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const baseZoom = useRef(0);
   const [recordSeconds, setRecordSeconds] = useState(0);
-  const zoomBarOpacity = useRef(new Animated.Value(0)).current;
+  const zoomBarOpacity = useRef(new Animated.Value(1)).current;
   const zoomHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const triggerZoomBar = useCallback(() => {
     if (zoomHideTimer.current) clearTimeout(zoomHideTimer.current);
     Animated.timing(zoomBarOpacity, { toValue: 1, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-    zoomHideTimer.current = setTimeout(() => {
-      Animated.timing(zoomBarOpacity, { toValue: 0, duration: 350, easing: Easing.in(Easing.quad), useNativeDriver: true }).start();
-    }, 2500);
   }, [zoomBarOpacity]);
 
   const applyZoom = useCallback((scale: number) => {
