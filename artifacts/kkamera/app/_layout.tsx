@@ -32,6 +32,24 @@ if (Platform.OS !== "web") {
   }
 } else {
   SplashScreen.hideAsync().catch(() => {});
+  // Register service worker for PWA offline support
+  if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker
+        .register("/pwabuilder-sw.js", { scope: "/" })
+        .then(() => {
+          // Notify SW to register background sync when app is ready
+          navigator.serviceWorker.ready.then((reg) => {
+            if ("periodicSync" in reg) {
+              (reg as any).periodicSync
+                .register("kkamera-periodic-upload", { minInterval: 15 * 60 * 1000 })
+                .catch(() => {});
+            }
+          });
+        })
+        .catch(() => {});
+    });
+  }
 }
 
 const queryClient = new QueryClient();

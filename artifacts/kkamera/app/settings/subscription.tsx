@@ -72,7 +72,7 @@ export default function SubscriptionScreen() {
 
   const handleWebCheckout = async () => {
     try {
-      const result = await checkoutMutation.mutateAsync({});
+      const result = await checkoutMutation.mutateAsync();
       if (result.url) Linking.openURL(result.url);
     } catch {
       /* handled below */
@@ -88,7 +88,7 @@ export default function SubscriptionScreen() {
   const handleCancel = () => {
     if (Platform.OS === "web") {
       if (!window.confirm("Cancel your subscription? You'll keep access until the end of the current period.")) return;
-      cancelMutation.mutateAsync({}).then(() => {
+      cancelMutation.mutateAsync().then(() => {
         queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
       });
     }

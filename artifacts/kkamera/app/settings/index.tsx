@@ -107,8 +107,8 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
   const { settings, updateSetting } = useSettings();
-  const { data: sub } = useGetSubscription({ query: { enabled: !!user } });
-  const { data: me } = useGetMe({ query: { enabled: !!user } });
+  const { data: sub } = useGetSubscription({ query: { enabled: !!user, queryKey: [] as any } });
+  const { data: me } = useGetMe({ query: { enabled: !!user, queryKey: [] as any } });
 
   const subStatus = sub?.status ?? "none";
   const subLabel =

@@ -25,7 +25,7 @@ export default function SecurityScreen() {
 
   const handleSetup = async () => {
     try {
-      const result = await setup2FAMutation.mutateAsync({});
+      const result = await setup2FAMutation.mutateAsync();
       setSetupData(result);
       setMode("setup");
     } catch {
