@@ -41,6 +41,7 @@ export default function RegisterScreen() {
       });
       if (result.token && result.user) {
         await login(result.token, result.user as AuthUser);
+        router.replace("/wizard");
       }
     } catch (e: any) {
       setError(e?.response?.data?.message || "Registration failed. Please try again.");

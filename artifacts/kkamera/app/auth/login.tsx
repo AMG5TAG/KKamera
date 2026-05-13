@@ -17,7 +17,7 @@ const CARD = "#1a1710";
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
-  const { login } = useAuth();
+  const { login, hasCompletedWizard } = useAuth();
   const loginMutation = useLogin();
 
   const [email, setEmail] = useState("");
@@ -39,6 +39,7 @@ export default function LoginScreen() {
       }
       if (result.token && result.user) {
         await login(result.token, result.user as AuthUser);
+        router.replace(hasCompletedWizard ? "/camera" : "/wizard");
       }
     } catch (e: any) {
       setError(e?.response?.data?.message || "Login failed. Check your credentials.");
