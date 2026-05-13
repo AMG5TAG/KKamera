@@ -75,14 +75,16 @@ export default function CloudScreen() {
         keyExtractor={item => String(item.id)}
         contentContainerStyle={{ padding: 16, gap: 12 }}
         ListHeaderComponent={(
-          <View>
-            <View style={styles.infoBanner}>
-              <Ionicons name="information-circle-outline" size={18} color={PRIMARY} />
-              <Text style={styles.infoText}>? Enable multiple connections to upload to all simultaneously.</Text>
-            </View>
-            <TouchableOpacity style={styles.addBtn} onPress={() => router.push("/settings/add-cloud")}>
+          <View style={styles.addRow}>
+            <TouchableOpacity style={[styles.addBtn, { flex: 1 }]} onPress={() => router.push("/settings/add-cloud")}>
               <Ionicons name="add-circle-outline" size={20} color="white" />
               <Text style={styles.addText}>Add New Connection</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.infoBtn}
+              onPress={() => Alert.alert("Multiple Connections", "Enable multiple connections to upload to all clouds simultaneously.")}
+            >
+              <Ionicons name="information-circle-outline" size={26} color={PRIMARY} />
             </TouchableOpacity>
           </View>
         )}
@@ -96,8 +98,8 @@ export default function CloudScreen() {
         renderItem={({ item }) => {
           const cfg = ICONS[item.type] ?? { icon: "cloud-outline", color: PRIMARY, set: "ion" };
           return (
-            <View style={[styles.card, !item.active && styles.cardInactive]}>
-              <View style={styles.cardTop}>
+            <View style={styles.card}>
+              <View style={[styles.cardTop, !item.active && styles.cardTopInactive]}>
                 <View style={[styles.cardIcon, { backgroundColor: cfg.color + "22" }]}>
                   {cfg.set === "mci"
                     ? <MaterialCommunityIcons name={cfg.icon as any} size={24} color={cfg.color} />
@@ -140,16 +142,16 @@ export default function CloudScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   center: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
-  infoBanner: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: "rgba(177,152,112,0.08)", borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.2)" },
-  infoText: { flex: 1, fontSize: 13, color: "#aaa", fontFamily: "Inter_400Regular", lineHeight: 18 },
-  addBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 14, marginBottom: 4 },
+  addRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 4 },
+  addBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 14 },
   addText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
+  infoBtn: { padding: 6 },
   emptyWrap: { alignItems: "center", paddingVertical: 48 },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", color: "#666", marginTop: 12, marginBottom: 8 },
   emptyText: { fontSize: 14, color: "#444", fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 20 },
   card: { backgroundColor: CARD, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: "rgba(177,152,112,0.15)" },
-  cardInactive: { opacity: 0.55 },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
+  cardTopInactive: { opacity: 0.45 },
   cardIcon: { width: 46, height: 46, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   cardInfo: { flex: 1 },
   cardName: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
