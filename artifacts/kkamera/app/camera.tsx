@@ -39,6 +39,21 @@ export default function CameraScreen() {
   const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const [recordSeconds, setRecordSeconds] = useState(0);
 
+  const zoomBarOpacity = useRef(new Animated.Value(0)).current;
+  const zoomHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerZoomBar = useCallback(() => {
+    if (zoomHideTimer.current) clearTimeout(zoomHideTimer.current);
+    Animated.timing(zoomBarOpacity, {
+      toValue: 1, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: true,
+    }).start();
+    zoomHideTimer.current = setTimeout(() => {
+      Animated.timing(zoomBarOpacity, {
+        toValue: 0, duration: 350, easing: Easing.in(Easing.quad), useNativeDriver: true,
+      }).start();
+    }, 2500);
+  }, [zoomBarOpacity]);
+
   const handleCapture = useCallback(() => {
     if (Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -144,18 +159,20 @@ export default function CameraScreen() {
         </View>
       )}
 
-      {/* Zoom controls — Liquid Glass */}
-      <View
+      {/* Zoom controls — Liquid Glass (auto-hide) */}
+      <Animated.View
         style={[
           styles.zoomGlass,
+          { opacity: zoomBarOpacity },
           Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
         ]}
+        pointerEvents={undefined}
       >
         {([0.5, 1, 2, 5] as number[]).map(z => (
           <TouchableOpacity
             key={z}
             style={[styles.zoomPill, zoom === z && styles.zoomPillActive]}
-            onPress={() => setZoom(z)}
+            onPress={() => { setZoom(z); triggerZoomBar(); }}
             activeOpacity={0.75}
           >
             <Text style={[styles.zoomPillText, zoom === z && styles.zoomPillTextActive]}>
@@ -163,7 +180,7 @@ export default function CameraScreen() {
             </Text>
           </TouchableOpacity>
         ))}
-      </View>
+      </Animated.View>
 
       {/* Filter row */}
       {showFilters && (
