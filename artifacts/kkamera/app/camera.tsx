@@ -13,6 +13,7 @@ import { CameraView, CameraType, CameraMode, useCameraPermissions, useMicrophone
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import { useSettings } from "@/contexts/SettingsContext";
+import { useGetSubscription } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
 
@@ -26,11 +27,19 @@ const FILTER_COLORS: Record<string, string | null> = {
   Noir: "#1a1a1a", Silvertone: "#b0b8c0",
 };
 
+
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
   const { lastUpload, executeUpload } = useUpload();
   const { settings } = useSettings();
+  const { data: sub, isLoading: subLoading } = useGetSubscription();
+
+  // Access check: allow during active trial, active subscription, or while loading
+  const hasAccess = subLoading
+    || sub?.status === "active"
+    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date())
+    || sub == null;
 
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
@@ -210,6 +219,27 @@ export default function CameraScreen() {
   }
 
   const filterColor = FILTER_COLORS[FILTERS[selectedFilter] ?? "None"];
+
+  // Paywall overlay — shown over the camera when subscription has lapsed
+  if (!hasAccess) {
+    return (
+      <View style={[styles.container, styles.paywallContainer]}>
+        <StatusBar barStyle="light-content" />
+        <Ionicons name="lock-closed" size={52} color={PRIMARY} style={{ marginBottom: 20 }} />
+        <Text style={styles.paywallTitle}>Subscription Required</Text>
+        <Text style={styles.paywallBody}>
+          Your free trial has ended.{"\n"}Subscribe to keep using KKamera.
+        </Text>
+        <TouchableOpacity style={styles.paywallBtn} onPress={() => router.push("/settings/subscription")}>
+          <Ionicons name="card-outline" size={18} color="white" />
+          <Text style={styles.paywallBtnText}>View Subscription — $25/year</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.paywallSecondary} onPress={() => router.push("/settings")}>
+          <Text style={styles.paywallSecondaryText}>Go to Settings</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
     <GestureDetector gesture={pinchGesture}>
@@ -486,4 +516,15 @@ const styles = StyleSheet.create({
   permBtnText: { color: "white", fontFamily: "Inter_600SemiBold", fontSize: 15 },
   permSkip: { paddingVertical: 8 },
   permSkipText: { color: "#666", fontFamily: "Inter_400Regular", fontSize: 13 },
+  paywallContainer: { alignItems: "center", justifyContent: "center", paddingHorizontal: 32 },
+  paywallTitle: { fontSize: 24, fontFamily: "Inter_700Bold", color: "white", marginBottom: 12, textAlign: "center" },
+  paywallBody: { fontSize: 15, color: "#aaa", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22, marginBottom: 32 },
+  paywallBtn: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    backgroundColor: PRIMARY, paddingHorizontal: 28, paddingVertical: 16,
+    borderRadius: 14, marginBottom: 12, width: "100%", justifyContent: "center",
+  },
+  paywallBtnText: { color: "white", fontFamily: "Inter_600SemiBold", fontSize: 15 },
+  paywallSecondary: { paddingVertical: 10 },
+  paywallSecondaryText: { color: "#666", fontFamily: "Inter_400Regular", fontSize: 14 },
 });

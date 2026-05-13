@@ -10,37 +10,51 @@ const REVENUECAT_ANDROID_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_AP
 
 export const REVENUECAT_ENTITLEMENT_IDENTIFIER = "pro";
 
-function getRevenueCatApiKey(): string {
-  if (!REVENUECAT_TEST_API_KEY || !REVENUECAT_IOS_API_KEY || !REVENUECAT_ANDROID_API_KEY) {
-    throw new Error("RevenueCat API keys not configured. Run the seed script and add env vars.");
-  }
+// Tracks whether Purchases was successfully configured on this run
+let _revenueCatReady = false;
 
-  if (__DEV__ || Platform.OS === "web" || Constants.executionEnvironment === "storeClient") {
-    return REVENUECAT_TEST_API_KEY;
+function getRevenueCatApiKey(): string | null {
+  if (Platform.OS === "web") return REVENUECAT_TEST_API_KEY ?? null;
+  if (__DEV__ || Constants.executionEnvironment === "storeClient") {
+    return REVENUECAT_TEST_API_KEY ?? null;
   }
-  if (Platform.OS === "ios") return REVENUECAT_IOS_API_KEY;
-  if (Platform.OS === "android") return REVENUECAT_ANDROID_API_KEY;
-  return REVENUECAT_TEST_API_KEY;
+  if (Platform.OS === "ios") return REVENUECAT_IOS_API_KEY ?? null;
+  if (Platform.OS === "android") return REVENUECAT_ANDROID_API_KEY ?? null;
+  return REVENUECAT_TEST_API_KEY ?? null;
 }
 
 export function initializeRevenueCat() {
   const apiKey = getRevenueCatApiKey();
-  Purchases.setLogLevel(Purchases.LOG_LEVEL.DEBUG);
-  Purchases.configure({ apiKey });
-  console.log("RevenueCat configured");
+  if (!apiKey) {
+    console.warn("RevenueCat: no API key configured for this platform — purchases unavailable.");
+    return;
+  }
+  try {
+    Purchases.setLogLevel(Purchases.LOG_LEVEL.WARN);
+    Purchases.configure({ apiKey });
+    _revenueCatReady = true;
+  } catch (err) {
+    console.warn("RevenueCat configure failed:", err);
+  }
 }
 
 function useSubscriptionContext() {
+  const enabled = _revenueCatReady || Platform.OS === "web";
+
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info"],
     queryFn: () => Purchases.getCustomerInfo(),
     staleTime: 60_000,
+    enabled,
+    retry: false,
   });
 
   const offeringsQuery = useQuery({
     queryKey: ["revenuecat", "offerings"],
     queryFn: () => Purchases.getOfferings(),
     staleTime: 300_000,
+    enabled,
+    retry: false,
   });
 
   const purchaseMutation = useMutation({
@@ -63,6 +77,7 @@ function useSubscriptionContext() {
     customerInfo: customerInfoQuery.data,
     offerings: offeringsQuery.data,
     isSubscribed,
+    isReady: enabled,
     isLoading: customerInfoQuery.isLoading || offeringsQuery.isLoading,
     purchase: purchaseMutation.mutateAsync,
     restore: restoreMutation.mutateAsync,

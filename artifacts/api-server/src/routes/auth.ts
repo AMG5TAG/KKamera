@@ -5,7 +5,7 @@ import { authenticator } from "@otplib/preset-default";
 import QRCode from "qrcode";
 import { db } from "@workspace/db";
 import { usersTable, subscriptionsTable, referralsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 
 const router = Router();
@@ -56,6 +56,38 @@ router.post("/auth/register", async (req, res) => {
       await db.insert(referralsTable).values({
         referrerId, referredId: user.id, referredName: name, status: "completed",
       });
+
+      // Check if referrer has hit a new 5-referral milestone → award 1 free year
+      try {
+        const completedReferrals = await db
+          .select()
+          .from(referralsTable)
+          .where(and(eq(referralsTable.referrerId, referrerId), eq(referralsTable.status, "completed")));
+        const total = completedReferrals.length;
+        if (total > 0 && total % 5 === 0) {
+          const [referrerSub] = await db
+            .select()
+            .from(subscriptionsTable)
+            .where(eq(subscriptionsTable.userId, referrerId))
+            .limit(1);
+          const base = referrerSub?.currentPeriodEnd && referrerSub.currentPeriodEnd > new Date()
+            ? referrerSub.currentPeriodEnd
+            : new Date();
+          const newEnd = new Date(base);
+          newEnd.setFullYear(newEnd.getFullYear() + 1);
+          if (referrerSub) {
+            await db.update(subscriptionsTable)
+              .set({ status: "active", currentPeriodEnd: newEnd })
+              .where(eq(subscriptionsTable.userId, referrerId));
+          } else {
+            await db.insert(subscriptionsTable).values({
+              userId: referrerId, status: "active", currentPeriodEnd: newEnd,
+            });
+          }
+        }
+      } catch (affiliateErr) {
+        req.log.warn({ affiliateErr }, "Affiliate reward check failed — continuing");
+      }
     }
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "30d" });
