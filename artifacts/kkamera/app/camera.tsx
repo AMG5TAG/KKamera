@@ -51,13 +51,34 @@ export default function CameraScreen() {
   const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const baseZoom = useRef(0);
   const [recordSeconds, setRecordSeconds] = useState(0);
-  const zoomBarOpacity = useRef(new Animated.Value(1)).current;
-  const zoomHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [zoomExpanded, setZoomExpanded] = useState(false);
+  const zoomWidth = useRef(new Animated.Value(0)).current;
+  const zoomCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const ZOOM_COLLAPSED_W = 64;
+  const ZOOM_EXPANDED_W = 232;
+
+  const expandZoom = useCallback(() => {
+    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
+    setZoomExpanded(true);
+    Animated.spring(zoomWidth, { toValue: 1, tension: 90, friction: 11, useNativeDriver: false }).start();
+  }, [zoomWidth]);
+
+  const collapseZoom = useCallback(() => {
+    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
+    setZoomExpanded(false);
+    Animated.spring(zoomWidth, { toValue: 0, tension: 90, friction: 11, useNativeDriver: false }).start();
+  }, [zoomWidth]);
+
+  const scheduleCollapse = useCallback((ms = 2800) => {
+    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
+    zoomCollapseTimer.current = setTimeout(collapseZoom, ms);
+  }, [collapseZoom]);
 
   const triggerZoomBar = useCallback(() => {
-    if (zoomHideTimer.current) clearTimeout(zoomHideTimer.current);
-    Animated.timing(zoomBarOpacity, { toValue: 1, duration: 180, easing: Easing.out(Easing.quad), useNativeDriver: true }).start();
-  }, [zoomBarOpacity]);
+    expandZoom();
+    scheduleCollapse();
+  }, [expandZoom, scheduleCollapse]);
 
   const applyZoom = useCallback((scale: number) => {
     const next = Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.5));
@@ -245,26 +266,56 @@ export default function CameraScreen() {
         </View>
       )}
 
-      {/* Zoom controls */}
-      <Animated.View
-        style={[styles.zoomGlass, { opacity: zoomBarOpacity },
-          Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
-        ]}
-      >
-        {([0, 0.25, 0.5, 0.75] as number[]).map((z, i) => {
-          const labels = ["·5", "1×", "2×", "5×"];
-          return (
+      {/* Zoom controls — collapsible pill */}
+      {(() => {
+        const animW = zoomWidth.interpolate({ inputRange: [0, 1], outputRange: [ZOOM_COLLAPSED_W, ZOOM_EXPANDED_W] });
+        const pillsOpacity = zoomWidth.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0, 0, 1] });
+        const ZOOM_STEPS: { value: number; label: string }[] = [
+          { value: 0, label: "·5" }, { value: 0.25, label: "1×" },
+          { value: 0.5, label: "2×" }, { value: 0.75, label: "5×" },
+        ];
+        const currentLabel = ZOOM_STEPS.reduce((prev, cur) =>
+          Math.abs(cur.value - zoom) < Math.abs(prev.value - zoom) ? cur : prev
+        ).label;
+
+        return (
+          <Animated.View
+            style={[styles.zoomGlass, { width: animW, overflow: "hidden" },
+              Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
+            ]}
+          >
+            {/* Icon pill — toggle */}
             <TouchableOpacity
-              key={z}
-              style={[styles.zoomPill, zoom === z && styles.zoomPillActive]}
-              onPress={() => setZoomLevel(z)}
+              style={[styles.zoomIconBtn, zoomExpanded && styles.zoomIconBtnActive]}
+              onPress={() => zoomExpanded ? collapseZoom() : expandZoom()}
               activeOpacity={0.75}
             >
-              <Text style={[styles.zoomPillText, zoom === z && styles.zoomPillTextActive]}>{labels[i]}</Text>
+              <MaterialCommunityIcons
+                name="magnify"
+                size={15}
+                color={zoomExpanded ? "#1a1208" : "rgba(255,255,255,0.85)"}
+              />
+              {!zoomExpanded && (
+                <Text style={styles.zoomCurrentLabel}>{currentLabel}</Text>
+              )}
             </TouchableOpacity>
-          );
-        })}
-      </Animated.View>
+
+            {/* Expandable zoom pills */}
+            <Animated.View style={{ flexDirection: "row", opacity: pillsOpacity }}>
+              {ZOOM_STEPS.map(({ value: z, label }) => (
+                <TouchableOpacity
+                  key={z}
+                  style={[styles.zoomPill, zoom === z && styles.zoomPillActive]}
+                  onPress={() => { setZoomLevel(z); scheduleCollapse(1800); }}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.zoomPillText, zoom === z && styles.zoomPillTextActive]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </Animated.View>
+          </Animated.View>
+        );
+      })()}
 
       {/* Filter row */}
       {showFilters && (
@@ -372,7 +423,18 @@ const styles = StyleSheet.create({
     borderLeftColor: "rgba(255,255,255,0.14)", borderRightColor: "rgba(0,0,0,0.20)",
     shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowRadius: 16, shadowOpacity: 0.45, elevation: 8,
   },
-  zoomPill: { paddingHorizontal: 13, paddingVertical: 7, borderRadius: 50, minWidth: 44, alignItems: "center" },
+  zoomIconBtn: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 50, minWidth: 52,
+  },
+  zoomIconBtnActive: {
+    backgroundColor: "rgba(255,255,255,0.93)",
+    shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, shadowOpacity: 0.3, elevation: 5,
+  },
+  zoomCurrentLabel: {
+    color: "rgba(255,255,255,0.75)", fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 0.3,
+  },
+  zoomPill: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 50, minWidth: 42, alignItems: "center" },
   zoomPillActive: {
     backgroundColor: "rgba(255,255,255,0.93)",
     shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, shadowOpacity: 0.35, elevation: 5,
