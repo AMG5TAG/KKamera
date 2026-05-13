@@ -129,7 +129,7 @@ export default function CameraScreen() {
           </View>
         )}
 
-        <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/settings/index")}>
+        <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/settings")}>
           <Ionicons name="settings-outline" size={24} color="white" />
         </TouchableOpacity>
       </View>
