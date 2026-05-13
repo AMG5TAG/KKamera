@@ -177,6 +177,10 @@ export default function AddCloudScreen() {
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+        <Text style={styles.backBtnText}>Back</Text>
+      </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionTitle}>Choose Storage Type</Text>
 
@@ -379,4 +383,6 @@ const styles = StyleSheet.create({
     backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 15, marginTop: 8,
   },
   saveText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

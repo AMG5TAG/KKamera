@@ -5,6 +5,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useGetSubscription, useCancelSubscription, useCreateCheckout,
@@ -146,8 +147,13 @@ export default function SubscriptionScreen() {
   const showCancelButton = !isNative && status === "active";
 
   return (
+    <View style={styles.container}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <Text style={styles.backBtnText}>Back</Text>
+    </TouchableOpacity>
     <ScrollView
-      style={styles.container}
+      style={{ flex: 1 }}
       contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}
     >
       {renderStatusCard()}
@@ -229,6 +235,7 @@ export default function SubscriptionScreen() {
         </View>
       </Modal>
     </ScrollView>
+    </View>
   );
 }
 
@@ -262,4 +269,6 @@ const styles = StyleSheet.create({
   modalConfirmText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   modalCancel: { alignItems: "center", paddingVertical: 10 },
   modalCancelText: { fontSize: 14, color: "#666", fontFamily: "Inter_400Regular" },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

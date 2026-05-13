@@ -66,6 +66,10 @@ export default function CloudScreen() {
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+        <Text style={styles.backBtnText}>Back</Text>
+      </TouchableOpacity>
       <FlatList
         data={connections ?? []}
         keyExtractor={item => String(item.id)}
@@ -155,4 +159,6 @@ const styles = StyleSheet.create({
   actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: "rgba(177,152,112,0.1)" },
   actionDelete: { backgroundColor: "rgba(239,68,68,0.08)" },
   actionText: { fontSize: 13, fontFamily: "Inter_500Medium", color: PRIMARY },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

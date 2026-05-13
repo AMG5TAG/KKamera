@@ -1,6 +1,8 @@
 import React from "react";
-import { View, Text, StyleSheet, ScrollView, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Platform, TouchableOpacity } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 
 const BG = "#0d0b08";
 const PRIMARY = "#b19870";
@@ -10,7 +12,12 @@ const EFFECTIVE_DATE = "13 May 2026";
 export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
+    <View style={styles.container}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <Text style={styles.backBtnText}>Back</Text>
+    </TouchableOpacity>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
       <Text style={styles.updated}>Effective: {EFFECTIVE_DATE}</Text>
 
       <Section title="1. Who We Are">
@@ -62,6 +69,7 @@ export default function PrivacyScreen() {
         For privacy enquiries: privacy@kkamera.app
       </Section>
     </ScrollView>
+    </View>
   );
 }
 
@@ -80,6 +88,8 @@ function Bold({ children }: { children: React.ReactNode }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
   updated: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", marginBottom: 20, fontStyle: "italic" },
   section: { marginBottom: 20 },
   sectionTitle: { fontSize: 14, fontFamily: "Inter_700Bold", color: PRIMARY, marginBottom: 8 },

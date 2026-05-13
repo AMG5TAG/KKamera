@@ -135,8 +135,13 @@ export default function SettingsScreen() {
   const initials = displayName.split(" ").map((w: string) => w[0]).join("").slice(0, 2).toUpperCase();
 
   return (
+    <View style={styles.container}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <Text style={styles.backBtnText}>Back</Text>
+    </TouchableOpacity>
     <ScrollView
-      style={styles.container}
+      style={{ flex: 1 }}
       contentContainerStyle={{ paddingBottom: insets.bottom + 40 }}
       showsVerticalScrollIndicator={false}
     >
@@ -318,6 +323,7 @@ export default function SettingsScreen() {
         <Text style={styles.logoutText}>Sign Out</Text>
       </TouchableOpacity>
     </ScrollView>
+    </View>
   );
 }
 
@@ -392,4 +398,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(239,68,68,0.05)",
   },
   logoutText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "#ef4444" },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

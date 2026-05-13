@@ -2,6 +2,7 @@ import React from "react";
 import { View, Text, StyleSheet, ScrollView, Platform, TouchableOpacity, Share, FlatList, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useGetAffiliateStats, useGetReferrals } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -31,8 +32,13 @@ export default function AffiliateScreen() {
   }
 
   return (
+    <View style={styles.container}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <Text style={styles.backBtnText}>Back</Text>
+    </TouchableOpacity>
     <ScrollView
-      style={styles.container}
+      style={{ flex: 1 }}
       contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}
     >
       {/* Code card */}
@@ -108,12 +114,15 @@ export default function AffiliateScreen() {
         </>
       )}
     </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   center: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
   codeCard: { backgroundColor: "rgba(177,152,112,0.1)", borderRadius: 18, padding: 24, alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
   codePre: { fontSize: 10, color: "#888", fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 8 },
   code: { fontSize: 36, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 4, marginBottom: 16 },

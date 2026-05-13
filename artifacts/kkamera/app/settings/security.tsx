@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, Alert, Platform, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSetup2FA, useVerify2FA, useDisable2FA, useGetMe, getGetMeQueryKey } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -65,7 +66,12 @@ export default function SecurityScreen() {
   const is2FAEnabled = user?.twoFAEnabled ?? false;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
+    <View style={styles.container}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <Text style={styles.backBtnText}>Back</Text>
+    </TouchableOpacity>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
       {/* Status card */}
       <View style={[styles.statusCard, is2FAEnabled && styles.statusCardOn]}>
         <Ionicons name={is2FAEnabled ? "shield-checkmark" : "shield-outline"} size={40} color={is2FAEnabled ? "#22c55e" : "#888"} />
@@ -175,6 +181,7 @@ export default function SecurityScreen() {
         </>
       )}
     </ScrollView>
+    </View>
   );
 }
 
@@ -202,4 +209,6 @@ const styles = StyleSheet.create({
   cancelBtnText: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular" },
   disableBtn: { alignItems: "center", justifyContent: "center", borderRadius: 14, paddingVertical: 15, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", marginBottom: 10 },
   disableBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: "#ef4444" },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

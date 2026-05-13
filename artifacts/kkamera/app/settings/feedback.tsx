@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Platform, Alert, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useSubmitFeedback } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -37,7 +38,11 @@ export default function FeedbackScreen() {
 
   if (sent) {
     return (
-      <View style={styles.successWrap}>
+      <View style={[styles.successWrap, { backgroundColor: BG }]}>
+        <TouchableOpacity style={[styles.backBtn, { alignSelf: "flex-start" }]} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+          <Text style={styles.backBtnText}>Back</Text>
+        </TouchableOpacity>
         <Ionicons name="checkmark-circle" size={64} color={PRIMARY} />
         <Text style={styles.successTitle}>Thank You!</Text>
         <Text style={styles.successText}>Your feedback has been submitted. We read every message and use it to make KKamera better.</Text>
@@ -49,7 +54,12 @@ export default function FeedbackScreen() {
   }
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }} showsVerticalScrollIndicator={false}>
+    <View style={styles.container}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <Text style={styles.backBtnText}>Back</Text>
+    </TouchableOpacity>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }} showsVerticalScrollIndicator={false}>
       <Text style={styles.intro}>
         Found a bug? Have a great idea? Just want to share a thought? We'd love to hear from you.
       </Text>
@@ -99,6 +109,7 @@ export default function FeedbackScreen() {
         )}
       </TouchableOpacity>
     </ScrollView>
+    </View>
   );
 }
 
@@ -121,4 +132,6 @@ const styles = StyleSheet.create({
   successText: { fontSize: 15, color: "#aaa", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22, marginBottom: 32 },
   doneBtn: { paddingVertical: 12, paddingHorizontal: 28, borderRadius: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
   doneBtnText: { fontSize: 14, fontFamily: "Inter_500Medium", color: PRIMARY },
+  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });
