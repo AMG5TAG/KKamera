@@ -7,6 +7,7 @@ import affiliatesRouter from "./affiliates.js";
 import cloudConnectionsRouter from "./cloudConnections.js";
 import uploadsRouter from "./uploads.js";
 import feedbackRouter from "./feedback.js";
+import oauthRouter from "./oauth.js";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(affiliatesRouter);
 router.use(cloudConnectionsRouter);
 router.use(uploadsRouter);
 router.use(feedbackRouter);
+router.use(oauthRouter);
 
 export default router;
