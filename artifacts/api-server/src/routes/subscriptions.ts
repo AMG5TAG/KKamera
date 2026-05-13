@@ -1,14 +1,11 @@
 import { Router } from "express";
-import Stripe from "stripe";
 import { db } from "@workspace/db";
 import { subscriptionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { getUncachableStripeClient, getStripePublishableKey } from "../stripeClient.js";
 
 const router = Router();
-const stripeKey = process.env["STRIPE_SECRET_KEY"];
-const stripe = stripeKey ? new Stripe(stripeKey) : null;
-const PRICE_ID = process.env["STRIPE_PRICE_ID"] || "";
 
 router.get("/subscriptions/me", requireAuth, async (req, res) => {
   try {
@@ -50,15 +47,39 @@ router.post("/subscriptions/trial", requireAuth, async (req, res) => {
 
 router.post("/subscriptions/checkout", requireAuth, async (req, res) => {
   try {
-    if (!stripe) { res.status(503).json({ message: "Payment system not configured. Contact support." }); return; }
-    const origin = req.headers["origin"] || "https://kkamera.app";
+    const stripe = await getUncachableStripeClient();
+
+    const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
+
+    let customerId = sub?.stripeCustomerId ?? undefined;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        metadata: { userId: String(req.userId) },
+      });
+      customerId = customer.id;
+      if (sub) {
+        await db.update(subscriptionsTable).set({ stripeCustomerId: customerId }).where(eq(subscriptionsTable.userId, req.userId!));
+      } else {
+        await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "none", stripeCustomerId: customerId });
+      }
+    }
+
+    const priceId: string = req.body?.priceId || process.env["STRIPE_PRICE_ID"] || "";
+    if (!priceId) {
+      res.status(503).json({ message: "No Stripe price configured. Contact support." });
+      return;
+    }
+
+    const origin = req.headers["origin"] || `https://${process.env.REPLIT_DOMAINS?.split(",")[0]}`;
     const session = await stripe.checkout.sessions.create({
+      customer: customerId,
       mode: "subscription",
-      line_items: [{ price: PRICE_ID, quantity: 1 }],
+      line_items: [{ price: priceId, quantity: 1 }],
       success_url: `${origin}/settings/subscription?success=true`,
       cancel_url: `${origin}/settings/subscription?cancelled=true`,
       metadata: { userId: String(req.userId) },
     });
+
     res.json({ url: session.url || "" });
   } catch (err) {
     req.log.error({ err }, "Checkout error");
@@ -73,6 +94,15 @@ router.post("/subscriptions/cancel", requireAuth, async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Cancel subscription error");
     res.status(500).json({ message: "Failed to cancel subscription" });
+  }
+});
+
+router.get("/subscriptions/publishable-key", async (_req, res) => {
+  try {
+    const key = await getStripePublishableKey();
+    res.json({ publishableKey: key });
+  } catch {
+    res.status(503).json({ message: "Stripe not configured" });
   }
 });
 

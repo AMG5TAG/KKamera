@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect } from "react";
-import { Platform } from "react-native";
+import { Alert, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { setBaseUrl } from "@workspace/api-client-react";
@@ -17,6 +17,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { UploadProvider } from "@/contexts/UploadContext";
 import { SettingsProvider } from "@/contexts/SettingsContext";
+import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
 
 if (process.env["EXPO_PUBLIC_DOMAIN"]) {
   setBaseUrl(`https://${process.env["EXPO_PUBLIC_DOMAIN"]}`);
@@ -24,6 +25,11 @@ if (process.env["EXPO_PUBLIC_DOMAIN"]) {
 
 if (Platform.OS !== "web") {
   SplashScreen.preventAutoHideAsync().catch(() => {});
+  try {
+    initializeRevenueCat();
+  } catch (err: any) {
+    Alert.alert("Purchases Unavailable", err?.message ?? "Could not initialise purchases.");
+  }
 } else {
   SplashScreen.hideAsync().catch(() => {});
 }
@@ -80,9 +86,11 @@ export default function RootLayout() {
           <AuthProvider>
             <SettingsProvider>
               <UploadProvider>
-                <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
-                  <RootLayoutNav />
-                </GestureHandlerRootView>
+                <SubscriptionProvider>
+                  <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
+                    <RootLayoutNav />
+                  </GestureHandlerRootView>
+                </SubscriptionProvider>
               </UploadProvider>
             </SettingsProvider>
           </AuthProvider>
