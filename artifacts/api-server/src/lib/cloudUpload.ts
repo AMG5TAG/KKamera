@@ -1,7 +1,11 @@
 import { Client as FtpClient } from "basic-ftp";
 import { createClient as createWebdavClient } from "webdav";
-import { createDecipheriv } from "crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { Readable } from "stream";
+import { db } from "@workspace/db";
+import { cloudConnectionsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { logger } from "./logger.js";
 
 const ENC_KEY = (process.env["SESSION_SECRET"] || "dev-secret-kkamera-32-chars-paddd").slice(0, 32);
 
@@ -12,6 +16,12 @@ function decrypt(enc: string): string {
   return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString();
 }
 
+function encrypt(text: string): string {
+  const iv = randomBytes(16);
+  const cipher = createCipheriv("aes-256-cbc", Buffer.from(ENC_KEY), iv);
+  return iv.toString("hex") + ":" + Buffer.concat([cipher.update(text), cipher.final()]).toString("hex");
+}
+
 export interface CloudConn {
   id: number;
   type: string;
@@ -20,10 +30,95 @@ export interface CloudConn {
   username: string | null;
   passwordEncrypted: string | null;
   accessTokenEncrypted: string | null;
+  refreshToken: string | null;
+  tokenExpiry: Date | null;
   uploadPath: string | null;
 }
 
 export type UploadResult = { connectionId: number; success: boolean; error?: string };
+
+// ─── OAuth Auto-Refresh ───────────────────────────────────────────────────────
+
+const OAUTH_CONFIG: Record<string, { tokenUrl: string; clientIdEnv: string; clientSecretEnv: string }> = {
+  googledrive: {
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    clientIdEnv: "GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+  },
+  onedrive: {
+    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    clientIdEnv: "ONEDRIVE_CLIENT_ID",
+    clientSecretEnv: "ONEDRIVE_CLIENT_SECRET",
+  },
+  dropbox: {
+    tokenUrl: "https://api.dropboxapi.com/oauth2/token",
+    clientIdEnv: "DROPBOX_CLIENT_ID",
+    clientSecretEnv: "DROPBOX_CLIENT_SECRET",
+  },
+};
+
+/** Refresh the stored access token using the refresh token and persist the new values. */
+async function refreshAndPersistToken(conn: CloudConn): Promise<string> {
+  const cfg = OAUTH_CONFIG[conn.type];
+  if (!cfg) throw new Error(`No refresh config for provider: ${conn.type}`);
+  if (!conn.refreshToken) throw new Error(`No refresh token stored for connection ${conn.id} — re-connect the account.`);
+
+  const refreshTok = decrypt(conn.refreshToken);
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshTok,
+    client_id: process.env[cfg.clientIdEnv] ?? "",
+    client_secret: process.env[cfg.clientSecretEnv] ?? "",
+  });
+
+  const res = await fetch(cfg.tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`Token refresh failed (${res.status}): ${text}`);
+  }
+
+  const data = await res.json() as { access_token: string; expires_in?: number; refresh_token?: string };
+  const newExpiry = data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : null;
+  const encryptedAccess = encrypt(data.access_token);
+
+  await db.update(cloudConnectionsTable).set({
+    accessTokenEncrypted: encryptedAccess,
+    tokenExpiry: newExpiry,
+    ...(data.refresh_token ? { refreshToken: encrypt(data.refresh_token) } : {}),
+  }).where(eq(cloudConnectionsTable.id, conn.id));
+
+  // Keep the local object in sync for any subsequent reads
+  conn.accessTokenEncrypted = encryptedAccess;
+  conn.tokenExpiry = newExpiry;
+  if (data.refresh_token) conn.refreshToken = encrypt(data.refresh_token);
+
+  logger.info({ connectionId: conn.id, type: conn.type }, "OAuth token auto-refreshed");
+  return data.access_token;
+}
+
+/**
+ * Return a valid decrypted access token. Automatically refreshes when the
+ * token is absent, already expired, or expiring within the next 5 minutes.
+ */
+async function getAccessToken(conn: CloudConn): Promise<string> {
+  const raw = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
+  const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
+  const expiringSoon = conn.tokenExpiry != null && conn.tokenExpiry < fiveMinFromNow;
+
+  if ((!raw || expiringSoon) && conn.refreshToken) {
+    return refreshAndPersistToken(conn);
+  }
+
+  if (!raw) {
+    throw new Error(`No access token for ${conn.type} connection (id=${conn.id}). Please re-connect the account.`);
+  }
+  return raw;
+}
 
 // ─── FTP ──────────────────────────────────────────────────────────────────────
 
@@ -87,7 +182,12 @@ async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message:
       password: pass || undefined,
     });
     const exists = await client.exists(conn.uploadPath ?? "/");
-    return { success: true, message: exists ? "WebDAV folder exists and is accessible" : "WebDAV connected — upload folder will be created on first upload" };
+    return {
+      success: true,
+      message: exists
+        ? "WebDAV folder exists and is accessible"
+        : "WebDAV connected — upload folder will be created on first upload",
+    };
   } catch (err: any) {
     return { success: false, message: err.message };
   }
@@ -114,8 +214,7 @@ async function ensureDriveFolder(token: string, folderName: string): Promise<str
 }
 
 async function uploadGoogleDrive(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string): Promise<void> {
-  const token = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
-  if (!token) throw new Error("No Google Drive access token configured — paste your token in the connection settings.");
+  const token = await getAccessToken(conn);
   const folderName = (conn.uploadPath ?? "/KKamera").replace(/^\/+/, "") || "KKamera";
   const folderId = await ensureDriveFolder(token, folderName);
   const boundary = "kkamera_boundary_314159";
@@ -138,12 +237,11 @@ async function uploadGoogleDrive(conn: CloudConn, buf: Buffer, fileName: string,
 
 async function testGoogleDrive(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
-    const token = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
-    if (!token) return { success: false, message: "No access token — paste your Google OAuth token in settings." };
+    const token = await getAccessToken(conn);
     const res = await fetch("https://www.googleapis.com/drive/v3/about?fields=user", {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — generate a fresh token.` };
+    if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — re-connect your Google account.` };
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.user?.displayName ?? "Google user"}` };
   } catch (err: any) {
@@ -154,8 +252,7 @@ async function testGoogleDrive(conn: CloudConn): Promise<{ success: boolean; mes
 // ─── OneDrive ─────────────────────────────────────────────────────────────────
 
 async function uploadOneDrive(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
-  const token = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
-  if (!token) throw new Error("No OneDrive access token configured — paste your token in the connection settings.");
+  const token = await getAccessToken(conn);
   const dir = (conn.uploadPath ?? "/KKamera").replace(/^\/+/, "");
   const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${dir}/${fileName}:/content`;
   const res = await fetch(url, {
@@ -168,12 +265,11 @@ async function uploadOneDrive(conn: CloudConn, buf: Buffer, fileName: string): P
 
 async function testOneDrive(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
-    const token = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
-    if (!token) return { success: false, message: "No access token — paste your Microsoft OAuth token in settings." };
+    const token = await getAccessToken(conn);
     const res = await fetch("https://graph.microsoft.com/v1.0/me", {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — generate a fresh token.` };
+    if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — re-connect your Microsoft account.` };
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.displayName ?? "Microsoft user"}` };
   } catch (err: any) {
@@ -184,8 +280,7 @@ async function testOneDrive(conn: CloudConn): Promise<{ success: boolean; messag
 // ─── Dropbox ──────────────────────────────────────────────────────────────────
 
 async function uploadDropbox(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
-  const token = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
-  if (!token) throw new Error("No Dropbox access token configured — paste your token in the connection settings.");
+  const token = await getAccessToken(conn);
   const path = `${conn.uploadPath ?? "/KKamera"}/${fileName}`;
   const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
     method: "POST",
@@ -201,13 +296,12 @@ async function uploadDropbox(conn: CloudConn, buf: Buffer, fileName: string): Pr
 
 async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
-    const token = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
-    if (!token) return { success: false, message: "No access token — paste your Dropbox token in settings." };
+    const token = await getAccessToken(conn);
     const res = await fetch("https://api.dropboxapi.com/2/users/get_current_account", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — generate a fresh token.` };
+    if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — re-connect your Dropbox account.` };
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.name?.display_name ?? "Dropbox user"}` };
   } catch (err: any) {
@@ -220,15 +314,16 @@ async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message
 export async function uploadToCloud(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string): Promise<UploadResult> {
   try {
     switch (conn.type) {
-      case "ftp":        await uploadFtp(conn, buf, fileName); break;
-      case "webdav":     await uploadWebdav(conn, buf, fileName); break;
-      case "googledrive":await uploadGoogleDrive(conn, buf, fileName, mimeType); break;
-      case "onedrive":   await uploadOneDrive(conn, buf, fileName); break;
-      case "dropbox":    await uploadDropbox(conn, buf, fileName); break;
+      case "ftp":         await uploadFtp(conn, buf, fileName); break;
+      case "webdav":      await uploadWebdav(conn, buf, fileName); break;
+      case "googledrive": await uploadGoogleDrive(conn, buf, fileName, mimeType); break;
+      case "onedrive":    await uploadOneDrive(conn, buf, fileName); break;
+      case "dropbox":     await uploadDropbox(conn, buf, fileName); break;
       default: throw new Error(`Unknown connection type: ${conn.type}`);
     }
     return { connectionId: conn.id, success: true };
   } catch (err: any) {
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud upload failed");
     return { connectionId: conn.id, success: false, error: String(err?.message ?? err) };
   }
 }
@@ -238,11 +333,11 @@ export async function testCloudConnection(conn: CloudConn): Promise<{ success: b
     return { success: false, message: "No credentials configured for this connection." };
   }
   switch (conn.type) {
-    case "ftp":        return testFtp(conn);
-    case "webdav":     return testWebdav(conn);
-    case "googledrive":return testGoogleDrive(conn);
-    case "onedrive":   return testOneDrive(conn);
-    case "dropbox":    return testDropbox(conn);
+    case "ftp":         return testFtp(conn);
+    case "webdav":      return testWebdav(conn);
+    case "googledrive": return testGoogleDrive(conn);
+    case "onedrive":    return testOneDrive(conn);
+    case "dropbox":     return testDropbox(conn);
     default: return { success: false, message: `Unknown type: ${conn.type}` };
   }
 }

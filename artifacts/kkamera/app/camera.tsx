@@ -3,6 +3,7 @@ import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
   Animated, Easing, StatusBar, Alert,
 } from "react-native";
+import * as Network from "expo-network";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -110,6 +111,37 @@ export default function CameraScreen() {
     if (!micPermission?.granted) requestMicPermission();
   }, []);
 
+  // Returns true if upload should proceed based on WiFi-only setting
+  const checkWifi = useCallback(async (): Promise<boolean> => {
+    if (!settings.uploadOnlyOnWifi) return true;
+    try {
+      if (Platform.OS === "web") {
+        const conn = (navigator as any).connection;
+        if (conn?.type && conn.type !== "wifi" && conn.type !== "unknown") return false;
+        return true;
+      }
+      const state = await Network.getNetworkStateAsync();
+      return state.type === Network.NetworkStateType.WIFI;
+    } catch {
+      return true; // can't detect — allow upload
+    }
+  }, [settings.uploadOnlyOnWifi]);
+
+  // Returns true if user confirms upload (or prompt is disabled)
+  const confirmUpload = useCallback((): Promise<boolean> => {
+    if (!settings.promptBeforeUpload) return Promise.resolve(true);
+    return new Promise(resolve => {
+      Alert.alert(
+        "Upload to Cloud?",
+        "Send this file to your connected cloud storage?",
+        [
+          { text: "Skip", style: "cancel", onPress: () => resolve(false) },
+          { text: "Upload", onPress: () => resolve(true) },
+        ]
+      );
+    });
+  }, [settings.promptBeforeUpload]);
+
   const handleCapture = useCallback(async () => {
     if (isBusy) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -125,14 +157,22 @@ export default function CameraScreen() {
       if (photo?.uri) {
         const ext = settings.imageFormat === "heic" ? "heic" : settings.imageFormat === "png" ? "png" : "jpg";
         const fileName = `IMG_${Date.now()}.${ext}`;
-        await executeUpload(photo.uri, fileName, "image", token);
+        const onWifi = await checkWifi();
+        if (!onWifi) {
+          Alert.alert("WiFi Only", "Photo captured but not uploaded — connect to WiFi to upload.");
+          return;
+        }
+        const confirmed = await confirmUpload();
+        if (confirmed) {
+          await executeUpload(photo.uri, fileName, "image", token);
+        }
       }
     } catch (err: any) {
       Alert.alert("Capture Failed", err?.message ?? "Could not take photo.");
     } finally {
       setIsBusy(false);
     }
-  }, [isBusy, captureScale, settings.imageFormat, executeUpload, token]);
+  }, [isBusy, captureScale, settings.imageFormat, executeUpload, token, checkWifi, confirmUpload]);
 
   const handleVideoToggle = useCallback(async () => {
     if (isBusy) return;
@@ -149,7 +189,15 @@ export default function CameraScreen() {
         setRecordSeconds(0);
         if (video?.uri) {
           const fileName = `VID_${Date.now()}.${settings.videoFormat}`;
-          await executeUpload(video.uri, fileName, "video", token);
+          const onWifi = await checkWifi();
+          if (!onWifi) {
+            Alert.alert("WiFi Only", "Video captured but not uploaded — connect to WiFi to upload.");
+            return;
+          }
+          const confirmed = await confirmUpload();
+          if (confirmed) {
+            await executeUpload(video.uri, fileName, "video", token);
+          }
         }
       }).catch((err: any) => {
         setIsRecording(false);

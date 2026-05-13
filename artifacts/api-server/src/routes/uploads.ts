@@ -5,6 +5,7 @@ import { uploadsTable, cloudConnectionsTable } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
+import { sendPushToUser } from "../lib/pushNotifications.js";
 
 const router = Router();
 
@@ -110,6 +111,16 @@ router.post("/uploads/execute", requireAuth, upload.single("file"), async (req, 
         status: finalStatus,
         error: errorMsg || null,
       }).where(eq(uploadsTable.id, uploadRecord.id));
+    }
+
+    // Push notification — fire and forget, never block the response
+    if (uploadRecord?.userId) {
+      const destination = connections[0]?.name ?? connections[0]?.type ?? "cloud";
+      if (finalStatus === "done" || finalStatus === "partial") {
+        sendPushToUser(uploadRecord.userId, { type: "upload_done", fileName, destination }).catch(() => {});
+      } else if (finalStatus === "failed") {
+        sendPushToUser(uploadRecord.userId, { type: "upload_failed", fileName }).catch(() => {});
+      }
     }
 
     res.json({
