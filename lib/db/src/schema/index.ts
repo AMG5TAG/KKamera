@@ -4,3 +4,4 @@ export * from "./referrals";
 export * from "./cloudConnections";
 export * from "./uploads";
 export * from "./feedback";
+export * from "./pushSubscriptions";

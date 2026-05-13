@@ -14,43 +14,119 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { setBaseUrl } from "@workspace/api-client-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { UploadProvider } from "@/contexts/UploadContext";
 import { SettingsProvider } from "@/contexts/SettingsContext";
 import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
 
-if (process.env["EXPO_PUBLIC_DOMAIN"]) {
-  setBaseUrl(`https://${process.env["EXPO_PUBLIC_DOMAIN"]}`);
+const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
+  ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
+  : "";
+
+if (BASE_URL) {
+  setBaseUrl(BASE_URL);
 }
 
 if (Platform.OS !== "web") {
   SplashScreen.preventAutoHideAsync().catch(() => {});
-  try {
-    initializeRevenueCat();
-  } catch (err: any) {
-    Alert.alert("Purchases Unavailable", err?.message ?? "Could not initialise purchases.");
-  }
+  initializeRevenueCat();
 } else {
   SplashScreen.hideAsync().catch(() => {});
-  // Register service worker for PWA offline support
-  if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker
-        .register("/pwabuilder-sw.js", { scope: "/" })
-        .then(() => {
-          // Notify SW to register background sync when app is ready
-          navigator.serviceWorker.ready.then((reg) => {
-            if ("periodicSync" in reg) {
-              (reg as any).periodicSync
-                .register("kkamera-periodic-upload", { minInterval: 15 * 60 * 1000 })
-                .catch(() => {});
-            }
-          });
-        })
-        .catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// PWA service worker + push subscription (web only)
+// ---------------------------------------------------------------------------
+async function registerPushSubscription(token: string) {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+  try {
+    // Fetch the server's VAPID public key
+    const resp = await fetch(`${BASE_URL}/api/push/vapid-key`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
+    if (!resp.ok) return;
+    const { publicKey } = await resp.json() as { publicKey: string };
+
+    const reg = await navigator.serviceWorker.ready;
+
+    // Check if already subscribed
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      // Convert base64url VAPID public key to Uint8Array
+      const padding = "=".repeat((4 - (publicKey.length % 4)) % 4);
+      const base64 = (publicKey + padding).replace(/-/g, "+").replace(/_/g, "/");
+      const rawKey = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: rawKey,
+      });
+    }
+
+    // Send subscription to server
+    const subJson = sub.toJSON() as { endpoint: string; keys: { p256dh: string; auth: string } };
+    await fetch(`${BASE_URL}/api/push/subscribe`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        endpoint: subJson.endpoint,
+        keys: subJson.keys,
+      }),
+    });
+  } catch {
+    // Push subscription is best-effort — ignore all errors
   }
 }
+
+async function registerServiceWorker(token: string | null) {
+  if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+
+  try {
+    await navigator.serviceWorker.register("/pwabuilder-sw.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+
+    // Register periodic background sync
+    const reg = await navigator.serviceWorker.ready;
+    if ("periodicSync" in reg) {
+      (reg as any).periodicSync
+        .register("kkamera-periodic-upload", { minInterval: 15 * 60 * 1000 })
+        .catch(() => {});
+    }
+
+    // Request push permission if we have a token
+    if (token && "Notification" in window && Notification.permission === "default") {
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        await registerPushSubscription(token);
+      }
+    } else if (token && "Notification" in window && Notification.permission === "granted") {
+      await registerPushSubscription(token);
+    }
+  } catch {
+    // SW registration is best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inner layout that has access to auth context for the token
+// ---------------------------------------------------------------------------
+function AppWithPush({ children }: { children: React.ReactNode }) {
+  const { token, isAuthenticated } = useAuth();
+
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      registerServiceWorker(token);
+    }
+  }, [isAuthenticated, token]);
+
+  return <>{children}</>;
+}
+
+// ---------------------------------------------------------------------------
 
 const queryClient = new QueryClient();
 
@@ -105,9 +181,11 @@ export default function RootLayout() {
             <SettingsProvider>
               <UploadProvider>
                 <SubscriptionProvider>
-                  <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
-                    <RootLayoutNav />
-                  </GestureHandlerRootView>
+                  <AppWithPush>
+                    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
+                      <RootLayoutNav />
+                    </GestureHandlerRootView>
+                  </AppWithPush>
                 </SubscriptionProvider>
               </UploadProvider>
             </SettingsProvider>

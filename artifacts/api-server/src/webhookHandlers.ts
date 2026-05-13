@@ -3,6 +3,17 @@ import { db } from "@workspace/db";
 import { subscriptionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./lib/logger.js";
+import { sendPushToUser } from "./lib/pushNotifications.js";
+
+/** Look up userId from a Stripe customerId */
+async function getUserIdForCustomer(customerId: string): Promise<number | null> {
+  const [sub] = await db
+    .select({ userId: subscriptionsTable.userId })
+    .from(subscriptionsTable)
+    .where(eq(subscriptionsTable.stripeCustomerId, customerId))
+    .limit(1);
+  return sub?.userId ?? null;
+}
 
 export class WebhookHandlers {
   static async processWebhook(payload: Buffer, signature: string): Promise<void> {
@@ -72,6 +83,24 @@ export class WebhookHandlers {
           .set({ status: "expired" })
           .where(eq(subscriptionsTable.stripeCustomerId, customerId));
         logger.info({ customerId }, "Subscription expired");
+        // Push: notify user their subscription expired
+        const userId = await getUserIdForCustomer(customerId);
+        if (userId) {
+          await sendPushToUser(userId, { type: "trial_expired" }).catch(() => {});
+        }
+        break;
+      }
+
+      case "customer.subscription.trial_will_end": {
+        // Sent 3 days before trial ends
+        const customerId = obj.customer as string;
+        const trialEnd = obj.trial_end as number;
+        const daysLeft = Math.ceil((trialEnd * 1000 - Date.now()) / 86_400_000);
+        const userId = await getUserIdForCustomer(customerId);
+        if (userId) {
+          await sendPushToUser(userId, { type: "trial_ending", daysLeft }).catch(() => {});
+        }
+        logger.info({ customerId, daysLeft }, "Trial ending push sent");
         break;
       }
 
@@ -81,6 +110,10 @@ export class WebhookHandlers {
           .set({ status: "past_due" })
           .where(eq(subscriptionsTable.stripeCustomerId, customerId));
         logger.info({ customerId }, "Subscription payment failed");
+        const userId = await getUserIdForCustomer(customerId);
+        if (userId) {
+          await sendPushToUser(userId, { type: "payment_failed" }).catch(() => {});
+        }
         break;
       }
 
@@ -94,6 +127,13 @@ export class WebhookHandlers {
             .set({ status: "active", ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}) })
             .where(eq(subscriptionsTable.stripeCustomerId, customerId));
           logger.info({ customerId }, "Subscription renewed");
+          const userId = await getUserIdForCustomer(customerId);
+          if (userId && periodEnd) {
+            await sendPushToUser(userId, {
+              type: "subscription_renewed",
+              renewalDate: periodEnd.toLocaleDateString(),
+            }).catch(() => {});
+          }
         }
         break;
       }

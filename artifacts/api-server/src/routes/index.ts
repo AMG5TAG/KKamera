@@ -8,6 +8,7 @@ import cloudConnectionsRouter from "./cloudConnections.js";
 import uploadsRouter from "./uploads.js";
 import feedbackRouter from "./feedback.js";
 import oauthRouter from "./oauth.js";
+import pushRouter from "./push.js";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(cloudConnectionsRouter);
 router.use(uploadsRouter);
 router.use(feedbackRouter);
 router.use(oauthRouter);
+router.use(pushRouter);
 
 export default router;
