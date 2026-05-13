@@ -1,7 +1,7 @@
 // KKamera Progressive Web App Service Worker
 // Supports: Background Sync, Periodic Background Sync, Web Push Notifications, Offline Cache
 
-const CACHE_NAME = "kkamera-v2";
+const CACHE_NAME = "kkamera-v3";
 const OFFLINE_URL = "/";
 
 // Assets to cache immediately on install
