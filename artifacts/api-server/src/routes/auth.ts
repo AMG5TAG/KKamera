@@ -7,6 +7,7 @@ import { db } from "@workspace/db";
 import { usersTable, subscriptionsTable, referralsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
+import { sendEmail, welcomeEmail } from "../lib/email.js";
 
 const router = Router();
 
@@ -91,6 +92,11 @@ router.post("/auth/register", async (req, res) => {
     }
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "30d" });
+
+    // Send welcome email — fire and forget, never block the response
+    const welcome = welcomeEmail(name);
+    sendEmail({ to: email, ...welcome }).catch(() => {});
+
     res.status(201).json({
       token,
       user: { id: user.id, email: user.email, name: user.name, referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled, createdAt: user.createdAt.toISOString() },

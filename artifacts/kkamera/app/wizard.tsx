@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  TextInput, Platform, Alert, Image,
+  TextInput, Platform, Alert, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
+import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useAuth } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
@@ -15,11 +16,11 @@ const BG = "#0d0b08";
 const CARD = "#1a1710";
 
 const STEPS = [
-  { id: 0, title: "Welcome to KKamera", icon: "camera" },
+  { id: 0, title: "Your Profile", icon: "person" },
   { id: 1, title: "Connect Your Storage", icon: "cloud-upload" },
-  { id: 2, title: "Your 14-Day Trial", icon: "time" },
-  { id: 3, title: "Refer & Earn Free Years", icon: "people" },
-  { id: 4, title: "Secure Your Account", icon: "shield-checkmark" },
+  { id: 2, title: "Allow Permissions", icon: "shield-checkmark" },
+  { id: 3, title: "Your 14-Day Trial", icon: "time" },
+  { id: 4, title: "Refer & Earn Free Years", icon: "people" },
   { id: 5, title: "You're All Set!", icon: "checkmark-circle" },
 ];
 
@@ -33,14 +34,41 @@ const CLOUD_OPTIONS = [
 
 export default function WizardScreen() {
   const insets = useSafeAreaInsets();
-  const { user, completeWizard } = useAuth();
+  const { user, completeWizard, token, updateUser } = useAuth();
   const [step, setStep] = useState(0);
   const [selectedStorage, setSelectedStorage] = useState<string | null>(null);
+  const [profileName, setProfileName] = useState(user?.name ?? "");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [micPermission, requestMicPermission] = useMicrophonePermissions();
 
   const isLast = step === STEPS.length - 1;
 
-  const goNext = () => {
+  const saveProfile = async () => {
+    const trimmed = profileName.trim();
+    if (!trimmed || trimmed === user?.name) return;
+    setIsSavingProfile(true);
+    try {
+      const res = await fetch("/api/users/me", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        updateUser(updated);
+      }
+    } catch { /* ignore */ }
+    setIsSavingProfile(false);
+  };
+
+  const goNext = async () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (step === 0) await saveProfile();
     if (isLast) {
       completeWizard().then(() => router.replace("/camera"));
     } else {
@@ -56,6 +84,11 @@ export default function WizardScreen() {
   const skipWizard = () => {
     completeWizard().then(() => router.replace("/camera"));
   };
+
+  const permissionGranted = (perm: { granted: boolean } | null) => perm?.granted === true;
+  const cameraGranted = permissionGranted(cameraPermission);
+  const micGranted = permissionGranted(micPermission);
+  const allPermsGranted = cameraGranted && micGranted;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -77,30 +110,41 @@ export default function WizardScreen() {
       </View>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.contentPad} showsVerticalScrollIndicator={false}>
-        {/* Step icon */}
         <View style={styles.iconWrap}>
           <Ionicons name={(STEPS[step]?.icon ?? "camera") as any} size={56} color={PRIMARY} />
         </View>
         <Text style={styles.stepTitle}>{STEPS[step]?.title}</Text>
 
-        {/* Step 0: Welcome */}
+        {/* Step 0: Profile */}
         {step === 0 && (
           <View>
             <Text style={styles.bodyText}>
-              KKamera captures your photos and videos and instantly uploads them directly to your cloud or storage account — leaving no trace on your device.
+              Let's personalise your KKamera experience. What should we call you?
             </Text>
-            <InfoCard icon="cloud-done-outline" text="Zero storage used on your device — everything goes straight to the cloud." />
-            <InfoCard icon="lock-closed-outline" text="End-to-end encrypted transfers keep your memories private." />
-            <InfoCard icon="wifi-outline" text="Works offline — queues uploads until you're back online." />
-            <InfoCard icon="shield-outline" text="No ads, no data mining. Just your photos, safely delivered." />
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>DISPLAY NAME</Text>
+              <TextInput
+                style={styles.input}
+                value={profileName}
+                onChangeText={setProfileName}
+                placeholder="Your name"
+                placeholderTextColor="#444"
+                autoCapitalize="words"
+                autoCorrect={false}
+                returnKeyType="done"
+                onSubmitEditing={goNext}
+              />
+            </View>
+            <InfoCard icon="person-circle-outline" text="This is how you'll appear in KKamera and your referral code." />
+            <InfoCard icon="lock-closed-outline" text="Your name is only visible to you — never shared with third parties." />
           </View>
         )}
 
-        {/* Step 1: Connect Storage */}
+        {/* Step 1: Cloud storage */}
         {step === 1 && (
           <View>
             <Text style={styles.bodyText}>
-              Choose where your photos and videos will be saved. You can connect multiple accounts and upload to all of them simultaneously.
+              Choose where your photos and videos will be saved. Connect multiple accounts to upload to all of them simultaneously.
             </Text>
             {CLOUD_OPTIONS.map(opt => (
               <TouchableOpacity
@@ -113,17 +157,49 @@ export default function WizardScreen() {
                   <Text style={styles.storageLabel}>{opt.label}</Text>
                   <Text style={styles.storageDesc}>{opt.desc}</Text>
                 </View>
-                {selectedStorage === opt.type && (
-                  <Ionicons name="checkmark-circle" size={22} color={PRIMARY} />
-                )}
+                {selectedStorage === opt.type && <Ionicons name="checkmark-circle" size={22} color={PRIMARY} />}
               </TouchableOpacity>
             ))}
-            <Text style={styles.footnote}>? You can add and manage multiple connections in Settings → Cloud Storage at any time.</Text>
+            <InfoCard icon="information-circle-outline" text="You can add and manage multiple connections in Settings → Upload at any time." />
           </View>
         )}
 
-        {/* Step 2: Trial */}
+        {/* Step 2: Permissions */}
         {step === 2 && (
+          <View>
+            <Text style={styles.bodyText}>
+              KKamera needs access to your camera and microphone to capture photos and videos.
+            </Text>
+
+            <PermRow
+              icon="camera-outline"
+              label="Camera"
+              desc="Take photos and videos"
+              granted={cameraGranted}
+              onGrant={requestCameraPermission}
+            />
+            <PermRow
+              icon="mic-outline"
+              label="Microphone"
+              desc="Record audio with videos"
+              granted={micGranted}
+              onGrant={requestMicPermission}
+            />
+
+            {allPermsGranted && (
+              <View style={[styles.infoCard, { borderColor: "#22c55e33", backgroundColor: "rgba(34,197,94,0.06)" }]}>
+                <Ionicons name="checkmark-circle" size={20} color="#22c55e" />
+                <Text style={styles.infoText}>All permissions granted — you're ready to shoot!</Text>
+              </View>
+            )}
+            {!allPermsGranted && (
+              <InfoCard icon="information-circle-outline" text="You can grant these permissions later in your device Settings if you skip now." />
+            )}
+          </View>
+        )}
+
+        {/* Step 3: Trial */}
+        {step === 3 && (
           <View>
             <View style={styles.trialBadge}>
               <Text style={styles.trialDays}>14</Text>
@@ -132,45 +208,27 @@ export default function WizardScreen() {
             <Text style={styles.bodyText}>
               Your 14-day free trial has already started. Enjoy full access to all KKamera features — no credit card required right now.
             </Text>
-            <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during trial." />
+            <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during your trial." />
             <InfoCard icon="calendar-outline" text="After 14 days: just $25/year to continue — less than 7¢ per day." />
             <InfoCard icon="notifications-outline" text="We'll remind you 3 days before your trial ends." />
             <InfoCard icon="close-circle-outline" text="Cancel anytime. No hidden fees, ever." />
           </View>
         )}
 
-        {/* Step 3: Affiliate */}
-        {step === 3 && (
+        {/* Step 4: Affiliate */}
+        {step === 4 && (
           <View>
             <Text style={styles.bodyText}>
               Love KKamera? Share it and earn free subscription years — there's no limit on how many you can earn!
             </Text>
             <View style={styles.referralCard}>
               <Text style={styles.referralTitle}>Your Referral Code</Text>
-              <Text style={styles.referralCode}>{user?.referralCode ?? "LOADING..."}</Text>
-              <Text style={styles.referralSub}>Share this code. Tap to copy.</Text>
+              <Text style={styles.referralCode}>{user?.referralCode ?? "—"}</Text>
+              <Text style={styles.referralSub}>Share this code with friends.</Text>
             </View>
             <InfoCard icon="people-outline" text="Every 5 friends who sign up with your code = 1 FREE year." />
             <InfoCard icon="infinite-outline" text="No limit — 25 referrals = 5 years free!" />
-            <InfoCard icon="stats-chart-outline" text="Track your referrals in Settings → Refer & Earn." />
-            <Text style={styles.footnote}>? Friends must complete signup and start their trial for the referral to count.</Text>
-          </View>
-        )}
-
-        {/* Step 4: 2FA */}
-        {step === 4 && (
-          <View>
-            <Text style={styles.bodyText}>
-              Add an extra layer of security with Two-Factor Authentication. This is optional but highly recommended.
-            </Text>
-            <InfoCard icon="shield-checkmark-outline" text="2FA protects your account even if your password is compromised." />
-            <InfoCard icon="phone-portrait-outline" text="Uses any authenticator app like Google Authenticator or Authy." />
-            <InfoCard icon="key-outline" text="You'll receive backup codes to keep in a safe place." />
-            <TouchableOpacity style={styles.setup2FABtn} onPress={() => router.push("/settings/security")}>
-              <Ionicons name="shield-checkmark-outline" size={20} color="white" />
-              <Text style={styles.setup2FAText}>Set Up 2FA Now (Optional)</Text>
-            </TouchableOpacity>
-            <Text style={styles.footnote}>? You can always set this up later in Settings → Security.</Text>
+            <InfoCard icon="stats-chart-outline" text="Track your referrals in Settings → Subscription → Refer & Earn." />
           </View>
         )}
 
@@ -181,7 +239,7 @@ export default function WizardScreen() {
               You're all set! KKamera is ready to capture and protect your memories. Tap the shutter and your photos will be securely uploaded straight to your cloud storage.
             </Text>
             <InfoCard icon="camera-outline" text="Point, shoot, done — your photos are already in the cloud." />
-            <InfoCard icon="help-circle-outline" text="Look for ? icons throughout the app for helpful tips." />
+            <InfoCard icon="cloud-upload-outline" text="Tap the upload badge on the camera screen to view upload history." />
             <InfoCard icon="settings-outline" text="Customise camera formats, upload preferences and more in Settings." />
           </View>
         )}
@@ -189,9 +247,17 @@ export default function WizardScreen() {
 
       {/* Footer */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-        <TouchableOpacity style={styles.nextBtn} onPress={goNext}>
-          <Text style={styles.nextText}>{isLast ? "Start Using KKamera" : step === 4 ? "Skip 2FA for Now" : "Continue"}</Text>
-          <Ionicons name="arrow-forward" size={18} color="white" />
+        <TouchableOpacity style={[styles.nextBtn, isSavingProfile && { opacity: 0.7 }]} onPress={goNext} disabled={isSavingProfile}>
+          {isSavingProfile ? (
+            <ActivityIndicator color="white" />
+          ) : (
+            <>
+              <Text style={styles.nextText}>
+                {isLast ? "Start Using KKamera" : step === 2 && !allPermsGranted ? "Continue Without Permissions" : "Continue"}
+              </Text>
+              <Ionicons name="arrow-forward" size={18} color="white" />
+            </>
+          )}
         </TouchableOpacity>
       </View>
     </View>
@@ -207,6 +273,32 @@ function InfoCard({ icon, text }: { icon: string; text: string }) {
   );
 }
 
+function PermRow({ icon, label, desc, granted, onGrant }: {
+  icon: string; label: string; desc: string; granted: boolean; onGrant: () => void;
+}) {
+  return (
+    <View style={styles.permRow}>
+      <View style={styles.permIcon}>
+        <Ionicons name={icon as any} size={22} color={granted ? "#22c55e" : PRIMARY} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.permLabel}>{label}</Text>
+        <Text style={styles.permDesc}>{desc}</Text>
+      </View>
+      {granted ? (
+        <View style={styles.permGrantedBadge}>
+          <Ionicons name="checkmark" size={14} color="#22c55e" />
+          <Text style={styles.permGrantedText}>Granted</Text>
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.permBtn} onPress={onGrant}>
+          <Text style={styles.permBtnText}>Allow</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 12 },
@@ -218,27 +310,73 @@ const styles = StyleSheet.create({
   skipText: { color: SECONDARY, fontSize: 14, fontFamily: "Inter_500Medium" },
   content: { flex: 1 },
   contentPad: { paddingHorizontal: 24, paddingBottom: 20 },
-  iconWrap: { width: 96, height: 96, borderRadius: 48, backgroundColor: "rgba(177,152,112,0.12)", alignItems: "center", justifyContent: "center", alignSelf: "center", marginBottom: 20, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
+  iconWrap: {
+    width: 96, height: 96, borderRadius: 48,
+    backgroundColor: "rgba(177,152,112,0.12)", alignItems: "center", justifyContent: "center",
+    alignSelf: "center", marginBottom: 20,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",
+  },
   stepTitle: { fontSize: 26, fontFamily: "Inter_700Bold", color: "white", textAlign: "center", marginBottom: 16 },
   bodyText: { fontSize: 15, lineHeight: 22, color: "#ccc", fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 20 },
-  infoCard: { flexDirection: "row", alignItems: "flex-start", gap: 12, backgroundColor: CARD, borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "rgba(177,152,112,0.15)" },
+  inputGroup: { marginBottom: 16 },
+  inputLabel: { fontSize: 11, color: "#666", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, marginBottom: 8 },
+  input: {
+    backgroundColor: CARD, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14,
+    fontSize: 17, fontFamily: "Inter_400Regular", color: "white",
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.25)",
+  },
+  infoCard: {
+    flexDirection: "row", alignItems: "flex-start", gap: 12,
+    backgroundColor: CARD, borderRadius: 12, padding: 14, marginBottom: 10,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.15)",
+  },
   infoText: { flex: 1, fontSize: 14, lineHeight: 20, color: "#ccc", fontFamily: "Inter_400Regular" },
-  storageOption: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: CARD, borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)" },
+  storageOption: {
+    flexDirection: "row", alignItems: "center", gap: 14,
+    backgroundColor: CARD, borderRadius: 12, padding: 14, marginBottom: 10,
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
+  },
   storageOptionSelected: { borderColor: PRIMARY, backgroundColor: "rgba(177,152,112,0.1)" },
   storageText: { flex: 1 },
   storageLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
   storageDesc: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular" },
-  trialBadge: { alignSelf: "center", alignItems: "center", marginBottom: 20, backgroundColor: "rgba(177,152,112,0.15)", borderRadius: 20, paddingHorizontal: 32, paddingVertical: 20, borderWidth: 1, borderColor: PRIMARY },
+  permRow: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    backgroundColor: CARD, borderRadius: 14, padding: 14, marginBottom: 10,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.15)",
+  },
+  permIcon: {
+    width: 44, height: 44, borderRadius: 12,
+    backgroundColor: "rgba(177,152,112,0.1)", alignItems: "center", justifyContent: "center",
+  },
+  permLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
+  permDesc: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular" },
+  permGrantedBadge: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    backgroundColor: "rgba(34,197,94,0.12)", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20,
+  },
+  permGrantedText: { fontSize: 12, color: "#22c55e", fontFamily: "Inter_600SemiBold" },
+  permBtn: { backgroundColor: PRIMARY, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20 },
+  permBtnText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "white" },
+  trialBadge: {
+    alignSelf: "center", alignItems: "center", marginBottom: 20,
+    backgroundColor: "rgba(177,152,112,0.15)", borderRadius: 20,
+    paddingHorizontal: 32, paddingVertical: 20, borderWidth: 1, borderColor: PRIMARY,
+  },
   trialDays: { fontSize: 56, fontFamily: "Inter_700Bold", color: PRIMARY, lineHeight: 60 },
   trialLabel: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: SECONDARY },
-  referralCard: { alignItems: "center", backgroundColor: CARD, borderRadius: 16, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
+  referralCard: {
+    alignItems: "center", backgroundColor: CARD, borderRadius: 16,
+    padding: 20, marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",
+  },
   referralTitle: { fontSize: 12, color: "#888", fontFamily: "Inter_500Medium", letterSpacing: 1, marginBottom: 8, textTransform: "uppercase" },
   referralCode: { fontSize: 32, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 3, marginBottom: 6 },
   referralSub: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
-  setup2FABtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 14, marginVertical: 16 },
-  setup2FAText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
-  footnote: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 8, lineHeight: 18 },
   footer: { paddingHorizontal: 24, paddingTop: 12, backgroundColor: BG },
-  nextBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 16, paddingVertical: 16 },
+  nextBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
+    backgroundColor: PRIMARY, borderRadius: 16, paddingVertical: 16,
+    minHeight: 56,
+  },
   nextText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
 });

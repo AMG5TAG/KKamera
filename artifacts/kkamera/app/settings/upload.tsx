@@ -81,6 +81,16 @@ export default function UploadScreen() {
           />
         </View>
 
+        <Text style={styles.sectionLabel}>History</Text>
+        <View style={styles.card}>
+          <SettingRow
+            icon="time-outline"
+            label="Upload History"
+            hint="View and manage past uploads"
+            onPress={() => router.push("/history")}
+          />
+        </View>
+
         <Text style={styles.sectionLabel}>Behaviour</Text>
         <View style={styles.card}>
           <ToggleRow
