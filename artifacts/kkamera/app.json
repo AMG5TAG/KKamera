@@ -1,0 +1,73 @@
+{
+  "expo": {
+    "name": "KKamera",
+    "slug": "kkamera",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "kkamera",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0d0b08"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.kkamera",
+      "infoPlist": {
+        "NSCameraUsageDescription": "KKamera uses the camera to capture photos and videos for direct cloud upload.",
+        "NSMicrophoneUsageDescription": "KKamera uses the microphone to record audio with your videos.",
+        "NSPhotoLibraryUsageDescription": "KKamera can access your photo library to upload existing photos.",
+        "NSPhotoLibraryAddUsageDescription": "KKamera saves captured photos to your photo library.",
+        "NSLocationWhenInUseUsageDescription": "KKamera can embed location data in your photos."
+      }
+    },
+    "android": {
+      "package": "app.kkamera",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png",
+      "bundler": "metro",
+      "output": "single",
+      "backgroundColor": "#0d0b08"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "KKamera uses the camera to capture photos and videos for direct cloud upload.",
+          "microphonePermission": "KKamera uses the microphone to record audio with your videos.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "KKamera can embed GPS location in your photos."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "KKamera",
+  "short_name": "KKamera",
+  "description": "Cloud-based camera app — upload photos and videos directly to your cloud storage",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0b08",
+  "theme_color": "#b19870",
+  "orientation": "portrait",
+  "scope": "/",
+  "lang": "en",
+  "categories": ["photography", "utilities"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "related_applications": [
+    {
+      "platform": "play",
+      "url": "https://play.google.com/store/apps/details?id=app.kkamera"
+    },
+    {
+      "platform": "itunes",
+      "url": "https://apps.apple.com/app/kkamera/id000000000"
+    }
+  ],
+  "prefer_related_applications": false,
+  "shortcuts": [
+    {
+      "name": "Open Camera",
+      "short_name": "Camera",
+      "description": "Launch the KKamera viewfinder",
+      "url": "/camera",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Cloud Storage",
+      "short_name": "Storage",
+      "description": "Manage your cloud connections",
+      "url": "/settings/cloud",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

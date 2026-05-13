@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "KKamera"
+version = "1.0.0"
+id = "artifacts/kkamera"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 24623
+
+[services.development]
+run = "pnpm --filter @workspace/kkamera run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/kkamera", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/kkamera", "run", "serve" ]
+
+[services.env]
+PORT = "24623"
+BASE_PATH = "/"

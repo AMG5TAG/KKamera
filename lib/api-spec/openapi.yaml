@@ -1,22 +1,27 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: KKamera API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: auth
+  - name: users
+  - name: subscriptions
+  - name: affiliates
+  - name: cloud-connections
+  - name: uploads
+  - name: feedback
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +29,690 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterInput"
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/2fa/setup:
+    post:
+      operationId: setup2FA
+      tags: [auth]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: 2FA setup info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TwoFASetup"
+
+  /auth/2fa/verify:
+    post:
+      operationId: verify2FA
+      tags: [auth]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TwoFAVerifyInput"
+      responses:
+        "200":
+          description: 2FA verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/2fa/disable:
+    post:
+      operationId: disable2FA
+      tags: [auth]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TwoFAVerifyInput"
+      responses:
+        "200":
+          description: 2FA disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /users/me:
+    get:
+      operationId: getMe
+      tags: [users]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+    patch:
+      operationId: updateMe
+      tags: [users]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /subscriptions/me:
+    get:
+      operationId: getSubscription
+      tags: [subscriptions]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Subscription
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+
+  /subscriptions/trial:
+    post:
+      operationId: startTrial
+      tags: [subscriptions]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Trial started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+
+  /subscriptions/checkout:
+    post:
+      operationId: createCheckout
+      tags: [subscriptions]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Checkout session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckoutSession"
+
+  /subscriptions/cancel:
+    post:
+      operationId: cancelSubscription
+      tags: [subscriptions]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /affiliates/me:
+    get:
+      operationId: getAffiliateStats
+      tags: [affiliates]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Affiliate stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AffiliateStats"
+
+  /affiliates/referrals:
+    get:
+      operationId: getReferrals
+      tags: [affiliates]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of referrals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Referral"
+
+  /cloud-connections:
+    get:
+      operationId: listCloudConnections
+      tags: [cloud-connections]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Cloud connections
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CloudConnection"
+    post:
+      operationId: createCloudConnection
+      tags: [cloud-connections]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloudConnectionInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloudConnection"
+
+  /cloud-connections/{id}:
+    patch:
+      operationId: updateCloudConnection
+      tags: [cloud-connections]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloudConnectionUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloudConnection"
+    delete:
+      operationId: deleteCloudConnection
+      tags: [cloud-connections]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /cloud-connections/{id}/test:
+    post:
+      operationId: testCloudConnection
+      tags: [cloud-connections]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestResult"
+
+  /uploads:
+    get:
+      operationId: listUploads
+      tags: [uploads]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Upload queue
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UploadItem"
+    post:
+      operationId: createUpload
+      tags: [uploads]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadItem"
+
+  /uploads/{id}:
+    patch:
+      operationId: updateUpload
+      tags: [uploads]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadItem"
+    delete:
+      operationId: deleteUpload
+      tags: [uploads]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /feedback:
+    post:
+      operationId: submitFeedback
+      tags: [feedback]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackInput"
+      responses:
+        "201":
+          description: Submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    RegisterInput:
+      type: object
+      required: [email, password, name]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        name:
+          type: string
+        referralCode:
+          type: ["string", "null"]
+
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        totpCode:
+          type: ["string", "null"]
+
+    AuthResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+
+    User:
+      type: object
+      required: [id, email, name, referralCode, twoFAEnabled, createdAt]
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+        referralCode:
+          type: string
+        twoFAEnabled:
+          type: boolean
+        createdAt:
+          type: string
+
+    UserUpdate:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        email:
+          type: ["string", "null"]
+
+    TwoFASetup:
+      type: object
+      required: [secret, qrCodeUrl, backupCodes]
+      properties:
+        secret:
+          type: string
+        qrCodeUrl:
+          type: string
+        backupCodes:
+          type: array
+          items:
+            type: string
+
+    TwoFAVerifyInput:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+
+    Subscription:
+      type: object
+      required: [id, userId, status, createdAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        status:
+          type: string
+          enum: [trial, active, cancelled, expired, none]
+        trialEnd:
+          type: ["string", "null"]
+        currentPeriodEnd:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    CheckoutSession:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+
+    AffiliateStats:
+      type: object
+      required: [referralCode, totalReferrals, completedReferrals, yearsEarned]
+      properties:
+        referralCode:
+          type: string
+        totalReferrals:
+          type: integer
+        completedReferrals:
+          type: integer
+        yearsEarned:
+          type: integer
+
+    Referral:
+      type: object
+      required: [id, referredName, status, createdAt]
+      properties:
+        id:
+          type: integer
+        referredName:
+          type: string
+        status:
+          type: string
+          enum: [pending, completed]
+        createdAt:
+          type: string
+
+    CloudConnection:
+      type: object
+      required: [id, userId, type, name, active, createdAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        type:
+          type: string
+          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+        name:
+          type: string
+        active:
+          type: boolean
+        uploadPath:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    CloudConnectionInput:
+      type: object
+      required: [type, name]
+      properties:
+        type:
+          type: string
+          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+        name:
+          type: string
+        host:
+          type: ["string", "null"]
+        port:
+          type: ["integer", "null"]
+        username:
+          type: ["string", "null"]
+        password:
+          type: ["string", "null"]
+        uploadPath:
+          type: ["string", "null"]
+        oauthCode:
+          type: ["string", "null"]
+
+    CloudConnectionUpdate:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        active:
+          type: ["boolean", "null"]
+        uploadPath:
+          type: ["string", "null"]
+        host:
+          type: ["string", "null"]
+        port:
+          type: ["integer", "null"]
+        username:
+          type: ["string", "null"]
+        password:
+          type: ["string", "null"]
+
+    TestResult:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    UploadItem:
+      type: object
+      required: [id, userId, fileName, fileType, status, createdAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        fileName:
+          type: string
+        fileType:
+          type: string
+        status:
+          type: string
+          enum: [pending, uploading, done, failed]
+        connectionIds:
+          type: ["string", "null"]
+        error:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    UploadInput:
+      type: object
+      required: [fileName, fileType]
+      properties:
+        fileName:
+          type: string
+        fileType:
+          type: string
+        connectionIds:
+          type: ["string", "null"]
+
+    UploadUpdate:
+      type: object
+      properties:
+        status:
+          type: ["string", "null"]
+        error:
+          type: ["string", "null"]
+
+    FeedbackInput:
+      type: object
+      required: [type, message]
+      properties:
+        type:
+          type: string
+          enum: [bug, feature, other]
+        message:
+          type: string
