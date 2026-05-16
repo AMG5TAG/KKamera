@@ -1,11 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   Alert, ActivityIndicator, RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useNavigation } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListUploads, useDeleteUpload, getListUploadsQueryKey,
@@ -19,12 +19,12 @@ const CARD = "#1a1710";
 type UploadStatus = "pending" | "uploading" | "done" | "failed" | "queued" | "partial";
 
 const STATUS_CONFIG: Record<UploadStatus, { color: string; icon: string; label: string }> = {
-  done: { color: "#22c55e", icon: "cloud-done-outline", label: "Uploaded" },
-  uploading: { color: PRIMARY, icon: "cloud-upload-outline", label: "Uploading…" },
-  partial: { color: "#f59e0b", icon: "cloud-outline", label: "Partial" },
-  failed: { color: "#ef4444", icon: "cloud-offline-outline", label: "Failed" },
-  queued: { color: "#6b7280", icon: "time-outline", label: "Queued" },
-  pending: { color: "#6b7280", icon: "ellipsis-horizontal-outline", label: "Pending" },
+  done:      { color: "#22c55e", icon: "cloud-done-outline",     label: "Uploaded"   },
+  uploading: { color: PRIMARY,   icon: "cloud-upload-outline",   label: "Uploading…" },
+  partial:   { color: "#f59e0b", icon: "cloud-outline",          label: "Partial"    },
+  failed:    { color: "#ef4444", icon: "cloud-offline-outline",  label: "Failed"     },
+  queued:    { color: "#6b7280", icon: "time-outline",           label: "Queued"     },
+  pending:   { color: "#6b7280", icon: "ellipsis-horizontal-outline", label: "Pending" },
 };
 
 function formatDate(iso: string) {
@@ -48,6 +48,7 @@ function fileIcon(fileType: string, fileName: string) {
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
   const queryClient = useQueryClient();
   const { settings } = useSettings();
   const { data: uploads, isLoading, refetch, isRefetching } = useListUploads();
@@ -76,7 +77,7 @@ export default function HistoryScreen() {
     ]);
   };
 
-  const handleClearAll = () => {
+  const handleClearAll = useCallback(() => {
     if (sorted.length === 0) return;
     Alert.alert(
       "Clear All History",
@@ -100,23 +101,40 @@ export default function HistoryScreen() {
         },
       ]
     );
-  };
+  }, [sorted.length, queryClient]);
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: sorted.length > 0 ? () => (
+        <TouchableOpacity
+          onPress={handleClearAll}
+          disabled={isClearing}
+          style={styles.clearAllBtn}
+        >
+          {isClearing
+            ? <ActivityIndicator size="small" color="#ef4444" />
+            : (
+              <>
+                <Ionicons name="trash-outline" size={15} color="#ef4444" />
+                <Text style={styles.clearAllText}>Clear All</Text>
+              </>
+            )
+          }
+        </TouchableOpacity>
+      ) : undefined,
+    });
+  }, [sorted.length, isClearing, handleClearAll, navigation]);
 
   if (!settings.recordHistory) {
     return (
       <View style={[styles.container, { paddingBottom: insets.bottom }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-          <Text style={styles.backBtnText}>Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.heading}>Upload History</Text>
         <View style={styles.center}>
           <Ionicons name="eye-off-outline" size={48} color="#333" />
           <Text style={styles.emptyTitle}>History is disabled</Text>
           <Text style={styles.emptyText}>
             Enable "Record History" in Settings → Upload to start tracking uploads.
           </Text>
-          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload")}>
+          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload" as any)}>
             <Text style={styles.settingsBtnText}>Open Upload Settings</Text>
           </TouchableOpacity>
         </View>
@@ -146,7 +164,11 @@ export default function HistoryScreen() {
             <Text style={styles.errorText} numberOfLines={2}>{item.error}</Text>
           )}
         </View>
-        <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item.id, item.fileName)} disabled={isDeleting}>
+        <TouchableOpacity
+          style={styles.deleteBtn}
+          onPress={() => handleDelete(item.id, item.fileName)}
+          disabled={isDeleting}
+        >
           {isDeleting
             ? <ActivityIndicator size="small" color="#ef4444" />
             : <Ionicons name="trash-outline" size={18} color="#ef4444" />
@@ -158,27 +180,6 @@ export default function HistoryScreen() {
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
-      <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-          <Text style={styles.backBtnText}>Back</Text>
-        </TouchableOpacity>
-        {sorted.length > 0 && (
-          <TouchableOpacity style={styles.clearAllBtn} onPress={handleClearAll} disabled={isClearing}>
-            {isClearing
-              ? <ActivityIndicator size="small" color="#ef4444" />
-              : (
-                <>
-                  <Ionicons name="trash-outline" size={16} color="#ef4444" />
-                  <Text style={styles.clearAllText}>Clear All</Text>
-                </>
-              )
-            }
-          </TouchableOpacity>
-        )}
-      </View>
-      <Text style={styles.heading}>Upload History</Text>
-
       {isLoading ? (
         <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
       ) : (
@@ -195,7 +196,7 @@ export default function HistoryScreen() {
               <Ionicons name="cloud-upload-outline" size={52} color="#333" />
               <Text style={styles.emptyTitle}>No uploads yet</Text>
               <Text style={styles.emptyText}>Photos, videos, and scans you upload will appear here.</Text>
-              <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera")}>
+              <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera" as any)}>
                 <Ionicons name="camera-outline" size={18} color="white" />
                 <Text style={styles.cameraBtnText}>Open Camera</Text>
               </TouchableOpacity>
@@ -210,17 +211,17 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingRight: 16 },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
   clearAllBtn: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: 12, borderWidth: 1, borderColor: "rgba(239,68,68,0.35)",
+    flexDirection: "row", alignItems: "center", gap: 5,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 10, borderWidth: 1, borderColor: "rgba(239,68,68,0.35)",
+    marginRight: 4,
   },
   clearAllText: { fontSize: 13, color: "#ef4444", fontFamily: "Inter_500Medium" },
-  heading: { fontSize: 28, fontFamily: "Inter_700Bold", color: "white", paddingHorizontal: 16, paddingBottom: 4 },
-  countText: { fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 },
+  countText: {
+    fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold",
+    letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8,
+  },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32 },
   card: {
     flexDirection: "row", alignItems: "center", gap: 12,
