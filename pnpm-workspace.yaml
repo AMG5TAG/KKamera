@@ -67,7 +67,7 @@ overrides:
   '@tailwindcss/oxide>@tailwindcss/oxide-linux-x64-musl': '-'
   '@tailwindcss/oxide>@tailwindcss/oxide-win32-arm64-msvc': '-'
   '@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc': '-'
-  brace-expansion@>=2.0.0 <2.0.3: '>=2.0.3'
+  brace-expansion@>=2.0.0 <2.0.3: '2.0.3'
   esbuild: 0.27.3
   esbuild>@esbuild/aix-ppc64: '-'
   esbuild>@esbuild/android-arm: '-'

@@ -155,6 +155,8 @@ function RootLayoutNav() {
       <Stack.Screen name="settings/feedback" options={{ title: "Feedback" }} />
       <Stack.Screen name="settings/privacy" options={{ title: "Privacy Policy" }} />
       <Stack.Screen name="settings/terms" options={{ title: "Terms of Service" }} />
+      <Stack.Screen name="history" options={{ headerShown: false }} />
+      <Stack.Screen name="markup" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
     </Stack>
   );

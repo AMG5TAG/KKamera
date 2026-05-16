@@ -11,6 +11,9 @@ export interface AppSettings {
   flashMode: "off" | "on" | "auto";
   showLevelGuide: boolean;
   mirrorFrontCamera: boolean;
+  photoMarkup: boolean;
+  markupUploadMode: "both" | "marked" | "original";
+  recordHistory: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -23,6 +26,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   flashMode: "auto",
   showLevelGuide: false,
   mirrorFrontCamera: false,
+  photoMarkup: false,
+  markupUploadMode: "both",
+  recordHistory: true,
 };
 
 const SETTINGS_KEY = "kkamera_settings";

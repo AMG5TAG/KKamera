@@ -10,6 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   useListUploads, useDeleteUpload, getListUploadsQueryKey,
 } from "@workspace/api-client-react";
+import { useSettings } from "@/contexts/SettingsContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -28,15 +29,14 @@ const STATUS_CONFIG: Record<UploadStatus, { color: string; icon: string; label: 
 
 function formatDate(iso: string) {
   const d = new Date(iso);
-  const now = new Date();
-  const diffMs = now.getTime() - d.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return "Just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHrs = Math.floor(diffMins / 60);
-  if (diffHrs < 24) return `${diffHrs}h ago`;
-  const diffDays = Math.floor(diffHrs / 24);
-  if (diffDays < 7) return `${diffDays}d ago`;
+  const diffMs = Date.now() - d.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
@@ -49,37 +49,80 @@ function fileIcon(fileType: string, fileName: string) {
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const { settings } = useSettings();
   const { data: uploads, isLoading, refetch, isRefetching } = useListUploads();
   const deleteMutation = useDeleteUpload();
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
 
   const sorted = [...(uploads ?? [])].sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 
   const handleDelete = (id: number, fileName: string) => {
+    Alert.alert("Remove Record", `Remove "${fileName}" from history?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Remove", style: "destructive",
+        onPress: async () => {
+          setDeletingId(id);
+          try {
+            await deleteMutation.mutateAsync({ id });
+            queryClient.invalidateQueries({ queryKey: getListUploadsQueryKey() });
+          } catch { Alert.alert("Error", "Could not remove record."); }
+          finally { setDeletingId(null); }
+        },
+      },
+    ]);
+  };
+
+  const handleClearAll = () => {
+    if (sorted.length === 0) return;
     Alert.alert(
-      "Remove Record",
-      `Remove "${fileName}" from history?`,
+      "Clear All History",
+      `This will permanently delete all ${sorted.length} upload records. This cannot be undone.`,
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Remove", style: "destructive",
+          text: "Clear All", style: "destructive",
           onPress: async () => {
-            setDeletingId(id);
+            setIsClearing(true);
             try {
-              await deleteMutation.mutateAsync({ id });
+              await fetch("/api/uploads", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+              });
               queryClient.invalidateQueries({ queryKey: getListUploadsQueryKey() });
-            } catch {
-              Alert.alert("Error", "Could not remove record.");
-            } finally {
-              setDeletingId(null);
-            }
+            } catch { Alert.alert("Error", "Could not clear history."); }
+            finally { setIsClearing(false); }
           },
         },
       ]
     );
   };
+
+  if (!settings.recordHistory) {
+    return (
+      <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+          <Text style={styles.backBtnText}>Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.heading}>Upload History</Text>
+        <View style={styles.center}>
+          <Ionicons name="eye-off-outline" size={48} color="#333" />
+          <Text style={styles.emptyTitle}>History is disabled</Text>
+          <Text style={styles.emptyText}>
+            Enable "Record History" in Settings → Upload to start tracking uploads.
+          </Text>
+          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload")}>
+            <Text style={styles.settingsBtnText}>Open Upload Settings</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   const renderItem = ({ item }: { item: NonNullable<typeof uploads>[0] }) => {
     const status = (item.status ?? "pending") as UploadStatus;
@@ -91,25 +134,19 @@ export default function HistoryScreen() {
         <View style={[styles.typeIcon, { backgroundColor: cfg.color + "22" }]}>
           <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} />
         </View>
-
         <View style={styles.cardBody}>
           <Text style={styles.fileName} numberOfLines={1}>{item.fileName}</Text>
           <View style={styles.metaRow}>
             <Ionicons name={cfg.icon as any} size={12} color={cfg.color} />
             <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
-            <Text style={styles.dot}>·</Text>
+            <Text style={styles.dotSep}>·</Text>
             <Text style={styles.dateText}>{formatDate(item.createdAt)}</Text>
           </View>
           {item.error && status === "failed" && (
             <Text style={styles.errorText} numberOfLines={2}>{item.error}</Text>
           )}
         </View>
-
-        <TouchableOpacity
-          style={styles.deleteBtn}
-          onPress={() => handleDelete(item.id, item.fileName)}
-          disabled={isDeleting}
-        >
+        <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDelete(item.id, item.fileName)} disabled={isDeleting}>
           {isDeleting
             ? <ActivityIndicator size="small" color="#ef4444" />
             : <Ionicons name="trash-outline" size={18} color="#ef4444" />
@@ -121,45 +158,49 @@ export default function HistoryScreen() {
 
   return (
     <View style={[styles.container, { paddingBottom: insets.bottom }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-        <Text style={styles.backBtnText}>Back</Text>
-      </TouchableOpacity>
-
+      <View style={styles.headerRow}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+          <Text style={styles.backBtnText}>Back</Text>
+        </TouchableOpacity>
+        {sorted.length > 0 && (
+          <TouchableOpacity style={styles.clearAllBtn} onPress={handleClearAll} disabled={isClearing}>
+            {isClearing
+              ? <ActivityIndicator size="small" color="#ef4444" />
+              : (
+                <>
+                  <Ionicons name="trash-outline" size={16} color="#ef4444" />
+                  <Text style={styles.clearAllText}>Clear All</Text>
+                </>
+              )
+            }
+          </TouchableOpacity>
+        )}
+      </View>
       <Text style={styles.heading}>Upload History</Text>
 
       {isLoading ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={PRIMARY} />
-        </View>
+        <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
       ) : (
         <FlatList
           data={sorted}
           keyExtractor={item => String(item.id)}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 40 }}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefetching}
-              onRefresh={refetch}
-              tintColor={PRIMARY}
-            />
-          }
+          refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={PRIMARY} />}
+          ListHeaderComponent={sorted.length > 0 ? (
+            <Text style={styles.countText}>{sorted.length} record{sorted.length !== 1 ? "s" : ""}</Text>
+          ) : null}
           ListEmptyComponent={(
             <View style={styles.emptyWrap}>
               <Ionicons name="cloud-upload-outline" size={52} color="#333" />
               <Text style={styles.emptyTitle}>No uploads yet</Text>
-              <Text style={styles.emptyText}>
-                Photos, videos, and scans you upload will appear here with their status.
-              </Text>
+              <Text style={styles.emptyText}>Photos, videos, and scans you upload will appear here.</Text>
               <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera")}>
                 <Ionicons name="camera-outline" size={18} color="white" />
                 <Text style={styles.cameraBtnText}>Open Camera</Text>
               </TouchableOpacity>
             </View>
           )}
-          ListHeaderComponent={sorted.length > 0 ? (
-            <Text style={styles.countText}>{sorted.length} upload{sorted.length !== 1 ? "s" : ""}</Text>
-          ) : null}
           renderItem={renderItem}
         />
       )}
@@ -169,11 +210,18 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
+  headerRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingRight: 16 },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
   backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
+  clearAllBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, paddingVertical: 6,
+    borderRadius: 12, borderWidth: 1, borderColor: "rgba(239,68,68,0.35)",
+  },
+  clearAllText: { fontSize: 13, color: "#ef4444", fontFamily: "Inter_500Medium" },
   heading: { fontSize: 28, fontFamily: "Inter_700Bold", color: "white", paddingHorizontal: 16, paddingBottom: 4 },
   countText: { fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 },
-  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32 },
   card: {
     flexDirection: "row", alignItems: "center", gap: 12,
     backgroundColor: CARD, borderRadius: 14, padding: 14,
@@ -184,7 +232,7 @@ const styles = StyleSheet.create({
   fileName: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: "white" },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   statusText: { fontSize: 12, fontFamily: "Inter_500Medium" },
-  dot: { color: "#444", fontSize: 12 },
+  dotSep: { color: "#444", fontSize: 12 },
   dateText: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
   errorText: { fontSize: 11, color: "#ef444488", fontFamily: "Inter_400Regular", marginTop: 2 },
   deleteBtn: { padding: 8 },
@@ -196,4 +244,9 @@ const styles = StyleSheet.create({
     backgroundColor: PRIMARY, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 14,
   },
   cameraBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: "white" },
+  settingsBtn: {
+    marginTop: 24, paddingHorizontal: 24, paddingVertical: 12,
+    borderWidth: 1, borderColor: PRIMARY, borderRadius: 14,
+  },
+  settingsBtnText: { color: PRIMARY, fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });

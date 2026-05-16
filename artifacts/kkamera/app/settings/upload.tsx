@@ -17,7 +17,7 @@ function SettingRow({
 }) {
   return (
     <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
-      <View style={[styles.iconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
+      <View style={[styles.iconWrap, { backgroundColor: (iconColor ?? PRIMARY) + "22" }]}>
         <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
       </View>
       <View style={styles.rowBody}>
@@ -37,7 +37,7 @@ function ToggleRow({
 }) {
   return (
     <View style={styles.row}>
-      <View style={[styles.iconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
+      <View style={[styles.iconWrap, { backgroundColor: (iconColor ?? PRIMARY) + "22" }]}>
         <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
       </View>
       <View style={styles.rowBody}>
@@ -47,11 +47,29 @@ function ToggleRow({
       <Switch
         value={value}
         onValueChange={onToggle}
-        trackColor={{ false: "#333", true: PRIMARY + "88" }}
-        thumbColor={value ? PRIMARY : "#666"}
-        ios_backgroundColor="#333"
+        trackColor={{ false: "#2a2720", true: PRIMARY }}
+        thumbColor="white"
+        ios_backgroundColor="#2a2720"
       />
     </View>
+  );
+}
+
+function RadioRow({
+  label, hint, selected, onPress,
+}: {
+  label: string; hint?: string; selected: boolean; onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+      <View style={styles.rowBody}>
+        <Text style={styles.rowLabel}>{label}</Text>
+        {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
+      </View>
+      <View style={[styles.radio, selected && styles.radioActive]}>
+        {selected && <View style={styles.radioDot} />}
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -71,6 +89,7 @@ export default function UploadScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
       >
+        {/* Destinations */}
         <Text style={styles.sectionLabel}>Destinations</Text>
         <View style={styles.card}>
           <SettingRow
@@ -81,16 +100,70 @@ export default function UploadScreen() {
           />
         </View>
 
+        {/* History */}
         <Text style={styles.sectionLabel}>History</Text>
         <View style={styles.card}>
-          <SettingRow
+          <ToggleRow
             icon="time-outline"
-            label="Upload History"
-            hint="View and manage past uploads"
-            onPress={() => router.push("/history")}
+            label="Record Upload History"
+            hint="Track and view past uploads"
+            value={settings.recordHistory}
+            onToggle={v => updateSetting("recordHistory", v)}
           />
+          {settings.recordHistory && (
+            <>
+              <View style={styles.divider} />
+              <SettingRow
+                icon="list-outline"
+                label="View Upload History"
+                hint="Browse and manage past uploads"
+                onPress={() => router.push("/history")}
+              />
+            </>
+          )}
         </View>
 
+        {/* Photo Markup */}
+        <Text style={styles.sectionLabel}>Photo Markup</Text>
+        <View style={styles.card}>
+          <ToggleRow
+            icon="pencil-outline"
+            label="Enable Photo Markup"
+            hint="Annotate photos before uploading"
+            value={settings.photoMarkup}
+            onToggle={v => updateSetting("photoMarkup", v)}
+          />
+          {settings.photoMarkup && (
+            <>
+              <View style={styles.divider} />
+              <View style={styles.subSection}>
+                <Text style={styles.subSectionTitle}>Upload Mode</Text>
+                <RadioRow
+                  label="Upload Both"
+                  hint="Save original and marked-up version"
+                  selected={settings.markupUploadMode === "both"}
+                  onPress={() => updateSetting("markupUploadMode", "both")}
+                />
+                <View style={styles.divider} />
+                <RadioRow
+                  label="Marked Version Only"
+                  hint="Only save the annotated version"
+                  selected={settings.markupUploadMode === "marked"}
+                  onPress={() => updateSetting("markupUploadMode", "marked")}
+                />
+                <View style={styles.divider} />
+                <RadioRow
+                  label="Original Only"
+                  hint="Skip markup, upload original"
+                  selected={settings.markupUploadMode === "original"}
+                  onPress={() => updateSetting("markupUploadMode", "original")}
+                />
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Behaviour */}
         <Text style={styles.sectionLabel}>Behaviour</Text>
         <View style={styles.card}>
           <ToggleRow
@@ -123,17 +196,27 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5, textTransform: "uppercase",
     paddingHorizontal: 4, paddingTop: 18, paddingBottom: 8,
   },
-  card: {
-    backgroundColor: CARD, borderRadius: 16,
-    overflow: "hidden", borderWidth: 1, borderColor: BORDER,
-  },
+  card: { backgroundColor: CARD, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: BORDER },
   divider: { height: 1, backgroundColor: BORDER, marginLeft: 56 },
   row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 13, gap: 12 },
   iconWrap: {
     width: 34, height: 34, borderRadius: 9, alignItems: "center", justifyContent: "center",
-    backgroundColor: "rgba(177,152,112,0.12)", flexShrink: 0,
+    flexShrink: 0,
   },
   rowBody: { flex: 1 },
   rowLabel: { fontSize: 15, fontFamily: "Inter_500Medium", color: "white" },
   rowHint: { fontSize: 11, color: "#555", fontFamily: "Inter_400Regular", marginTop: 2 },
+  subSection: { paddingLeft: 14 },
+  subSectionTitle: {
+    fontSize: 11, color: "#666", fontFamily: "Inter_600SemiBold",
+    letterSpacing: 1, textTransform: "uppercase",
+    paddingHorizontal: 0, paddingVertical: 10,
+  },
+  radio: {
+    width: 22, height: 22, borderRadius: 11,
+    borderWidth: 2, borderColor: "#444",
+    alignItems: "center", justifyContent: "center",
+  },
+  radioActive: { borderColor: PRIMARY },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: PRIMARY },
 });

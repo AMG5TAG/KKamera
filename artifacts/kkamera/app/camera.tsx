@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
-  Animated, Easing, StatusBar, Alert,
+  Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
 } from "react-native";
 import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
@@ -20,21 +20,43 @@ import { useGetSubscription } from "@workspace/api-client-react";
 const PRIMARY = "#b19870";
 
 type FlashMode = "off" | "on" | "auto";
-type AppMode = "picture" | "video" | "scan";
+type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "spatial";
 
-const MODES: { mode: AppMode; icon: string; iconActive: string }[] = [
-  { mode: "picture", icon: "camera-outline", iconActive: "camera" },
-  { mode: "video", icon: "videocam-outline", iconActive: "videocam" },
-  { mode: "scan", icon: "document-outline", iconActive: "document-text" },
+interface ModeConfig { mode: ExtMode; label: string; cameraMode: CameraMode; isVideo: boolean }
+
+const EXT_MODES: ModeConfig[] = [
+  { mode: "photo",     label: "PHOTO",      cameraMode: "picture", isVideo: false },
+  { mode: "portrait",  label: "PORTRAIT",   cameraMode: "picture", isVideo: false },
+  { mode: "cinematic", label: "CINEMATIC",  cameraMode: "video",   isVideo: true  },
+  { mode: "video",     label: "VIDEO",      cameraMode: "video",   isVideo: true  },
+  { mode: "slow-mo",   label: "SLO-MO",     cameraMode: "video",   isVideo: true  },
+  { mode: "timelapse", label: "TIME-LAPSE", cameraMode: "picture", isVideo: false },
+  { mode: "pano",      label: "PANO",       cameraMode: "picture", isVideo: false },
+  { mode: "scan",      label: "SCAN",       cameraMode: "picture", isVideo: false },
+  { mode: "spatial",   label: "SPATIAL",    cameraMode: "video",   isVideo: true  },
 ];
 
-const FILTERS = ["None", "Vivid", "Warm", "Cool", "B&W", "Fade", "Chrome", "Tonal", "Noir", "Silvertone"];
+const FILTERS = [
+  { name: "None",       color: null,        isBeauty: false },
+  { name: "Vivid",      color: "#ff6b35",   isBeauty: false },
+  { name: "Warm",       color: "#f59e0b",   isBeauty: false },
+  { name: "Cool",       color: "#60a5fa",   isBeauty: false },
+  { name: "B&W",        color: "#888",      isBeauty: false },
+  { name: "Fade",       color: "#d4c5b0",   isBeauty: false },
+  { name: "Noir",       color: "#1a1a1a",   isBeauty: false },
+  { name: "Beauty",     color: "#ffb7c5",   isBeauty: true  },
+  { name: "Smooth",     color: "#f0e6d3",   isBeauty: true  },
+  { name: "Glow",       color: "#fff9c4",   isBeauty: true  },
+  { name: "Porcelain",  color: "#dfe8f0",   isBeauty: true  },
+];
 
-const FILTER_COLORS: Record<string, string | null> = {
-  None: null, Vivid: "#ff6b35", Warm: "#f59e0b", Cool: "#60a5fa",
-  "B&W": "#888", Fade: "#d4c5b0", Chrome: "#c0c0c0", Tonal: "#8b7355",
-  Noir: "#1a1a1a", Silvertone: "#b0b8c0",
-};
+const ZOOM_LEVELS = [
+  { value: 0,    label: "·5" },
+  { value: 0.25, label: "1×" },
+  { value: 0.5,  label: "2×" },
+  { value: 0.75, label: "5×" },
+  { value: 1,    label: "10×" },
+];
 
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
@@ -51,127 +73,113 @@ export default function CameraScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
 
-  const [appMode, setAppMode] = useState<AppMode>("picture");
+  const [extMode, setExtMode] = useState<ExtMode>("photo");
   const [facing, setFacing] = useState<CameraType>("back");
   const [flash, setFlash] = useState<FlashMode>("auto");
-  const [zoom, setZoom] = useState(0);
+  const [zoom, setZoom] = useState(0.25);
   const [isRecording, setIsRecording] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [selectedFilter, setSelectedFilter] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
   const [showLevelGuide, setShowLevelGuide] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
 
+  // Time-lapse state
+  const [isTimelapsing, setIsTimelapsing] = useState(false);
+  const [tlCount, setTlCount] = useState(0);
+  const tlTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tlPhotos = useRef<string[]>([]);
+
+  // Recording timer
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Scan result
+  const [scanUri, setScanUri] = useState<string | null>(null);
+  const [scanFileName, setScanFileName] = useState("");
+  const [showScanModal, setShowScanModal] = useState(false);
+
   const cameraRef = useRef<CameraView>(null);
   const captureScale = useRef(new Animated.Value(1)).current;
-  const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const baseZoom = useRef(0);
-  const [recordSeconds, setRecordSeconds] = useState(0);
-  const [zoomExpanded, setZoomExpanded] = useState(false);
-  const zoomWidth = useRef(new Animated.Value(0)).current;
-  const zoomCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const ZOOM_COLLAPSED_W = 64;
-  const ZOOM_EXPANDED_W = 232;
-
-  const expandZoom = useCallback(() => {
-    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
-    setZoomExpanded(true);
-    Animated.spring(zoomWidth, { toValue: 1, tension: 90, friction: 11, useNativeDriver: false }).start();
-  }, [zoomWidth]);
-
-  const collapseZoom = useCallback(() => {
-    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
-    setZoomExpanded(false);
-    Animated.spring(zoomWidth, { toValue: 0, tension: 90, friction: 11, useNativeDriver: false }).start();
-  }, [zoomWidth]);
-
-  const scheduleCollapse = useCallback((ms = 2800) => {
-    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
-    zoomCollapseTimer.current = setTimeout(collapseZoom, ms);
-  }, [collapseZoom]);
-
-  const triggerZoomBar = useCallback(() => {
-    expandZoom();
-    scheduleCollapse();
-  }, [expandZoom, scheduleCollapse]);
-
-  const applyZoom = useCallback((scale: number) => {
-    const next = Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.5));
-    setZoom(next);
-    triggerZoomBar();
-  }, [triggerZoomBar]);
-
-  const saveBaseZoom = useCallback(() => {
-    baseZoom.current = zoom;
-  }, [zoom]);
-
-  const pinchGesture = Gesture.Pinch()
-    .onStart(() => { runOnJS(saveBaseZoom)(); })
-    .onUpdate((e) => { runOnJS(applyZoom)(e.scale); })
-    .onEnd(() => { runOnJS(saveBaseZoom)(); });
+  const baseZoom = useRef(0.25);
 
   useEffect(() => {
     if (!cameraPermission?.granted) requestCameraPermission();
     if (!micPermission?.granted) requestMicPermission();
   }, []);
 
+  const currentModeConfig = EXT_MODES.find(m => m.mode === extMode) ?? EXT_MODES[0]!;
+  const cameraViewMode: CameraMode = currentModeConfig.cameraMode;
+
+  // Pinch to zoom
+  const saveBaseZoom = useCallback(() => { baseZoom.current = zoom; }, [zoom]);
+  const applyZoom = useCallback((scale: number) => {
+    setZoom(z => Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.4)));
+  }, []);
+
+  const pinchGesture = Gesture.Pinch()
+    .onStart(() => { runOnJS(saveBaseZoom)(); })
+    .onUpdate((e) => { runOnJS(applyZoom)(e.scale); })
+    .onEnd(() => { runOnJS(saveBaseZoom)(); });
+
   const checkWifi = useCallback(async (): Promise<boolean> => {
     if (!settings.uploadOnlyOnWifi) return true;
     try {
-      if (Platform.OS === "web") {
-        const conn = (navigator as any).connection;
-        if (conn?.type && conn.type !== "wifi" && conn.type !== "unknown") return false;
-        return true;
-      }
+      if (Platform.OS === "web") return true;
       const state = await Network.getNetworkStateAsync();
       return state.type === Network.NetworkStateType.WIFI;
-    } catch {
-      return true;
-    }
+    } catch { return true; }
   }, [settings.uploadOnlyOnWifi]);
 
   const confirmUpload = useCallback((): Promise<boolean> => {
     if (!settings.promptBeforeUpload) return Promise.resolve(true);
     return new Promise(resolve => {
-      Alert.alert(
-        "Upload to Cloud?",
-        "Send this file to your connected cloud storage?",
-        [
-          { text: "Skip", style: "cancel", onPress: () => resolve(false) },
-          { text: "Upload", onPress: () => resolve(true) },
-        ]
-      );
+      Alert.alert("Upload to Cloud?", "Send this file to your connected cloud storage?", [
+        { text: "Skip", style: "cancel", onPress: () => resolve(false) },
+        { text: "Upload", onPress: () => resolve(true) },
+      ]);
     });
   }, [settings.promptBeforeUpload]);
 
-  const handleCapture = useCallback(async () => {
-    if (isBusy) return;
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  const doUpload = useCallback(async (uri: string, fileName: string, type: "image" | "video") => {
+    const onWifi = await checkWifi();
+    if (!onWifi) { Alert.alert("WiFi Only", "File captured but not uploaded — connect to WiFi."); return; }
+    const confirmed = await confirmUpload();
+    if (!confirmed) return;
+
+    if (type === "image" && settings.photoMarkup) {
+      router.push({ pathname: "/markup", params: { uri, fileName } });
+    } else {
+      await executeUpload(uri, fileName, type, token);
+    }
+  }, [checkWifi, confirmUpload, settings.photoMarkup, executeUpload, token]);
+
+  const pulseCaptureBtn = () => {
     Animated.sequence([
       Animated.timing(captureScale, { toValue: 0.88, duration: 80, easing: Easing.out(Easing.quad), useNativeDriver: true }),
       Animated.timing(captureScale, { toValue: 1, duration: 120, easing: Easing.out(Easing.quad), useNativeDriver: true }),
     ]).start();
+  };
+
+  const handlePhotoCapture = useCallback(async () => {
+    if (isBusy) return;
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    pulseCaptureBtn();
     setIsBusy(true);
     try {
       const photo = await cameraRef.current?.takePictureAsync({ quality: 0.9 });
       if (photo?.uri) {
         const ext = settings.imageFormat === "heic" ? "heic" : settings.imageFormat === "png" ? "png" : "jpg";
-        const fileName = `IMG_${Date.now()}.${ext}`;
-        const onWifi = await checkWifi();
-        if (!onWifi) { Alert.alert("WiFi Only", "Photo captured but not uploaded — connect to WiFi to upload."); return; }
-        const confirmed = await confirmUpload();
-        if (confirmed) await executeUpload(photo.uri, fileName, "image", token);
+        const prefix = extMode === "portrait" ? "PORT" : extMode === "pano" ? "PANO" : "IMG";
+        const fileName = `${prefix}_${Date.now()}.${ext}`;
+        await doUpload(photo.uri, fileName, "image");
       }
     } catch (err: any) {
       Alert.alert("Capture Failed", err?.message ?? "Could not take photo.");
-    } finally {
-      setIsBusy(false);
-    }
-  }, [isBusy, captureScale, settings.imageFormat, executeUpload, token, checkWifi, confirmUpload]);
+    } finally { setIsBusy(false); }
+  }, [isBusy, settings.imageFormat, extMode, doUpload, captureScale]);
 
   const handleVideoToggle = useCallback(async () => {
-    if (isBusy) return;
+    if (isBusy && !isRecording) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     if (!isRecording) {
       setIsRecording(true);
@@ -182,83 +190,115 @@ export default function CameraScreen() {
         if (recordTimer.current) clearInterval(recordTimer.current);
         setRecordSeconds(0);
         if (video?.uri) {
-          const fileName = `VID_${Date.now()}.${settings.videoFormat}`;
-          const onWifi = await checkWifi();
-          if (!onWifi) { Alert.alert("WiFi Only", "Video captured but not uploaded — connect to WiFi to upload."); return; }
-          const confirmed = await confirmUpload();
-          if (confirmed) await executeUpload(video.uri, fileName, "video", token);
+          const prefix = extMode === "cinematic" ? "CIN" : extMode === "slow-mo" ? "SLO" : extMode === "spatial" ? "SPA" : "VID";
+          const fileName = `${prefix}_${Date.now()}.${settings.videoFormat}`;
+          await doUpload(video.uri, fileName, "video");
         }
       }).catch((err: any) => {
         setIsRecording(false);
         if (recordTimer.current) clearInterval(recordTimer.current);
         setRecordSeconds(0);
-        if (!String(err?.message).includes("stop")) Alert.alert("Recording Failed", err?.message ?? "Could not record video.");
+        if (!String(err?.message).includes("stop"))
+          Alert.alert("Recording Failed", err?.message ?? "Could not record video.");
       });
     } else {
       cameraRef.current?.stopRecording();
     }
-  }, [isBusy, isRecording, settings.videoFormat, executeUpload, token, checkWifi, confirmUpload]);
+  }, [isBusy, isRecording, settings.videoFormat, extMode, doUpload]);
 
   const handleScan = useCallback(async () => {
     if (isBusy) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    pulseCaptureBtn();
     setIsBusy(true);
     try {
-      const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        quality: 0.9,
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      });
-      if (!result.canceled && result.assets?.[0]) {
-        const uri = result.assets[0].uri;
+      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.95 });
+      if (photo?.uri) {
         const fileName = `SCAN_${Date.now()}.jpg`;
-        const onWifi = await checkWifi();
-        if (!onWifi) { Alert.alert("WiFi Only", "Scan captured but not uploaded — connect to WiFi to upload."); return; }
-        const confirmed = await confirmUpload();
-        if (confirmed) await executeUpload(uri, fileName, "image", token);
+        setScanUri(photo.uri);
+        setScanFileName(fileName);
+        setShowScanModal(true);
       }
     } catch (err: any) {
-      Alert.alert("Scan Failed", err?.message ?? "Could not scan document.");
-    } finally {
-      setIsBusy(false);
+      Alert.alert("Scan Failed", err?.message ?? "Could not capture document.");
+    } finally { setIsBusy(false); }
+  }, [isBusy]);
+
+  const handleUploadScan = useCallback(async () => {
+    setShowScanModal(false);
+    if (!scanUri || !scanFileName) return;
+    await doUpload(scanUri, scanFileName, "image");
+    setScanUri(null);
+  }, [scanUri, scanFileName, doUpload]);
+
+  const handleTimelapse = useCallback(async () => {
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    if (!isTimelapsing) {
+      setIsTimelapsing(true);
+      setTlCount(0);
+      tlPhotos.current = [];
+      tlTimer.current = setInterval(async () => {
+        try {
+          const photo = await cameraRef.current?.takePictureAsync({ quality: 0.7, skipProcessing: true });
+          if (photo?.uri) {
+            tlPhotos.current.push(photo.uri);
+            setTlCount(c => c + 1);
+          }
+        } catch { /* silently continue */ }
+      }, 2000);
+    } else {
+      if (tlTimer.current) clearInterval(tlTimer.current);
+      setIsTimelapsing(false);
+      const photos = [...tlPhotos.current];
+      tlPhotos.current = [];
+      setTlCount(0);
+      if (photos.length === 0) return;
+      const onWifi = await checkWifi();
+      if (!onWifi) { Alert.alert("WiFi Only", `${photos.length} frames captured but not uploaded.`); return; }
+      Alert.alert("Upload Time-lapse?", `Upload ${photos.length} frames?`, [
+        { text: "Discard", style: "destructive" },
+        {
+          text: `Upload ${photos.length} frames`, onPress: async () => {
+            for (let i = 0; i < photos.length; i++) {
+              await executeUpload(photos[i]!, `TL_${Date.now()}_${i}.jpg`, "image", token);
+            }
+          },
+        },
+      ]);
     }
-  }, [isBusy, checkWifi, confirmUpload, executeUpload, token]);
+  }, [isTimelapsing, checkWifi, executeUpload, token]);
 
   const handleGalleryImport = useCallback(async () => {
-    if (isRecording) return;
+    if (isRecording || isTimelapsing) return;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.All,
-        allowsEditing: false,
-        quality: 0.9,
-        allowsMultipleSelection: false,
+        allowsEditing: false, quality: 0.9, allowsMultipleSelection: false,
       });
       if (!result.canceled && result.assets?.[0]) {
         const asset = result.assets[0];
         const isVideo = asset.type === "video";
-        const ext = isVideo ? settings.videoFormat : "jpg";
-        const prefix = isVideo ? "VID" : "IMG";
-        const fileName = `${prefix}_IMPORT_${Date.now()}.${ext}`;
-        const onWifi = await checkWifi();
-        if (!onWifi) { Alert.alert("WiFi Only", "File selected but not uploaded — connect to WiFi to upload."); return; }
-        const confirmed = await confirmUpload();
-        if (confirmed) {
-          setIsBusy(true);
-          await executeUpload(asset.uri, fileName, isVideo ? "video" : "image", token);
-          setIsBusy(false);
-        }
+        const fileName = `${isVideo ? "VID" : "IMG"}_IMPORT_${Date.now()}.${isVideo ? settings.videoFormat : "jpg"}`;
+        await doUpload(asset.uri, fileName, isVideo ? "video" : "image");
       }
     } catch (err: any) {
-      Alert.alert("Import Failed", err?.message ?? "Could not import from gallery.");
+      Alert.alert("Import Failed", err?.message ?? "Could not import.");
     }
-  }, [isRecording, settings.videoFormat, checkWifi, confirmUpload, executeUpload, token]);
+  }, [isRecording, isTimelapsing, settings.videoFormat, doUpload]);
+
+  const handleCapture = () => {
+    const m = extMode;
+    if (m === "scan") return handleScan();
+    if (m === "timelapse") return handleTimelapse();
+    if (currentModeConfig.isVideo) return handleVideoToggle();
+    return handlePhotoCapture();
+  };
 
   const cycleFlash = () => {
     const cycle: FlashMode[] = ["auto", "on", "off"];
     setFlash(prev => cycle[(cycle.indexOf(prev) + 1) % 3]!);
   };
 
-  const setZoomLevel = (level: number) => { setZoom(level); triggerZoomBar(); };
   const flashIcon = flash === "on" ? "flash" : flash === "off" ? "flash-off" : "flash-outline";
   const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
@@ -266,28 +306,27 @@ export default function CameraScreen() {
     : lastUpload.status === "done" ? "#22c55e"
     : lastUpload.status === "failed" ? "#ef4444"
     : lastUpload.status === "partial" ? "#f59e0b"
-    : lastUpload.status === "uploading" ? "#b19870"
-    : "#6b7280";
+    : lastUpload.status === "uploading" ? PRIMARY : "#6b7280";
 
   const uploadStatusIcon = !lastUpload ? "cloud-outline"
     : lastUpload.status === "done" ? "cloud-done-outline"
     : lastUpload.status === "failed" ? "cloud-offline-outline"
-    : lastUpload.status === "partial" ? "cloud-outline"
-    : "cloud-upload-outline";
+    : lastUpload.status === "partial" ? "cloud-outline" : "cloud-upload-outline";
 
   const uploadStatusLabel = !lastUpload ? ""
     : lastUpload.status === "done" ? "Uploaded"
     : lastUpload.status === "failed" ? "Failed"
     : lastUpload.status === "partial" ? "Partial"
     : lastUpload.status === "uploading" ? "Uploading…"
-    : lastUpload.status === "queued" ? "Queued"
-    : "";
+    : lastUpload.status === "queued" ? "Queued" : "";
+
+  const filterColor = FILTERS[selectedFilter]?.color ?? null;
 
   if (!cameraPermission) return <View style={styles.container} />;
 
   if (!cameraPermission.granted) {
     return (
-      <View style={[styles.container, { alignItems: "center", justifyContent: "center", gap: 16 }]}>
+      <View style={[styles.container, styles.centeredContainer]}>
         <Ionicons name="camera-outline" size={56} color={PRIMARY} />
         <Text style={styles.permText}>Camera access is needed to take photos and videos.</Text>
         <TouchableOpacity style={styles.permBtn} onPress={requestCameraPermission}>
@@ -300,11 +339,9 @@ export default function CameraScreen() {
     );
   }
 
-  const filterColor = FILTER_COLORS[FILTERS[selectedFilter] ?? "None"];
-
   if (!hasAccess) {
     return (
-      <View style={[styles.container, styles.paywallContainer]}>
+      <View style={[styles.container, styles.centeredContainer]}>
         <StatusBar barStyle="light-content" />
         <Ionicons name="lock-closed" size={52} color={PRIMARY} style={{ marginBottom: 20 }} />
         <Text style={styles.paywallTitle}>Subscription Required</Text>
@@ -313,299 +350,379 @@ export default function CameraScreen() {
           <Ionicons name="card-outline" size={18} color="white" />
           <Text style={styles.paywallBtnText}>View Subscription — $25/year</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.paywallSecondary} onPress={() => router.push("/settings")}>
-          <Text style={styles.paywallSecondaryText}>Go to Settings</Text>
-        </TouchableOpacity>
       </View>
     );
   }
 
-  const cameraViewMode: CameraMode = appMode === "scan" ? "picture" : (appMode as CameraMode);
+  const isVideoMode = currentModeConfig.isVideo && extMode !== "timelapse";
+  const captureIsActive = isRecording || isTimelapsing;
 
   return (
     <GestureDetector gesture={pinchGesture}>
-    <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
+      <View style={styles.container}>
+        <StatusBar barStyle="light-content" />
 
-      <CameraView
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        facing={facing}
-        flash={flash}
-        zoom={zoom}
-        mode={cameraViewMode}
-      >
-        {filterColor && (
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: filterColor, opacity: 0.22 }]} pointerEvents="none" />
-        )}
-        {showLevelGuide && (
-          <View style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]} pointerEvents="none">
-            <View style={styles.levelLine} />
-            <View style={styles.levelDot} />
-          </View>
-        )}
-        {appMode === "scan" && (
-          <View style={[StyleSheet.absoluteFill, { alignItems: "center", justifyContent: "center" }]} pointerEvents="none">
-            <View style={styles.scanFrame}>
-              <View style={[styles.scanCorner, styles.scanTL]} />
-              <View style={[styles.scanCorner, styles.scanTR]} />
-              <View style={[styles.scanCorner, styles.scanBL]} />
-              <View style={[styles.scanCorner, styles.scanBR]} />
+        <CameraView
+          ref={cameraRef}
+          style={StyleSheet.absoluteFill}
+          facing={facing}
+          flash={flash}
+          zoom={zoom}
+          mode={cameraViewMode}
+        >
+          {/* Colour filter overlay */}
+          {filterColor && (
+            <View
+              style={[StyleSheet.absoluteFill, {
+                backgroundColor: filterColor,
+                opacity: FILTERS[selectedFilter]?.isBeauty ? 0.14 : 0.22,
+              }]}
+              pointerEvents="none"
+            />
+          )}
+
+          {/* Level guide */}
+          {showLevelGuide && (
+            <View style={[StyleSheet.absoluteFill, styles.levelContainer]} pointerEvents="none">
+              <View style={styles.levelLine} />
+              <View style={styles.levelDot} />
+            </View>
+          )}
+
+          {/* Scan overlay */}
+          {extMode === "scan" && (
+            <View style={[StyleSheet.absoluteFill, styles.overlayCenter]} pointerEvents="none">
+              <View style={styles.scanFrame}>
+                <View style={[styles.scanCorner, styles.scanTL]} />
+                <View style={[styles.scanCorner, styles.scanTR]} />
+                <View style={[styles.scanCorner, styles.scanBL]} />
+                <View style={[styles.scanCorner, styles.scanBR]} />
+              </View>
               <Text style={styles.scanHint}>Align document within frame</Text>
             </View>
-          </View>
+          )}
+
+          {/* Portrait overlay */}
+          {extMode === "portrait" && (
+            <View style={[StyleSheet.absoluteFill, styles.overlayTop]} pointerEvents="none">
+              <View style={styles.portraitOval} />
+              <Text style={styles.modeHint}>Portrait Mode — subject in centre</Text>
+            </View>
+          )}
+
+          {/* Pano guide */}
+          {extMode === "pano" && (
+            <View style={[StyleSheet.absoluteFill, styles.overlayCenter]} pointerEvents="none">
+              <View style={styles.panoLine} />
+              <Text style={styles.modeHint}>Pan slowly left to right</Text>
+            </View>
+          )}
+
+          {/* Time-lapse counter */}
+          {isTimelapsing && (
+            <View style={[styles.tlCounter]} pointerEvents="none">
+              <Ionicons name="timer-outline" size={16} color={PRIMARY} />
+              <Text style={styles.tlCountText}>{tlCount} frames</Text>
+            </View>
+          )}
+        </CameraView>
+
+        {/* ── Top Bar ─────────────────────────────────────────────────────── */}
+        <View style={[styles.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 44 : 8) }]}>
+          <TouchableOpacity style={styles.iconBtn} onPress={cycleFlash}>
+            <Ionicons name={flashIcon as any} size={24} color={flash === "on" ? "#FFD700" : "white"} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowLevelGuide(v => !v)}>
+            <MaterialCommunityIcons name="spirit-level" size={22} color={showLevelGuide ? PRIMARY : "white"} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowFilters(v => !v)}>
+            <Feather name="sliders" size={20} color={showFilters ? PRIMARY : "white"} />
+          </TouchableOpacity>
+          {(isRecording) && (
+            <View style={styles.recordingBadge}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingTime}>{formatTime(recordSeconds)}</Text>
+            </View>
+          )}
+          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/settings")}>
+            <Ionicons name="settings-outline" size={24} color="white" />
+          </TouchableOpacity>
+        </View>
+
+        {/* ── Upload status badge ─────────────────────────────────────────── */}
+        {lastUpload && uploadStatusLabel !== "" && settings.recordHistory && (
+          <TouchableOpacity
+            style={[styles.uploadStatus, { top: insets.top + (Platform.OS === "web" ? 110 : 70) }]}
+            onPress={() => router.push("/history")}
+          >
+            <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} />
+            <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
+          </TouchableOpacity>
         )}
-      </CameraView>
 
-      {/* Top Bar */}
-      <View style={[styles.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 44 : 8) }]}>
-        <TouchableOpacity style={styles.iconBtn} onPress={cycleFlash}>
-          <Ionicons name={flashIcon as any} size={24} color={flash === "on" ? "#FFD700" : "white"} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => setShowLevelGuide(v => !v)}>
-          <MaterialCommunityIcons name="spirit-level" size={22} color={showLevelGuide ? PRIMARY : "white"} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.iconBtn} onPress={() => setShowFilters(v => !v)}>
-          <Feather name="sliders" size={20} color={showFilters ? PRIMARY : "white"} />
-        </TouchableOpacity>
-        {isRecording && (
-          <View style={styles.recordingBadge}>
-            <View style={styles.recordingDot} />
-            <Text style={styles.recordingTime}>{formatTime(recordSeconds)}</Text>
-          </View>
-        )}
-        <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/settings")}>
-          <Ionicons name="settings-outline" size={24} color="white" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Upload status — tappable, opens history */}
-      {lastUpload && lastUpload.status !== "idle" && (
-        <TouchableOpacity
-          style={[styles.uploadStatus, { top: insets.top + (Platform.OS === "web" ? 110 : 70) }]}
-          onPress={() => router.push("/history")}
-        >
-          <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} />
-          <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Zoom pill */}
-      {(() => {
-        const animW = zoomWidth.interpolate({ inputRange: [0, 1], outputRange: [ZOOM_COLLAPSED_W, ZOOM_EXPANDED_W] });
-        const pillsOpacity = zoomWidth.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0, 0, 1] });
-        const ZOOM_STEPS: { value: number; label: string }[] = [
-          { value: 0, label: "·5" }, { value: 0.25, label: "1×" },
-          { value: 0.5, label: "2×" }, { value: 0.75, label: "5×" },
-        ];
-        const currentLabel = ZOOM_STEPS.reduce((prev, cur) =>
-          Math.abs(cur.value - zoom) < Math.abs(prev.value - zoom) ? cur : prev
-        ).label;
-        return (
-          <Animated.View style={[styles.zoomGlass, { width: animW, overflow: "hidden" },
-            Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
-          ]}>
-            <TouchableOpacity
-              style={[styles.zoomIconBtn, zoomExpanded && styles.zoomIconBtnActive]}
-              onPress={() => zoomExpanded ? collapseZoom() : expandZoom()}
-              activeOpacity={0.75}
-            >
-              <MaterialCommunityIcons name="magnify" size={15} color={zoomExpanded ? "#1a1208" : "rgba(255,255,255,0.85)"} />
-              {!zoomExpanded && <Text style={styles.zoomCurrentLabel}>{currentLabel}</Text>}
-            </TouchableOpacity>
-            <Animated.View style={{ flexDirection: "row", opacity: pillsOpacity }}>
-              {ZOOM_STEPS.map(({ value: z, label }) => (
-                <TouchableOpacity key={z} style={[styles.zoomPill, zoom === z && styles.zoomPillActive]}
-                  onPress={() => { setZoomLevel(z); scheduleCollapse(1800); }} activeOpacity={0.75}>
-                  <Text style={[styles.zoomPillText, zoom === z && styles.zoomPillTextActive]}>{label}</Text>
+        {/* ── Filter panel ────────────────────────────────────────────────── */}
+        {showFilters && (
+          <View style={[styles.filterPanel, { top: insets.top + (Platform.OS === "web" ? 100 : 60) }]}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+              {FILTERS.map((f, i) => (
+                <TouchableOpacity key={f.name} style={styles.filterChip} onPress={() => setSelectedFilter(i)}>
+                  <View style={[styles.filterThumb, {
+                    backgroundColor: f.color ?? "#2a2a2a",
+                    borderWidth: selectedFilter === i ? 2 : 0,
+                    borderColor: PRIMARY,
+                  }]}>
+                    {f.isBeauty && <Text style={styles.filterBeautyIcon}>✨</Text>}
+                  </View>
+                  <Text style={[styles.filterLabel, selectedFilter === i && { color: PRIMARY }]}>{f.name}</Text>
                 </TouchableOpacity>
               ))}
-            </Animated.View>
-          </Animated.View>
-        );
-      })()}
+            </ScrollView>
+          </View>
+        )}
 
-      {/* Filter row */}
-      {showFilters && (
-        <View style={styles.filterRow}>
-          {FILTERS.map((f, i) => (
-            <TouchableOpacity key={f} style={styles.filterChip} onPress={() => setSelectedFilter(i)}>
-              <View style={[styles.filterThumb, {
-                backgroundColor: i === 0 ? "#333" : FILTER_COLORS[f] ?? "#888",
-                borderWidth: selectedFilter === i ? 2 : 0, borderColor: PRIMARY,
-              }]} />
-              <Text style={[styles.filterLabel, selectedFilter === i && { color: PRIMARY }]}>{f}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      {/* Bottom controls */}
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 16) }]}>
-        {/* Mode selector — icons only */}
-        <View style={[styles.modeGlass,
-          Platform.OS === "web" ? ({ backdropFilter: "blur(24px) saturate(180%)" } as any) : null,
-        ]}>
-          {MODES.map(({ mode: m, icon, iconActive }) => (
-            <TouchableOpacity
-              key={m}
-              onPress={() => { if (!isRecording) setAppMode(m); }}
-              style={[styles.modePill, appMode === m && styles.modePillActive]}
-              activeOpacity={0.75}
-            >
-              <Ionicons
-                name={(appMode === m ? iconActive : icon) as any}
-                size={20}
-                color={appMode === m ? "#1a1208" : "rgba(255,255,255,0.72)"}
-              />
+        {/* ── Vertical Zoom Bar (right side) ──────────────────────────────── */}
+        <View style={[styles.zoomSideBar, { top: "35%" }]}>
+          {ZOOM_LEVELS.map(({ value, label }) => (
+            <TouchableOpacity key={value} style={styles.zoomSideBtn} onPress={() => setZoom(value)}>
+              <Text style={[styles.zoomSideLabel, Math.abs(zoom - value) < 0.05 && styles.zoomSideLabelActive]}>
+                {label}
+              </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        <View style={styles.captureRow}>
-          {/* Gallery import */}
-          <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={isRecording}>
-            <Ionicons name="images-outline" size={26} color={isRecording ? "#444" : "white"} />
-          </TouchableOpacity>
-
-          {/* Capture / Record / Scan button */}
-          <Animated.View style={{ transform: [{ scale: captureScale }] }}>
-            <TouchableOpacity
-              style={[styles.captureBtn,
-                appMode === "video" && { borderColor: "#ef4444" },
-                appMode === "scan" && { borderColor: PRIMARY },
-                isBusy && { opacity: 0.6 },
-              ]}
-              onPress={
-                appMode === "picture" ? handleCapture
-                : appMode === "video" ? handleVideoToggle
-                : handleScan
-              }
-              activeOpacity={0.8}
-              disabled={isBusy && !isRecording}
-            >
-              {appMode === "video" ? (
-                <View style={[styles.captureInner, isRecording && styles.captureStop]} />
-              ) : appMode === "scan" ? (
-                <Ionicons name="document-text" size={26} color={PRIMARY} />
-              ) : (
-                <View style={styles.captureInner} />
-              )}
-            </TouchableOpacity>
-          </Animated.View>
-
-          {/* Flip camera */}
-          <TouchableOpacity
-            style={styles.sideBtn}
-            onPress={() => setFacing(f => f === "back" ? "front" : "back")}
-            disabled={isRecording}
+        {/* ── Bottom Controls ─────────────────────────────────────────────── */}
+        <View style={[styles.bottomControls, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 20 : 8) }]}>
+          {/* Mode strip */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.modeStripContent}
+            style={styles.modeStrip}
           >
-            <Ionicons name="camera-reverse-outline" size={26} color={isRecording ? "#444" : "white"} />
-          </TouchableOpacity>
+            {EXT_MODES.map(({ mode, label }) => (
+              <TouchableOpacity
+                key={mode}
+                onPress={() => { if (!captureIsActive) setExtMode(mode); }}
+                style={styles.modeLabelWrap}
+              >
+                <Text style={[styles.modeLabel, extMode === mode && styles.modeLabelActive]}>
+                  {label}
+                </Text>
+                {extMode === mode && <View style={styles.modeDot} />}
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Capture row */}
+          <View style={styles.captureRow}>
+            {/* Gallery import */}
+            <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={captureIsActive}>
+              <Ionicons name="images-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+            </TouchableOpacity>
+
+            {/* Capture button */}
+            <Animated.View style={{ transform: [{ scale: captureScale }] }}>
+              <TouchableOpacity
+                style={[
+                  styles.captureBtn,
+                  isVideoMode && { borderColor: "#ef4444" },
+                  extMode === "scan" && { borderColor: PRIMARY },
+                  extMode === "timelapse" && { borderColor: "#f59e0b" },
+                ]}
+                onPress={handleCapture}
+                activeOpacity={0.8}
+              >
+                {extMode === "timelapse" ? (
+                  <View style={[
+                    styles.captureInner,
+                    isTimelapsing
+                      ? { backgroundColor: "#f59e0b", borderRadius: 6, width: 28, height: 28 }
+                      : { backgroundColor: "#f59e0b" },
+                  ]} />
+                ) : isVideoMode ? (
+                  <View style={[
+                    styles.captureInner,
+                    isRecording
+                      ? { backgroundColor: "#ef4444", borderRadius: 6, width: 28, height: 28 }
+                      : { backgroundColor: "white" },
+                  ]} />
+                ) : extMode === "scan" ? (
+                  <Ionicons name="document-text" size={26} color={PRIMARY} />
+                ) : (
+                  <View style={styles.captureInner} />
+                )}
+              </TouchableOpacity>
+            </Animated.View>
+
+            {/* Flip camera */}
+            <TouchableOpacity
+              style={styles.sideBtn}
+              onPress={() => setFacing(f => f === "back" ? "front" : "back")}
+              disabled={captureIsActive}
+            >
+              <Ionicons name="camera-reverse-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+            </TouchableOpacity>
+          </View>
         </View>
+
+        {/* ── Scan result modal ───────────────────────────────────────────── */}
+        <Modal visible={showScanModal} animationType="slide" onRequestClose={() => setShowScanModal(false)}>
+          <View style={styles.scanModal}>
+            <View style={styles.scanModalHeader}>
+              <TouchableOpacity onPress={() => { setShowScanModal(false); setScanUri(null); }} style={styles.scanModalClose}>
+                <Ionicons name="close" size={24} color="white" />
+              </TouchableOpacity>
+              <Text style={styles.scanModalTitle}>Document Scan</Text>
+              <View style={{ width: 40 }} />
+            </View>
+            {scanUri && (
+              <Image source={{ uri: scanUri }} style={styles.scanPreview} resizeMode="contain" />
+            )}
+            <View style={styles.scanModalFooter}>
+              <TouchableOpacity style={styles.scanRetakeBtn} onPress={() => { setShowScanModal(false); setScanUri(null); }}>
+                <Ionicons name="camera-outline" size={18} color={PRIMARY} />
+                <Text style={styles.scanRetakeText}>Retake</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.scanUploadBtn} onPress={handleUploadScan}>
+                <Ionicons name="cloud-upload-outline" size={18} color="white" />
+                <Text style={styles.scanUploadText}>Upload Scan</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </View>
-    </View>
     </GestureDetector>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000" },
+  centeredContainer: { alignItems: "center", justifyContent: "center", padding: 32 },
   topBar: {
     position: "absolute", top: 0, left: 0, right: 0,
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    paddingHorizontal: 20, paddingBottom: 12,
-    backgroundColor: "rgba(0,0,0,0.35)",
+    paddingHorizontal: 18, paddingBottom: 12,
+    backgroundColor: "rgba(0,0,0,0.38)",
   },
   iconBtn: { padding: 8, borderRadius: 20 },
   recordingBadge: {
     flexDirection: "row", alignItems: "center", gap: 6,
-    backgroundColor: "rgba(0,0,0,0.5)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.55)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
   },
   recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#ef4444" },
   recordingTime: { color: "white", fontSize: 13, fontFamily: "Inter_500Medium" },
   uploadStatus: {
-    position: "absolute", right: 16,
-    flexDirection: "row", alignItems: "center", gap: 4,
-    backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 10, paddingVertical: 5,
+    position: "absolute", right: 14,
+    flexDirection: "row", alignItems: "center", gap: 5,
+    backgroundColor: "rgba(0,0,0,0.65)", paddingHorizontal: 10, paddingVertical: 5,
     borderRadius: 14, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",
   },
   uploadStatusText: { fontSize: 11, fontFamily: "Inter_500Medium" },
+  overlayCenter: { alignItems: "center", justifyContent: "center" },
+  overlayTop: { alignItems: "center", paddingTop: "20%" },
+  levelContainer: { alignItems: "center", justifyContent: "center" },
   levelLine: { width: "60%", height: 1, backgroundColor: "rgba(177,152,112,0.6)", position: "absolute" },
   levelDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: PRIMARY },
-  scanFrame: {
-    width: "76%", height: "52%", position: "relative",
-    alignItems: "center", justifyContent: "flex-end", paddingBottom: 12,
-  },
+  scanFrame: { width: "76%", aspectRatio: 0.77, position: "relative" },
   scanCorner: { position: "absolute", width: 28, height: 28, borderColor: PRIMARY, borderWidth: 3 },
   scanTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 6 },
   scanTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 6 },
-  scanBL: { bottom: 24, left: 0, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 6 },
-  scanBR: { bottom: 24, right: 0, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 6 },
-  scanHint: { color: "rgba(177,152,112,0.9)", fontSize: 12, fontFamily: "Inter_500Medium", textAlign: "center" },
-  zoomGlass: {
-    position: "absolute", bottom: 212, alignSelf: "center",
-    flexDirection: "row", alignItems: "center", gap: 2,
-    paddingHorizontal: 4, paddingVertical: 4, borderRadius: 50,
-    backgroundColor: "rgba(18,14,10,0.52)",
-    borderWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.28)", borderBottomColor: "rgba(0,0,0,0.35)",
-    borderLeftColor: "rgba(255,255,255,0.14)", borderRightColor: "rgba(0,0,0,0.20)",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowRadius: 16, shadowOpacity: 0.45, elevation: 8,
+  scanBL: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 6 },
+  scanBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 6 },
+  scanHint: { color: "rgba(177,152,112,0.9)", fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 16, textAlign: "center" },
+  portraitOval: {
+    width: 180, height: 240, borderRadius: 90,
+    borderWidth: 2, borderColor: "rgba(177,152,112,0.7)", borderStyle: "dashed",
   },
-  zoomIconBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 12, paddingVertical: 7, borderRadius: 50, minWidth: 52 },
-  zoomIconBtnActive: { backgroundColor: "rgba(255,255,255,0.93)", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, shadowOpacity: 0.3, elevation: 5 },
-  zoomCurrentLabel: { color: "rgba(255,255,255,0.75)", fontSize: 12, fontFamily: "Inter_600SemiBold", letterSpacing: 0.3 },
-  zoomPill: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 50, minWidth: 42, alignItems: "center" },
-  zoomPillActive: { backgroundColor: "rgba(255,255,255,0.93)", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, shadowOpacity: 0.35, elevation: 5 },
-  zoomPillText: { color: "rgba(255,255,255,0.65)", fontSize: 13, fontFamily: "Inter_600SemiBold", letterSpacing: 0.3 },
-  zoomPillTextActive: { color: "#1a1208", fontFamily: "Inter_700Bold" },
-  filterRow: {
-    position: "absolute", bottom: 184, left: 0, right: 0,
-    flexDirection: "row", paddingHorizontal: 16,
-    backgroundColor: "rgba(0,0,0,0.7)", paddingVertical: 10,
+  panoLine: { width: "80%", height: 1, backgroundColor: "rgba(177,152,112,0.8)" },
+  modeHint: { color: "rgba(177,152,112,0.9)", fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 12 },
+  tlCounter: {
+    position: "absolute", top: "40%", alignSelf: "center",
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+    borderWidth: 1, borderColor: PRIMARY,
   },
-  filterChip: { alignItems: "center", marginRight: 14 },
-  filterThumb: { width: 44, height: 44, borderRadius: 8, marginBottom: 4 },
-  filterLabel: { color: "rgba(255,255,255,0.7)", fontSize: 10, fontFamily: "Inter_400Regular" },
-  bottomBar: { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.75)", paddingTop: 12 },
-  modeGlass: {
-    flexDirection: "row", alignSelf: "center", alignItems: "center", gap: 2, marginBottom: 14,
-    paddingHorizontal: 4, paddingVertical: 4, borderRadius: 50,
-    backgroundColor: "rgba(18,14,10,0.52)",
-    borderWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.28)", borderBottomColor: "rgba(0,0,0,0.35)",
-    borderLeftColor: "rgba(255,255,255,0.14)", borderRightColor: "rgba(0,0,0,0.20)",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowRadius: 16, shadowOpacity: 0.45, elevation: 8,
+  tlCountText: { color: PRIMARY, fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  filterPanel: {
+    position: "absolute", left: 0, right: 0,
+    backgroundColor: "rgba(0,0,0,0.72)",
   },
-  modePill: { padding: 14, borderRadius: 50, alignItems: "center", justifyContent: "center" },
-  modePillActive: {
-    backgroundColor: "rgba(255,255,255,0.93)",
-    shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowRadius: 8, shadowOpacity: 0.35, elevation: 5,
+  filterScroll: { paddingHorizontal: 16, paddingVertical: 10, gap: 14 },
+  filterChip: { alignItems: "center", gap: 4 },
+  filterThumb: { width: 46, height: 46, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  filterBeautyIcon: { fontSize: 18 },
+  filterLabel: { color: "rgba(255,255,255,0.65)", fontSize: 10, fontFamily: "Inter_400Regular" },
+  zoomSideBar: {
+    position: "absolute", right: 14,
+    backgroundColor: "rgba(18,14,10,0.58)",
+    borderRadius: 22, paddingVertical: 6, paddingHorizontal: 4,
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.15)",
+    alignItems: "center",
   },
-  captureRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 48, marginBottom: 8 },
-  sideBtn: { width: 48, height: 48, alignItems: "center", justifyContent: "center" },
+  zoomSideBtn: { paddingVertical: 9, paddingHorizontal: 10 },
+  zoomSideLabel: { color: "rgba(255,255,255,0.45)", fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  zoomSideLabelActive: { color: PRIMARY, fontSize: 13 },
+  bottomControls: {
+    position: "absolute", bottom: 0, left: 0, right: 0,
+    backgroundColor: "rgba(0,0,0,0.78)",
+  },
+  modeStrip: { paddingTop: 14 },
+  modeStripContent: { paddingHorizontal: 32, gap: 22, alignItems: "center" },
+  modeLabelWrap: { alignItems: "center", gap: 4 },
+  modeLabel: {
+    fontSize: 11, fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.38)", letterSpacing: 1.2,
+  },
+  modeLabelActive: { color: PRIMARY, fontSize: 12 },
+  modeDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: PRIMARY },
+  captureRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 48, paddingTop: 14, paddingBottom: 10,
+  },
+  sideBtn: { width: 50, height: 50, alignItems: "center", justifyContent: "center" },
   captureBtn: {
     width: 76, height: 76, borderRadius: 38,
     borderWidth: 4, borderColor: "white",
     alignItems: "center", justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.1)",
   },
   captureInner: { width: 54, height: 54, borderRadius: 27, backgroundColor: "white" },
-  captureStop: { width: 28, height: 28, borderRadius: 5, backgroundColor: "#ef4444" },
-  permText: { fontSize: 16, color: "white", fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 32 },
-  permBtn: { backgroundColor: PRIMARY, paddingHorizontal: 28, paddingVertical: 14, borderRadius: 14 },
+  permText: {
+    fontSize: 16, color: "white", fontFamily: "Inter_400Regular",
+    textAlign: "center", paddingHorizontal: 32, marginVertical: 20,
+  },
+  permBtn: { backgroundColor: PRIMARY, paddingHorizontal: 28, paddingVertical: 14, borderRadius: 14, marginBottom: 12 },
   permBtnText: { color: "white", fontSize: 15, fontFamily: "Inter_600SemiBold" },
   permSkip: { paddingVertical: 8 },
   permSkipText: { color: "#888", fontSize: 13, fontFamily: "Inter_400Regular" },
-  paywallContainer: { alignItems: "center", justifyContent: "center", padding: 32 },
   paywallTitle: { fontSize: 26, fontFamily: "Inter_700Bold", color: "white", marginBottom: 12, textAlign: "center" },
   paywallBody: { fontSize: 15, color: "#aaa", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22, marginBottom: 32 },
   paywallBtn: {
     flexDirection: "row", alignItems: "center", gap: 10,
-    backgroundColor: PRIMARY, paddingHorizontal: 28, paddingVertical: 16, borderRadius: 16, marginBottom: 14,
+    backgroundColor: PRIMARY, paddingHorizontal: 28, paddingVertical: 16, borderRadius: 16,
   },
   paywallBtnText: { color: "white", fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  paywallSecondary: { paddingVertical: 8 },
-  paywallSecondaryText: { color: "#888", fontSize: 14, fontFamily: "Inter_400Regular" },
+  scanModal: { flex: 1, backgroundColor: "#0d0b08" },
+  scanModalHeader: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    padding: 16, paddingTop: 56, borderBottomWidth: 1, borderBottomColor: "rgba(177,152,112,0.2)",
+  },
+  scanModalClose: { padding: 8 },
+  scanModalTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
+  scanPreview: { flex: 1, width: "100%" },
+  scanModalFooter: {
+    flexDirection: "row", gap: 12, padding: 20, paddingBottom: 40,
+    borderTopWidth: 1, borderTopColor: "rgba(177,152,112,0.2)",
+  },
+  scanRetakeBtn: {
+    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    borderWidth: 1, borderColor: PRIMARY, borderRadius: 14, paddingVertical: 14,
+  },
+  scanRetakeText: { color: PRIMARY, fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  scanUploadBtn: {
+    flex: 2, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 14,
+  },
+  scanUploadText: { color: "white", fontSize: 15, fontFamily: "Inter_600SemiBold" },
 });

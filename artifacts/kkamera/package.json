@@ -62,6 +62,7 @@
     "expo-network": "^55.0.13",
     "expo-secure-store": "^15.0.8",
     "expo-sharing": "^14.0.8",
-    "react-native-purchases": "9.7.2"
+    "react-native-purchases": "9.7.2",
+    "react-native-view-shot": "^5.1.0"
   }
 }

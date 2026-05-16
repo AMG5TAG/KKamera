@@ -163,4 +163,15 @@ router.delete("/uploads/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Clear all upload history for this user
+router.delete("/uploads", requireAuth, async (req, res) => {
+  try {
+    await db.delete(uploadsTable).where(eq(uploadsTable.userId, req.userId!));
+    res.json({ message: "History cleared" });
+  } catch (err) {
+    req.log.error({ err }, "Clear uploads error");
+    res.status(500).json({ message: "Failed to clear history" });
+  }
+});
+
 export default router;
