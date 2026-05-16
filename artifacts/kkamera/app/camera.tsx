@@ -2,6 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
   Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
+  useWindowDimensions,
 } from "react-native";
 import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
@@ -58,11 +59,27 @@ const ZOOM_LEVELS = [
   { value: 1,    label: "10×" },
 ];
 
-const PRIMARY_MODES = EXT_MODES.filter(m => ["photo","video","scan"].includes(m.mode));
-const EXTRA_MODES   = EXT_MODES.filter(m => !["photo","video","scan"].includes(m.mode));
+// iOS Camera-style ordered strip: 3 left · VIDEO · PHOTO · DOC · 3 right
+const STRIP_MODES: ModeConfig[] = [
+  EXT_MODES.find(m => m.mode === "pano")!,
+  EXT_MODES.find(m => m.mode === "portrait")!,
+  EXT_MODES.find(m => m.mode === "cinematic")!,
+  EXT_MODES.find(m => m.mode === "video")!,
+  EXT_MODES.find(m => m.mode === "photo")!,
+  EXT_MODES.find(m => m.mode === "scan")!,
+  EXT_MODES.find(m => m.mode === "slow-mo")!,
+  EXT_MODES.find(m => m.mode === "timelapse")!,
+  EXT_MODES.find(m => m.mode === "spatial")!,
+];
+const STRIP_LABEL: Partial<Record<ExtMode, string>> = {
+  scan: "DOC", "slow-mo": "SLO-MO", timelapse: "TIME-LAPSE",
+};
+const DEFAULT_STRIP_IDX = STRIP_MODES.findIndex(m => m.mode === "photo"); // 4
+const ITEM_W = 88;
 
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
+  const { width: screenW } = useWindowDimensions();
   const { token } = useAuth();
   const { lastUpload, executeUpload } = useUpload();
   const { settings } = useSettings();
@@ -101,8 +118,8 @@ export default function CameraScreen() {
   const [scanFileName, setScanFileName] = useState("");
   const [showScanModal, setShowScanModal] = useState(false);
 
-  // Mode selector
-  const [showMoreModes, setShowMoreModes] = useState(false);
+  // Mode strip scroll ref
+  const modeScrollRef = useRef<ScrollView>(null);
 
   // Zoom collapse
   const [zoomExpanded, setZoomExpanded] = useState(false);
@@ -116,6 +133,17 @@ export default function CameraScreen() {
     if (!cameraPermission?.granted) requestCameraPermission();
     if (!micPermission?.granted) requestMicPermission();
   }, []);
+
+  // Scroll strip to the currently active mode
+  useEffect(() => {
+    const idx = STRIP_MODES.findIndex(m => m.mode === extMode);
+    if (idx >= 0) {
+      const t = setTimeout(() => {
+        modeScrollRef.current?.scrollTo({ x: idx * ITEM_W, animated: true });
+      }, 60);
+      return () => clearTimeout(t);
+    }
+  }, [extMode]);
 
   const currentModeConfig = EXT_MODES.find(m => m.mode === extMode) ?? EXT_MODES[0]!;
   const cameraViewMode: CameraMode = currentModeConfig.cameraMode;
@@ -304,6 +332,12 @@ export default function CameraScreen() {
     return handlePhotoCapture();
   };
 
+  const scrollToMode = useCallback((idx: number) => {
+    try {
+      modeScrollRef.current?.scrollTo({ x: idx * ITEM_W, animated: true });
+    } catch { /* ignore */ }
+  }, []);
+
   const cycleFlash = () => {
     const cycle: FlashMode[] = ["auto", "on", "off"];
     setFlash(prev => cycle[(cycle.indexOf(prev) + 1) % 3]!);
@@ -384,6 +418,13 @@ export default function CameraScreen() {
 
   const isVideoMode = currentModeConfig.isVideo && extMode !== "timelapse";
   const captureIsActive = isRecording || isTimelapsing;
+
+  const handleModeScrollEnd = (e: any) => {
+    const x = e?.nativeEvent?.contentOffset?.x ?? 0;
+    const idx = Math.round(x / ITEM_W);
+    const clamped = Math.max(0, Math.min(idx, STRIP_MODES.length - 1));
+    if (!captureIsActive) setExtMode(STRIP_MODES[clamped]!.mode);
+  };
 
   return (
     <GestureDetector gesture={pinchGesture}>
@@ -525,57 +566,47 @@ export default function CameraScreen() {
         {/* ── Bottom Controls ─────────────────────────────────────────────── */}
         <View style={[styles.bottomControls, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 20 : 8) }]}>
 
-          {/* Active extra-mode badge (shown when a non-primary mode is selected) */}
-          {!PRIMARY_MODES.find(m => m.mode === extMode) && (
-            <View style={styles.activeExtBadge}>
-              <Text style={styles.activeExtBadgeText}>{currentModeConfig.label}</Text>
-            </View>
-          )}
-
-          {/* Expanded extra-modes strip */}
-          {showMoreModes && !captureIsActive && (
+          {/* ── iOS-style liquid glass mode strip ──────────────────────── */}
+          <View style={styles.modeStripWrapper}>
+            {/* Frosted glass background */}
+            <View
+              style={[styles.modeGlassBg, Platform.OS === "web" && ({
+                backdropFilter: "blur(24px)",
+                WebkitBackdropFilter: "blur(24px)",
+              } as any)]}
+            />
+            {/* Fixed center highlight pill */}
+            <View style={[styles.modeCenterPill, { left: (screenW - ITEM_W + 10) / 2, width: ITEM_W - 10 }]} pointerEvents="none" />
+            {/* Scrollable mode labels */}
             <ScrollView
-              horizontal showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.extModeContent}
-              style={styles.extModePanel}
+              ref={modeScrollRef}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              snapToInterval={ITEM_W}
+              decelerationRate="fast"
+              snapToAlignment="start"
+              onMomentumScrollEnd={handleModeScrollEnd}
+              onScrollEndDrag={Platform.OS === "web" ? handleModeScrollEnd : undefined}
+              contentContainerStyle={{ paddingHorizontal: (screenW - ITEM_W) / 2 }}
+              style={{ flex: 1 }}
+              contentOffset={{ x: DEFAULT_STRIP_IDX * ITEM_W, y: 0 }}
             >
-              {EXTRA_MODES.map(({ mode, label }) => (
-                <TouchableOpacity
-                  key={mode}
-                  onPress={() => { setExtMode(mode); setShowMoreModes(false); }}
-                  style={styles.modeLabelWrap}
-                >
-                  <Text style={[styles.modeLabel, extMode === mode && styles.modeLabelActive]}>{label}</Text>
-                  {extMode === mode && <View style={styles.modeDot} />}
-                </TouchableOpacity>
-              ))}
+              {STRIP_MODES.map((m, i) => {
+                const isActive = m.mode === extMode;
+                const lbl = STRIP_LABEL[m.mode] ?? m.label;
+                return (
+                  <TouchableOpacity
+                    key={m.mode}
+                    style={{ width: ITEM_W, alignItems: "center", paddingVertical: 10 }}
+                    onPress={() => { if (!captureIsActive) { setExtMode(m.mode); scrollToMode(i); } }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[styles.stripLabel, isActive && styles.stripLabelActive]}>{lbl}</Text>
+                    {isActive && <View style={styles.modeDot} />}
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
-          )}
-
-          {/* Primary 3-mode row + more button */}
-          <View style={styles.primaryModeRow}>
-            {PRIMARY_MODES.map(({ mode, label }) => (
-              <TouchableOpacity
-                key={mode}
-                onPress={() => { if (!captureIsActive) { setExtMode(mode); setShowMoreModes(false); } }}
-                style={styles.modeLabelWrap}
-              >
-                <Text style={[styles.modeLabel, extMode === mode && styles.modeLabelActive]}>{label}</Text>
-                {extMode === mode && <View style={styles.modeDot} />}
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity
-              style={styles.modeLabelWrap}
-              onPress={() => { if (!captureIsActive) setShowMoreModes(v => !v); }}
-            >
-              <Ionicons
-                name="ellipsis-horizontal"
-                size={18}
-                color={showMoreModes || !PRIMARY_MODES.find(m => m.mode === extMode)
-                  ? PRIMARY : "rgba(255,255,255,0.38)"}
-              />
-              {!PRIMARY_MODES.find(m => m.mode === extMode) && <View style={styles.modeDot} />}
-            </TouchableOpacity>
           </View>
 
           {/* Capture row */}
@@ -733,21 +764,45 @@ const styles = StyleSheet.create({
     position: "absolute", bottom: 0, left: 0, right: 0,
     backgroundColor: "rgba(0,0,0,0.78)",
   },
-  activeExtBadge: { alignItems: "center", paddingTop: 10, paddingBottom: 0 },
-  activeExtBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold", color: PRIMARY, letterSpacing: 1.5 },
-  extModePanel: { borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" },
-  extModeContent: { paddingHorizontal: 24, gap: 24, alignItems: "center", paddingVertical: 10 },
-  primaryModeRow: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 36, paddingVertical: 12, paddingTop: 14,
+  modeStripWrapper: {
+    height: 48,
+    overflow: "hidden",
+    position: "relative",
   },
-  modeLabelWrap: { alignItems: "center", gap: 4 },
-  modeLabel: {
-    fontSize: 11, fontFamily: "Inter_600SemiBold",
-    color: "rgba(255,255,255,0.38)", letterSpacing: 1.2,
+  modeGlassBg: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(14,11,8,0.62)",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.12)",
   },
-  modeLabelActive: { color: PRIMARY, fontSize: 12 },
-  modeDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: PRIMARY },
+  modeCenterPill: {
+    position: "absolute",
+    top: 6,
+    bottom: 6,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.28)",
+    zIndex: 0,
+    // subtle top specular highlight (approximates liquid glass)
+    shadowColor: "white",
+    shadowOffset: { width: 0, height: -1 },
+    shadowOpacity: 0.18,
+    shadowRadius: 1,
+  },
+  stripLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.4)",
+    letterSpacing: 1.1,
+  },
+  stripLabelActive: {
+    color: "white",
+    fontSize: 11,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1,
+  },
+  modeDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: "white", marginTop: 3 },
   captureRow: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingHorizontal: 48, paddingTop: 14, paddingBottom: 10,
