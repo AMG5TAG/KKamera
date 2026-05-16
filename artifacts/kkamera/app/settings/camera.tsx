@@ -77,10 +77,9 @@ export default function CameraScreen() {
   const { settings, updateSetting } = useSettings();
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-        <Text style={styles.backBtnText}>Back</Text>
       </TouchableOpacity>
 
       <ScrollView
@@ -161,7 +160,6 @@ export default function CameraScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
   sectionLabel: {
     fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold",
     letterSpacing: 1.5, textTransform: "uppercase",

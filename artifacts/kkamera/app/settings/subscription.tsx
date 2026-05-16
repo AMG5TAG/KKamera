@@ -147,10 +147,9 @@ export default function SubscriptionScreen() {
   const showCancelButton = !isNative && status === "active";
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
     <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      <Text style={styles.backBtnText}>Back</Text>
     </TouchableOpacity>
     <ScrollView
       style={{ flex: 1 }}
@@ -270,5 +269,4 @@ const styles = StyleSheet.create({
   modalCancel: { alignItems: "center", paddingVertical: 10 },
   modalCancelText: { fontSize: 14, color: "#666", fontFamily: "Inter_400Regular" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

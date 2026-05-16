@@ -41,7 +41,6 @@ export default function FeedbackScreen() {
       <View style={[styles.successWrap, { backgroundColor: BG }]}>
         <TouchableOpacity style={[styles.backBtn, { alignSelf: "flex-start" }]} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-          <Text style={styles.backBtnText}>Back</Text>
         </TouchableOpacity>
         <Ionicons name="checkmark-circle" size={64} color={PRIMARY} />
         <Text style={styles.successTitle}>Thank You!</Text>
@@ -54,10 +53,9 @@ export default function FeedbackScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
     <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      <Text style={styles.backBtnText}>Back</Text>
     </TouchableOpacity>
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }} showsVerticalScrollIndicator={false}>
       <Text style={styles.intro}>
@@ -133,5 +131,4 @@ const styles = StyleSheet.create({
   doneBtn: { paddingVertical: 12, paddingHorizontal: 28, borderRadius: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
   doneBtnText: { fontSize: 14, fontFamily: "Inter_500Medium", color: PRIMARY },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

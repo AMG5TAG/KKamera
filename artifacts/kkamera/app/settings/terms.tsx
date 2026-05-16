@@ -12,10 +12,9 @@ const EFFECTIVE_DATE = "13 May 2026";
 export default function TermsScreen() {
   const insets = useSafeAreaInsets();
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
     <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      <Text style={styles.backBtnText}>Back</Text>
     </TouchableOpacity>
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
       <Text style={styles.updated}>Effective: {EFFECTIVE_DATE}</Text>
@@ -96,7 +95,6 @@ function Bold({ children }: { children: React.ReactNode }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0d0b08" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
   updated: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", marginBottom: 20, fontStyle: "italic" },
   section: { marginBottom: 20 },
   sectionTitle: { fontSize: 14, fontFamily: "Inter_700Bold", color: PRIMARY, marginBottom: 8 },

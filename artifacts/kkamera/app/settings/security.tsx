@@ -66,10 +66,9 @@ export default function SecurityScreen() {
   const is2FAEnabled = user?.twoFAEnabled ?? false;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
     <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      <Text style={styles.backBtnText}>Back</Text>
     </TouchableOpacity>
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
       {/* Status card */}
@@ -210,5 +209,4 @@ const styles = StyleSheet.create({
   disableBtn: { alignItems: "center", justifyContent: "center", borderRadius: 14, paddingVertical: 15, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", marginBottom: 10 },
   disableBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: "#ef4444" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

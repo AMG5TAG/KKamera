@@ -176,10 +176,9 @@ export default function AddCloudScreen() {
   const isOAuthConfigured = selectedType ? oauthStatus[selectedType] !== false : true;
 
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
+    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
       <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-        <Text style={styles.backBtnText}>Back</Text>
       </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionTitle}>Choose Storage Type</Text>
@@ -384,5 +383,4 @@ const styles = StyleSheet.create({
   },
   saveText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

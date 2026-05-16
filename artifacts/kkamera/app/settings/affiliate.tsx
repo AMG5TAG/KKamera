@@ -32,10 +32,9 @@ export default function AffiliateScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
     <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      <Text style={styles.backBtnText}>Back</Text>
     </TouchableOpacity>
     <ScrollView
       style={{ flex: 1 }}
@@ -122,7 +121,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   center: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
-  backBtnText: { fontSize: 15, color: PRIMARY, fontFamily: "Inter_500Medium" },
   codeCard: { backgroundColor: "rgba(177,152,112,0.1)", borderRadius: 18, padding: 24, alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
   codePre: { fontSize: 10, color: "#888", fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 8 },
   code: { fontSize: 36, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 4, marginBottom: 16 },

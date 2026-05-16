@@ -1,11 +1,11 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   Alert, ActivityIndicator, RefreshControl,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useNavigation } from "expo-router";
+import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListUploads, useDeleteUpload, getListUploadsQueryKey,
@@ -19,11 +19,11 @@ const CARD = "#1a1710";
 type UploadStatus = "pending" | "uploading" | "done" | "failed" | "queued" | "partial";
 
 const STATUS_CONFIG: Record<UploadStatus, { color: string; icon: string; label: string }> = {
-  done:      { color: "#22c55e", icon: "cloud-done-outline",     label: "Uploaded"   },
-  uploading: { color: PRIMARY,   icon: "cloud-upload-outline",   label: "Uploading…" },
-  partial:   { color: "#f59e0b", icon: "cloud-outline",          label: "Partial"    },
-  failed:    { color: "#ef4444", icon: "cloud-offline-outline",  label: "Failed"     },
-  queued:    { color: "#6b7280", icon: "time-outline",           label: "Queued"     },
+  done:      { color: "#22c55e", icon: "cloud-done-outline",       label: "Uploaded"   },
+  uploading: { color: PRIMARY,   icon: "cloud-upload-outline",     label: "Uploading…" },
+  partial:   { color: "#f59e0b", icon: "cloud-outline",            label: "Partial"    },
+  failed:    { color: "#ef4444", icon: "cloud-offline-outline",    label: "Failed"     },
+  queued:    { color: "#6b7280", icon: "time-outline",             label: "Queued"     },
   pending:   { color: "#6b7280", icon: "ellipsis-horizontal-outline", label: "Pending" },
 };
 
@@ -48,7 +48,6 @@ function fileIcon(fileType: string, fileName: string) {
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation();
   const queryClient = useQueryClient();
   const { settings } = useSettings();
   const { data: uploads, isLoading, refetch, isRefetching } = useListUploads();
@@ -103,31 +102,12 @@ export default function HistoryScreen() {
     );
   }, [sorted.length, queryClient]);
 
-  useEffect(() => {
-    navigation.setOptions({
-      headerRight: sorted.length > 0 ? () => (
-        <TouchableOpacity
-          onPress={handleClearAll}
-          disabled={isClearing}
-          style={styles.clearAllBtn}
-        >
-          {isClearing
-            ? <ActivityIndicator size="small" color="#ef4444" />
-            : (
-              <>
-                <Ionicons name="trash-outline" size={15} color="#ef4444" />
-                <Text style={styles.clearAllText}>Clear All</Text>
-              </>
-            )
-          }
-        </TouchableOpacity>
-      ) : undefined,
-    });
-  }, [sorted.length, isClearing, handleClearAll, navigation]);
-
   if (!settings.recordHistory) {
     return (
-      <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+      <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={28} color={PRIMARY} />
+        </TouchableOpacity>
         <View style={styles.center}>
           <Ionicons name="eye-off-outline" size={48} color="#333" />
           <Text style={styles.emptyTitle}>History is disabled</Text>
@@ -179,7 +159,27 @@ export default function HistoryScreen() {
   };
 
   return (
-    <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+    <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+      <View style={styles.headerRow}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={28} color={PRIMARY} />
+        </TouchableOpacity>
+        <Text style={styles.heading}>Upload History</Text>
+        {sorted.length > 0 && (
+          <TouchableOpacity onPress={handleClearAll} disabled={isClearing} style={styles.clearAllBtn}>
+            {isClearing
+              ? <ActivityIndicator size="small" color="#ef4444" />
+              : (
+                <>
+                  <Ionicons name="trash-outline" size={15} color="#ef4444" />
+                  <Text style={styles.clearAllText}>Clear</Text>
+                </>
+              )
+            }
+          </TouchableOpacity>
+        )}
+      </View>
+
       {isLoading ? (
         <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
       ) : (
@@ -211,11 +211,15 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
+  headerRow: {
+    flexDirection: "row", alignItems: "center", paddingRight: 12, minHeight: 52,
+  },
+  backBtn: { padding: 12 },
+  heading: { flex: 1, fontSize: 22, fontFamily: "Inter_700Bold", color: "white", paddingLeft: 4 },
   clearAllBtn: {
     flexDirection: "row", alignItems: "center", gap: 5,
     paddingHorizontal: 10, paddingVertical: 6,
     borderRadius: 10, borderWidth: 1, borderColor: "rgba(239,68,68,0.35)",
-    marginRight: 4,
   },
   clearAllText: { fontSize: 13, color: "#ef4444", fontFamily: "Inter_500Medium" },
   countText: {

@@ -135,10 +135,8 @@ function RootLayoutNav() {
   return (
     <Stack
       screenOptions={{
+        headerShown: false,
         contentStyle: { backgroundColor: "#0d0b08" },
-        headerStyle: { backgroundColor: "#0d0b08" },
-        headerTitleStyle: { color: "#f0ebe0", fontFamily: "Inter_600SemiBold" },
-        headerTintColor: "#b19870",
       }}
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />
