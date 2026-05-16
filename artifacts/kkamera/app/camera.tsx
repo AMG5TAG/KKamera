@@ -58,6 +58,9 @@ const ZOOM_LEVELS = [
   { value: 1,    label: "10×" },
 ];
 
+const PRIMARY_MODES = EXT_MODES.filter(m => ["photo","video","scan"].includes(m.mode));
+const EXTRA_MODES   = EXT_MODES.filter(m => !["photo","video","scan"].includes(m.mode));
+
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
   const { token } = useAuth();
@@ -97,6 +100,13 @@ export default function CameraScreen() {
   const [scanUri, setScanUri] = useState<string | null>(null);
   const [scanFileName, setScanFileName] = useState("");
   const [showScanModal, setShowScanModal] = useState(false);
+
+  // Mode selector
+  const [showMoreModes, setShowMoreModes] = useState(false);
+
+  // Zoom collapse
+  const [zoomExpanded, setZoomExpanded] = useState(false);
+  const zoomCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cameraRef = useRef<CameraView>(null);
   const captureScale = useRef(new Animated.Value(1)).current;
@@ -299,6 +309,24 @@ export default function CameraScreen() {
     setFlash(prev => cycle[(cycle.indexOf(prev) + 1) % 3]!);
   };
 
+  const currentZoomLabel = zoom < 0.1 ? "·5" : zoom < 0.4 ? "1×" : zoom < 0.6 ? "2×" : zoom < 0.85 ? "5×" : "10×";
+
+  const toggleZoom = useCallback(() => {
+    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
+    setZoomExpanded(prev => {
+      if (!prev) {
+        zoomCollapseTimer.current = setTimeout(() => setZoomExpanded(false), 3000);
+      }
+      return !prev;
+    });
+  }, []);
+
+  const selectZoom = useCallback((value: number) => {
+    setZoom(value);
+    if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
+    zoomCollapseTimer.current = setTimeout(() => setZoomExpanded(false), 2000);
+  }, []);
+
   const flashIcon = flash === "on" ? "flash" : flash === "off" ? "flash-off" : "flash-outline";
   const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
@@ -480,39 +508,75 @@ export default function CameraScreen() {
           </View>
         )}
 
-        {/* ── Vertical Zoom Bar (right side) ──────────────────────────────── */}
+        {/* ── Collapsible Zoom (right side) ───────────────────────────────── */}
         <View style={[styles.zoomSideBar, { top: "35%" }]}>
-          {ZOOM_LEVELS.map(({ value, label }) => (
-            <TouchableOpacity key={value} style={styles.zoomSideBtn} onPress={() => setZoom(value)}>
+          {zoomExpanded && ZOOM_LEVELS.map(({ value, label }) => (
+            <TouchableOpacity key={value} style={styles.zoomSideBtn} onPress={() => selectZoom(value)}>
               <Text style={[styles.zoomSideLabel, Math.abs(zoom - value) < 0.05 && styles.zoomSideLabelActive]}>
                 {label}
               </Text>
             </TouchableOpacity>
           ))}
+          <TouchableOpacity style={[styles.zoomSideBtn, styles.zoomBadgeBtn]} onPress={toggleZoom}>
+            <Text style={styles.zoomBadgeText}>{currentZoomLabel}</Text>
+          </TouchableOpacity>
         </View>
 
         {/* ── Bottom Controls ─────────────────────────────────────────────── */}
         <View style={[styles.bottomControls, { paddingBottom: insets.bottom + (Platform.OS === "web" ? 20 : 8) }]}>
-          {/* Mode strip */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.modeStripContent}
-            style={styles.modeStrip}
-          >
-            {EXT_MODES.map(({ mode, label }) => (
+
+          {/* Active extra-mode badge (shown when a non-primary mode is selected) */}
+          {!PRIMARY_MODES.find(m => m.mode === extMode) && (
+            <View style={styles.activeExtBadge}>
+              <Text style={styles.activeExtBadgeText}>{currentModeConfig.label}</Text>
+            </View>
+          )}
+
+          {/* Expanded extra-modes strip */}
+          {showMoreModes && !captureIsActive && (
+            <ScrollView
+              horizontal showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.extModeContent}
+              style={styles.extModePanel}
+            >
+              {EXTRA_MODES.map(({ mode, label }) => (
+                <TouchableOpacity
+                  key={mode}
+                  onPress={() => { setExtMode(mode); setShowMoreModes(false); }}
+                  style={styles.modeLabelWrap}
+                >
+                  <Text style={[styles.modeLabel, extMode === mode && styles.modeLabelActive]}>{label}</Text>
+                  {extMode === mode && <View style={styles.modeDot} />}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+
+          {/* Primary 3-mode row + more button */}
+          <View style={styles.primaryModeRow}>
+            {PRIMARY_MODES.map(({ mode, label }) => (
               <TouchableOpacity
                 key={mode}
-                onPress={() => { if (!captureIsActive) setExtMode(mode); }}
+                onPress={() => { if (!captureIsActive) { setExtMode(mode); setShowMoreModes(false); } }}
                 style={styles.modeLabelWrap}
               >
-                <Text style={[styles.modeLabel, extMode === mode && styles.modeLabelActive]}>
-                  {label}
-                </Text>
+                <Text style={[styles.modeLabel, extMode === mode && styles.modeLabelActive]}>{label}</Text>
                 {extMode === mode && <View style={styles.modeDot} />}
               </TouchableOpacity>
             ))}
-          </ScrollView>
+            <TouchableOpacity
+              style={styles.modeLabelWrap}
+              onPress={() => { if (!captureIsActive) setShowMoreModes(v => !v); }}
+            >
+              <Ionicons
+                name="ellipsis-horizontal"
+                size={18}
+                color={showMoreModes || !PRIMARY_MODES.find(m => m.mode === extMode)
+                  ? PRIMARY : "rgba(255,255,255,0.38)"}
+              />
+              {!PRIMARY_MODES.find(m => m.mode === extMode) && <View style={styles.modeDot} />}
+            </TouchableOpacity>
+          </View>
 
           {/* Capture row */}
           <View style={styles.captureRow}>
@@ -655,20 +719,28 @@ const styles = StyleSheet.create({
   filterLabel: { color: "rgba(255,255,255,0.65)", fontSize: 10, fontFamily: "Inter_400Regular" },
   zoomSideBar: {
     position: "absolute", right: 14,
-    backgroundColor: "rgba(18,14,10,0.58)",
-    borderRadius: 22, paddingVertical: 6, paddingHorizontal: 4,
-    borderWidth: 1, borderColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(18,14,10,0.28)",
+    borderRadius: 22, paddingVertical: 4, paddingHorizontal: 2,
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
     alignItems: "center",
   },
-  zoomSideBtn: { paddingVertical: 9, paddingHorizontal: 10 },
+  zoomSideBtn: { paddingVertical: 8, paddingHorizontal: 10 },
   zoomSideLabel: { color: "rgba(255,255,255,0.45)", fontSize: 12, fontFamily: "Inter_600SemiBold" },
   zoomSideLabelActive: { color: PRIMARY, fontSize: 13 },
+  zoomBadgeBtn: { borderTopWidth: 0 },
+  zoomBadgeText: { color: PRIMARY, fontSize: 13, fontFamily: "Inter_600SemiBold" },
   bottomControls: {
     position: "absolute", bottom: 0, left: 0, right: 0,
     backgroundColor: "rgba(0,0,0,0.78)",
   },
-  modeStrip: { paddingTop: 14 },
-  modeStripContent: { paddingHorizontal: 32, gap: 22, alignItems: "center" },
+  activeExtBadge: { alignItems: "center", paddingTop: 10, paddingBottom: 0 },
+  activeExtBadgeText: { fontSize: 10, fontFamily: "Inter_600SemiBold", color: PRIMARY, letterSpacing: 1.5 },
+  extModePanel: { borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" },
+  extModeContent: { paddingHorizontal: 24, gap: 24, alignItems: "center", paddingVertical: 10 },
+  primaryModeRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 36, paddingVertical: 12, paddingTop: 14,
+  },
   modeLabelWrap: { alignItems: "center", gap: 4 },
   modeLabel: {
     fontSize: 11, fontFamily: "Inter_600SemiBold",
