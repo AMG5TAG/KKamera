@@ -185,6 +185,14 @@ export default function RootLayout() {
                   <AppWithPush>
                     {Platform.OS === "web" && (
                       <Head>
+                        <meta charSet="utf-8" />
+                        <meta name="viewport" content="width=device-width, initial-scale=1" />
+                        <title>KKamera — Cloud-Based Camera App</title>
+                        <meta name="description" content="KKamera is a subscription-based camera app for iOS, Android and web. Capture photos and videos and upload them directly to your cloud storage — no media left on your device." />
+                        <meta name="keywords" content="camera app, cloud upload, photo upload, video upload, cloud photography, iOS camera, Android camera, PWA camera, Google Drive, Dropbox, OneDrive, WebDAV, FTP" />
+                        <meta name="author" content="KKamera" />
+                        <meta name="robots" content="index, follow" />
+                        <link rel="canonical" href="https://kkamera.app/" />
                         <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
                         <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
                         <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
@@ -193,6 +201,16 @@ export default function RootLayout() {
                         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
                         <meta name="apple-mobile-web-app-title" content="KKamera" />
                         <meta name="theme-color" content="#0d0b08" />
+                        <meta property="og:type" content="website" />
+                        <meta property="og:title" content="KKamera — Cloud-Based Camera App" />
+                        <meta property="og:description" content="Capture photos and videos and upload them directly to your cloud storage. No media left on your device." />
+                        <meta property="og:url" content="https://kkamera.app/" />
+                        <meta property="og:image" content="https://kkamera.app/icons/icon-512.png" />
+                        <meta property="og:site_name" content="KKamera" />
+                        <meta name="twitter:card" content="summary_large_image" />
+                        <meta name="twitter:title" content="KKamera — Cloud-Based Camera App" />
+                        <meta name="twitter:description" content="Capture photos and videos and upload them directly to your cloud storage. No media left on your device." />
+                        <meta name="twitter:image" content="https://kkamera.app/icons/icon-512.png" />
                       </Head>
                     )}
                     <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
