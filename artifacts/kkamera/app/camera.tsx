@@ -672,7 +672,7 @@ export default function CameraScreen() {
               <View style={{ width: 40 }} />
             </View>
             {scanUri && (
-              <Image source={{ uri: scanUri }} style={styles.scanPreview} resizeMode="contain" />
+              <Image source={{ uri: scanUri }} style={styles.scanPreview} resizeMode="contain" accessibilityLabel="Document scan preview" />
             )}
             <View style={styles.scanModalFooter}>
               <TouchableOpacity style={styles.scanRetakeBtn} onPress={() => { setShowScanModal(false); setScanUri(null); }}>

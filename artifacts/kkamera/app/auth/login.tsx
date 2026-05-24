@@ -59,6 +59,7 @@ export default function LoginScreen() {
             source={require("../../assets/images/logo.png")}
             style={styles.logo}
             resizeMode="contain"
+            accessibilityLabel="KKamera logo — cloud-based photography"
           />
         </View>
 

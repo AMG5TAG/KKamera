@@ -133,7 +133,7 @@ export default function MarkupScreen() {
       {/* Canvas */}
       <GestureDetector gesture={panGesture}>
         <View ref={captureViewRef} style={styles.canvas} collapsable={false}>
-          <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" />
+          <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" accessibilityLabel="Photo markup canvas" />
           <Svg style={StyleSheet.absoluteFill}>
             {paths.map((p, i) => (
               <Path

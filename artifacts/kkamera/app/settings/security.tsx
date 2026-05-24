@@ -116,7 +116,7 @@ export default function SecurityScreen() {
           <Text style={styles.sectionTitle}>Step 1: Scan the QR Code</Text>
           <Text style={styles.bodyText}>Open your authenticator app (Google Authenticator, Authy, etc.) and scan this QR code:</Text>
           <View style={styles.qrWrap}>
-            <Image source={{ uri: setupData.qrCodeUrl }} style={styles.qrCode} resizeMode="contain" />
+            <Image source={{ uri: setupData.qrCodeUrl }} style={styles.qrCode} resizeMode="contain" accessibilityLabel="Two-factor authentication QR code" />
           </View>
           <Text style={styles.manualSecret}>Or enter manually: <Text style={{ color: PRIMARY, fontFamily: "Inter_600SemiBold" }}>{setupData.secret}</Text></Text>
 
