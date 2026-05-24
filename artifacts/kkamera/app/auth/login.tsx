@@ -56,12 +56,10 @@ export default function LoginScreen() {
         {/* Logo */}
         <View style={styles.logoWrap}>
           <Image
-            source={require("../../assets/images/icon.png")}
+            source={require("../../assets/images/logo.png")}
             style={styles.logo}
             resizeMode="contain"
           />
-          <Text style={styles.appName}>KKamera</Text>
-          <Text style={styles.tagline}>Cloud Based Photography</Text>
         </View>
 
         <Text style={styles.title}>Welcome Back</Text>
@@ -151,9 +149,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   content: { paddingHorizontal: 28, paddingBottom: 40, paddingTop: 20 },
   logoWrap: { alignItems: "center", marginBottom: 32 },
-  logo: { width: 88, height: 88, marginBottom: 12 },
-  appName: { fontSize: 28, fontFamily: "Inter_700Bold", color: "white", letterSpacing: 1 },
-  tagline: { fontSize: 12, color: PRIMARY, fontFamily: "Inter_500Medium", letterSpacing: 2, textTransform: "uppercase", marginTop: 4 },
+  logo: { width: 140, height: 140, marginBottom: 8 },
   title: { fontSize: 22, fontFamily: "Inter_700Bold", color: "white", marginBottom: 6 },
   subtitle: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 24 },
   errorBox: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(239,68,68,0.1)", borderRadius: 10, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" },
