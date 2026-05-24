@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+export type GridType = "off" | "thirds" | "golden" | "square" | "diagonal";
+
 export interface AppSettings {
   imageFormat: "jpeg" | "heic" | "png" | "webp";
   videoFormat: "mp4" | "mov" | "hevc";
@@ -14,6 +16,18 @@ export interface AppSettings {
   photoMarkup: boolean;
   markupUploadMode: "both" | "marked" | "original";
   recordHistory: boolean;
+  // Pro camera controls
+  gridType: GridType;
+  timerSeconds: 0 | 3 | 10;
+  timerBeep: boolean;
+  burstCount: number;        // 1 = off, otherwise 2..10
+  burstDelay: number;        // seconds between shots
+  screenFlashSelfie: boolean;
+  flipPreview: boolean;
+  stampPhotos: boolean;
+  stripExif: boolean;
+  compassMeta: boolean;
+  volumeKeyShutter: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -29,6 +43,17 @@ const DEFAULT_SETTINGS: AppSettings = {
   photoMarkup: false,
   markupUploadMode: "both",
   recordHistory: true,
+  gridType: "off",
+  timerSeconds: 0,
+  timerBeep: false,
+  burstCount: 1,
+  burstDelay: 1,
+  screenFlashSelfie: true,
+  flipPreview: false,
+  stampPhotos: false,
+  stripExif: false,
+  compassMeta: false,
+  volumeKeyShutter: true,
 };
 
 const SETTINGS_KEY = "kkamera_settings";

@@ -6,6 +6,9 @@ import {
 } from "react-native";
 import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
+import * as Speech from "expo-speech";
+import * as Location from "expo-location";
+import { Magnetometer } from "expo-sensors";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -15,8 +18,52 @@ import * as Haptics from "expo-haptics";
 import { CameraView, CameraType, CameraMode, useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
-import { useSettings } from "@/contexts/SettingsContext";
+import { useSettings, type GridType } from "@/contexts/SettingsContext";
 import { useGetSubscription } from "@workspace/api-client-react";
+import Svg, { Line, Rect, G } from "react-native-svg";
+
+function GridOverlay({ type }: { type: GridType }) {
+  const stroke = "rgba(255,255,255,0.45)";
+  const sw = 0.6;
+  return (
+    <Svg
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none"
+      width="100%"
+      height="100%"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+    >
+      <G>
+        {type === "thirds" && (
+          <>
+            <Line x1="33.33" y1="0" x2="33.33" y2="100" stroke={stroke} strokeWidth={sw} />
+            <Line x1="66.67" y1="0" x2="66.67" y2="100" stroke={stroke} strokeWidth={sw} />
+            <Line x1="0" y1="33.33" x2="100" y2="33.33" stroke={stroke} strokeWidth={sw} />
+            <Line x1="0" y1="66.67" x2="100" y2="66.67" stroke={stroke} strokeWidth={sw} />
+          </>
+        )}
+        {type === "golden" && (
+          <>
+            <Line x1="38.2" y1="0" x2="38.2" y2="100" stroke={stroke} strokeWidth={sw} />
+            <Line x1="61.8" y1="0" x2="61.8" y2="100" stroke={stroke} strokeWidth={sw} />
+            <Line x1="0" y1="38.2" x2="100" y2="38.2" stroke={stroke} strokeWidth={sw} />
+            <Line x1="0" y1="61.8" x2="100" y2="61.8" stroke={stroke} strokeWidth={sw} />
+          </>
+        )}
+        {type === "square" && (
+          <Rect x="0" y="12.5" width="100" height="75" fill="none" stroke={stroke} strokeWidth={sw} />
+        )}
+        {type === "diagonal" && (
+          <>
+            <Line x1="0" y1="0" x2="100" y2="100" stroke={stroke} strokeWidth={sw} />
+            <Line x1="100" y1="0" x2="0" y2="100" stroke={stroke} strokeWidth={sw} />
+          </>
+        )}
+      </G>
+    </Svg>
+  );
+}
 
 const PRIMARY = "#b19870";
 
@@ -82,7 +129,7 @@ export default function CameraScreen() {
   const { width: screenW } = useWindowDimensions();
   const { token } = useAuth();
   const { lastUpload, executeUpload } = useUpload();
-  const { settings } = useSettings();
+  const { settings, updateSetting } = useSettings();
   const { data: sub, isLoading: subLoading } = useGetSubscription();
 
   const hasAccess = subLoading
@@ -100,7 +147,6 @@ export default function CameraScreen() {
   const [isRecording, setIsRecording] = useState(false);
   const [selectedFilter, setSelectedFilter] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
-  const [showLevelGuide, setShowLevelGuide] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
 
   // Time-lapse state
@@ -125,14 +171,59 @@ export default function CameraScreen() {
   const [zoomExpanded, setZoomExpanded] = useState(false);
   const zoomCollapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Pro-camera state
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [screenFlashing, setScreenFlashing] = useState(false);
+  const [heading, setHeading] = useState<number | null>(null);
+  const [stampToast, setStampToast] = useState<string | null>(null);
+
   const cameraRef = useRef<CameraView>(null);
   const captureScale = useRef(new Animated.Value(1)).current;
+  const screenFlashOpacity = useRef(new Animated.Value(0)).current;
   const baseZoom = useRef(0.25);
 
   useEffect(() => {
     if (!cameraPermission?.granted) requestCameraPermission();
     if (!micPermission?.granted) requestMicPermission();
   }, []);
+
+  // Magnetometer subscription for compass bearing (GPSImgDirection)
+  useEffect(() => {
+    if (!settings.compassMeta) { setHeading(null); return; }
+    let sub: { remove: () => void } | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const available = await Magnetometer.isAvailableAsync();
+        if (cancelled || !available) return;
+        Magnetometer.setUpdateInterval(500);
+        const created = Magnetometer.addListener(({ x, y }) => {
+          let deg = Math.atan2(y, x) * (180 / Math.PI);
+          if (deg < 0) deg += 360;
+          setHeading(Math.round(deg));
+        });
+        if (cancelled) created.remove();
+        else sub = created;
+      } catch { /* sensor unavailable */ }
+    })();
+    return () => { cancelled = true; sub?.remove(); };
+  }, [settings.compassMeta]);
+
+  // Web volume keys / spacebar shutter — use a ref so we don't re-bind every render
+  const handleCaptureRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (Platform.OS !== "web" || !settings.volumeKeyShutter) return;
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.code === "Space" || e.key === "VolumeUp" || e.key === "VolumeDown" || e.key === "AudioVolumeUp" || e.key === "AudioVolumeDown") {
+        e.preventDefault();
+        handleCaptureRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settings.volumeKeyShutter]);
 
   // Scroll strip to the currently active mode
   useEffect(() => {
@@ -198,23 +289,129 @@ export default function CameraScreen() {
     ]).start();
   };
 
+  // Run a self-timer countdown (with optional voice/beep)
+  const runCountdown = useCallback(async (seconds: number) => {
+    for (let s = seconds; s > 0; s--) {
+      setCountdown(s);
+      if (settings.timerBeep) {
+        try {
+          if (Platform.OS === "web" && typeof window !== "undefined" && "speechSynthesis" in window) {
+            const u = new SpeechSynthesisUtterance(String(s));
+            u.rate = 1.4; u.volume = 1;
+            window.speechSynthesis.speak(u);
+          } else {
+            Speech.speak(String(s), { rate: 1.4 });
+          }
+        } catch { /* ignore tts errors */ }
+      }
+      if (Platform.OS !== "web") {
+        try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch { /* */ }
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    setCountdown(null);
+  }, [settings.timerBeep]);
+
+  // Brief screen flash for selfies (web/PWA — white overlay)
+  const doScreenFlash = useCallback(async () => {
+    if (!settings.screenFlashSelfie || facing !== "front") return;
+    setScreenFlashing(true);
+    screenFlashOpacity.setValue(0);
+    await new Promise<void>(resolve => {
+      Animated.sequence([
+        Animated.timing(screenFlashOpacity, { toValue: 1, duration: 90, useNativeDriver: true }),
+        Animated.timing(screenFlashOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+      ]).start(() => { setScreenFlashing(false); resolve(); });
+    });
+  }, [settings.screenFlashSelfie, facing, screenFlashOpacity]);
+
+  // Stamp date / time / location onto an image (web canvas only — PWA target)
+  const stampImageWeb = useCallback(async (dataUri: string): Promise<string> => {
+    if (Platform.OS !== "web") return dataUri;
+    try {
+      const now = new Date();
+      const lines: string[] = [now.toLocaleString()];
+      if (settings.saveLocation) {
+        try {
+          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          lines.push(`${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`);
+        } catch { /* no location */ }
+      }
+      if (heading != null) lines.push(`Bearing ${heading}°`);
+      const img: HTMLImageElement = await new Promise((res, rej) => {
+        const i = new (window as any).Image();
+        i.onload = () => res(i); i.onerror = rej; i.src = dataUri;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+      const pad = Math.round(canvas.width * 0.025);
+      const fs = Math.round(canvas.width * 0.028);
+      ctx.font = `600 ${fs}px Inter, system-ui, sans-serif`;
+      ctx.textBaseline = "bottom";
+      ctx.shadowColor = "rgba(0,0,0,0.85)"; ctx.shadowBlur = 6;
+      ctx.fillStyle = "#b19870";
+      lines.forEach((ln, idx) => {
+        const y = canvas.height - pad - (lines.length - 1 - idx) * (fs * 1.25);
+        ctx.fillText(ln, pad, y);
+      });
+      const mime = settings.imageFormat === "png" ? "image/png" : settings.imageFormat === "webp" ? "image/webp" : "image/jpeg";
+      return canvas.toDataURL(mime, 0.92);
+    } catch { return dataUri; }
+  }, [settings.saveLocation, settings.imageFormat, heading]);
+
+  // Single capture cycle (screen flash → snap → stamp/strip → upload).
+  // The self-timer runs once at the start of a burst, not on every shot.
+  const captureOne = useCallback(async (indexLabel?: string) => {
+    await doScreenFlash();
+    pulseCaptureBtn();
+    if (Platform.OS !== "web") {
+      try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); } catch { /* */ }
+    }
+    const photo = await cameraRef.current?.takePictureAsync({
+      quality: 0.9,
+      exif: !settings.stripExif,
+    });
+    if (!photo?.uri) return;
+    let uri = photo.uri;
+    let toastMsg: string | null = null;
+    if (settings.stampPhotos) {
+      uri = await stampImageWeb(uri);
+      toastMsg = Platform.OS === "web"
+        ? "Stamped: date · time" + (settings.saveLocation ? " · location" : "") + (heading != null ? " · bearing" : "")
+        : "Stamp metadata recorded";
+    }
+    if (toastMsg) {
+      setStampToast(toastMsg);
+      setTimeout(() => setStampToast(null), 1800);
+    }
+    const ext = settings.imageFormat === "heic" ? "heic" : settings.imageFormat === "png" ? "png" : settings.imageFormat === "webp" ? "webp" : "jpg";
+    const prefix = extMode === "portrait" ? "PORT" : extMode === "pano" ? "PANO" : "IMG";
+    const suffix = indexLabel ? `_${indexLabel}` : "";
+    const fileName = `${prefix}_${Date.now()}${suffix}.${ext}`;
+    await doUpload(uri, fileName, "image");
+  }, [settings.timerSeconds, settings.stripExif, settings.stampPhotos, settings.imageFormat, settings.saveLocation, runCountdown, doScreenFlash, stampImageWeb, extMode, doUpload, heading]);
+
   const handlePhotoCapture = useCallback(async () => {
     if (isBusy) return;
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    pulseCaptureBtn();
     setIsBusy(true);
     try {
-      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.9 });
-      if (photo?.uri) {
-        const ext = settings.imageFormat === "heic" ? "heic" : settings.imageFormat === "png" ? "png" : "jpg";
-        const prefix = extMode === "portrait" ? "PORT" : extMode === "pano" ? "PANO" : "IMG";
-        const fileName = `${prefix}_${Date.now()}.${ext}`;
-        await doUpload(photo.uri, fileName, "image");
+      if (settings.timerSeconds > 0) await runCountdown(settings.timerSeconds);
+      const n = Math.max(1, settings.burstCount | 0);
+      for (let i = 0; i < n; i++) {
+        await captureOne(n > 1 ? String(i + 1).padStart(2, "0") : undefined);
+        if (n > 1 && i < n - 1) {
+          await new Promise(r => setTimeout(r, Math.max(0, settings.burstDelay) * 1000));
+        }
       }
     } catch (err: any) {
       Alert.alert("Capture Failed", err?.message ?? "Could not take photo.");
     } finally { setIsBusy(false); }
-  }, [isBusy, settings.imageFormat, extMode, doUpload, captureScale]);
+  }, [isBusy, settings.burstCount, settings.burstDelay, settings.timerSeconds, runCountdown, captureOne]);
+
+  // Keep the keyboard-shutter ref pointed at the latest handler
+  useEffect(() => { handleCaptureRef.current = () => { handlePhotoCapture(); }; }, [handlePhotoCapture]);
 
   const handleVideoToggle = useCallback(async () => {
     if (isBusy && !isRecording) return;
@@ -433,7 +630,10 @@ export default function CameraScreen() {
 
         <CameraView
           ref={cameraRef}
-          style={StyleSheet.absoluteFill}
+          style={[
+            StyleSheet.absoluteFill,
+            settings.flipPreview ? { transform: [{ rotate: "180deg" }] } : null,
+          ]}
           facing={facing}
           flash={flash}
           zoom={zoom}
@@ -451,10 +651,23 @@ export default function CameraScreen() {
           )}
 
           {/* Level guide */}
-          {showLevelGuide && (
+          {settings.showLevelGuide && (
             <View style={[StyleSheet.absoluteFill, styles.levelContainer]} pointerEvents="none">
               <View style={styles.levelLine} />
               <View style={styles.levelDot} />
+            </View>
+          )}
+
+          {/* Composition grid overlay */}
+          {settings.gridType !== "off" && (
+            <GridOverlay type={settings.gridType} />
+          )}
+
+          {/* Compass bearing badge */}
+          {heading != null && (
+            <View style={styles.compassBadge} pointerEvents="none">
+              <Ionicons name="compass-outline" size={13} color={PRIMARY} />
+              <Text style={styles.compassText}>{heading}°</Text>
             </View>
           )}
 
@@ -501,8 +714,23 @@ export default function CameraScreen() {
           <TouchableOpacity style={styles.iconBtn} onPress={cycleFlash}>
             <Ionicons name={flashIcon as any} size={24} color={flash === "on" ? "#FFD700" : "white"} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowLevelGuide(v => !v)}>
-            <MaterialCommunityIcons name="spirit-level" size={22} color={showLevelGuide ? PRIMARY : "white"} />
+          <TouchableOpacity style={styles.iconBtn} onPress={() => updateSetting("showLevelGuide", !settings.showLevelGuide)}>
+            <MaterialCommunityIcons name="spirit-level" size={22} color={settings.showLevelGuide ? PRIMARY : "white"} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => {
+            const next = settings.gridType === "off" ? "thirds" : settings.gridType === "thirds" ? "golden" : settings.gridType === "golden" ? "square" : settings.gridType === "square" ? "diagonal" : "off";
+            updateSetting("gridType", next);
+          }}>
+            <Ionicons name="grid-outline" size={20} color={settings.gridType !== "off" ? PRIMARY : "white"} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => {
+            const next = settings.timerSeconds === 0 ? 3 : settings.timerSeconds === 3 ? 10 : 0;
+            updateSetting("timerSeconds", next);
+          }}>
+            <Ionicons name="timer-outline" size={22} color={settings.timerSeconds > 0 ? PRIMARY : "white"} />
+            {settings.timerSeconds > 0 && (
+              <Text style={styles.timerBadge}>{settings.timerSeconds}s</Text>
+            )}
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconBtn} onPress={() => setShowFilters(v => !v)}>
             <Feather name="sliders" size={20} color={showFilters ? PRIMARY : "white"} />
@@ -661,6 +889,29 @@ export default function CameraScreen() {
           </View>
         </View>
 
+        {/* ── Countdown overlay ───────────────────────────────────────────── */}
+        {countdown != null && (
+          <View style={styles.countdownOverlay} pointerEvents="none">
+            <Text style={styles.countdownText}>{countdown}</Text>
+          </View>
+        )}
+
+        {/* ── Screen flash (selfie) ───────────────────────────────────────── */}
+        {screenFlashing && (
+          <Animated.View
+            pointerEvents="none"
+            style={[StyleSheet.absoluteFill, { backgroundColor: "white", opacity: screenFlashOpacity }]}
+          />
+        )}
+
+        {/* ── Stamp toast ─────────────────────────────────────────────────── */}
+        {stampToast && (
+          <View style={[styles.stampToast, { bottom: insets.bottom + 180 }]} pointerEvents="none">
+            <Ionicons name="pricetag-outline" size={13} color={PRIMARY} />
+            <Text style={styles.stampToastText}>{stampToast}</Text>
+          </View>
+        )}
+
         {/* ── Scan result modal ───────────────────────────────────────────── */}
         <Modal visible={showScanModal} animationType="slide" onRequestClose={() => setShowScanModal(false)}>
           <View style={styles.scanModal}>
@@ -719,6 +970,34 @@ const styles = StyleSheet.create({
   levelContainer: { alignItems: "center", justifyContent: "center" },
   levelLine: { width: "60%", height: 1, backgroundColor: "rgba(177,152,112,0.6)", position: "absolute" },
   levelDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: PRIMARY },
+  compassBadge: {
+    position: "absolute", top: 12, alignSelf: "center",
+    flexDirection: "row", alignItems: "center", gap: 4,
+    paddingHorizontal: 9, paddingVertical: 3, borderRadius: 11,
+    backgroundColor: "rgba(0,0,0,0.55)", borderWidth: 1, borderColor: "rgba(177,152,112,0.35)",
+  },
+  compassText: { color: PRIMARY, fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  timerBadge: {
+    position: "absolute", top: 1, right: -2,
+    color: PRIMARY, fontSize: 9, fontFamily: "Inter_700Bold",
+    backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 3, borderRadius: 6,
+  },
+  countdownOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.25)",
+  },
+  countdownText: {
+    color: "white", fontSize: 140, fontFamily: "Inter_700Bold",
+    textShadowColor: "rgba(0,0,0,0.6)", textShadowRadius: 18,
+  },
+  stampToast: {
+    position: "absolute", alignSelf: "center",
+    flexDirection: "row", alignItems: "center", gap: 6,
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 16,
+    backgroundColor: "rgba(0,0,0,0.78)", borderWidth: 1, borderColor: "rgba(177,152,112,0.4)",
+  },
+  stampToastText: { color: PRIMARY, fontSize: 12, fontFamily: "Inter_500Medium" },
   scanFrame: { width: "76%", aspectRatio: 0.77, position: "relative" },
   scanCorner: { position: "absolute", width: 28, height: 28, borderColor: PRIMARY, borderWidth: 3 },
   scanTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 6 },

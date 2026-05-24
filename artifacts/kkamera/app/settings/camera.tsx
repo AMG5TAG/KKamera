@@ -1,9 +1,9 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch, Platform } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useSettings } from "@/contexts/SettingsContext";
+import { useSettings, type GridType } from "@/contexts/SettingsContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -40,25 +40,28 @@ function ToggleRow({
   );
 }
 
-function SegmentRow<T extends string>({
-  icon, label, options, value, onChange,
+function SegmentRow<T extends string | number>({
+  icon, label, hint, options, value, onChange,
 }: {
-  icon: string; label: string;
+  icon: string; label: string; hint?: string;
   options: { label: string; value: T }[];
   value: T; onChange: (v: T) => void;
 }) {
   return (
-    <View style={[styles.row, { flexDirection: "column", alignItems: "flex-start", gap: 10 }]}>
+    <View style={[styles.row, { flexDirection: "column", alignItems: "flex-start", gap: 8 }]}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
         <View style={styles.iconWrap}>
           <Ionicons name={icon as any} size={19} color={PRIMARY} />
         </View>
-        <Text style={styles.rowLabel}>{label}</Text>
+        <View>
+          <Text style={styles.rowLabel}>{label}</Text>
+          {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
+        </View>
       </View>
       <View style={styles.segmentWrap}>
         {options.map(opt => (
           <TouchableOpacity
-            key={opt.value}
+            key={String(opt.value)}
             style={[styles.segmentBtn, value === opt.value && styles.segmentBtnActive]}
             onPress={() => onChange(opt.value)}
           >
@@ -127,14 +130,139 @@ export default function CameraScreen() {
           />
         </View>
 
-        <SectionLabel title="Capture" />
+        <SectionLabel title="Composition" />
+        <View style={styles.card}>
+          <SegmentRow<GridType>
+            icon="grid-outline"
+            label="Grid Overlay"
+            hint="Choose a composition guide"
+            options={[
+              { label: "Off",       value: "off" },
+              { label: "3×3",       value: "thirds" },
+              { label: "Golden",    value: "golden" },
+              { label: "Square",    value: "square" },
+              { label: "Diagonal",  value: "diagonal" },
+            ]}
+            value={settings.gridType}
+            onChange={v => updateSetting("gridType", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="analytics-outline"
+            label="Level Guide"
+            hint="Horizon indicator for auto-level shots"
+            value={settings.showLevelGuide}
+            onToggle={v => updateSetting("showLevelGuide", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="sync-outline"
+            label="Upside-Down Preview"
+            hint="Rotate preview 180° for attachable lenses"
+            value={settings.flipPreview}
+            onToggle={v => updateSetting("flipPreview", v)}
+          />
+        </View>
+
+        <SectionLabel title="Shutter" />
+        <View style={styles.card}>
+          <SegmentRow<0 | 3 | 10>
+            icon="timer-outline"
+            label="Self-Timer"
+            hint="Countdown before each shot"
+            options={[
+              { label: "Off",  value: 0 },
+              { label: "3 s",  value: 3 },
+              { label: "10 s", value: 10 },
+            ]}
+            value={settings.timerSeconds}
+            onChange={v => updateSetting("timerSeconds", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="volume-high-outline"
+            label="Voice Countdown"
+            hint="Speak the countdown out loud"
+            value={settings.timerBeep}
+            onToggle={v => updateSetting("timerBeep", v)}
+          />
+          <View style={styles.divider} />
+          <SegmentRow<number>
+            icon="albums-outline"
+            label="Auto-Repeat (Burst)"
+            hint="Take N photos automatically"
+            options={[
+              { label: "Off", value: 1 },
+              { label: "3",   value: 3 },
+              { label: "5",   value: 5 },
+              { label: "10",  value: 10 },
+            ]}
+            value={settings.burstCount}
+            onChange={v => updateSetting("burstCount", v)}
+          />
+          <View style={styles.divider} />
+          <SegmentRow<number>
+            icon="hourglass-outline"
+            label="Burst Delay"
+            options={[
+              { label: "0.5 s", value: 0.5 },
+              { label: "1 s",   value: 1 },
+              { label: "2 s",   value: 2 },
+              { label: "5 s",   value: 5 },
+            ]}
+            value={settings.burstDelay}
+            onChange={v => updateSetting("burstDelay", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="sunny-outline"
+            label="Screen Flash (Selfie)"
+            hint="White screen flash on front-camera shots"
+            value={settings.screenFlashSelfie}
+            onToggle={v => updateSetting("screenFlashSelfie", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="hardware-chip-outline"
+            label="Volume Keys Capture"
+            hint="Use volume keys / spacebar as shutter (web)"
+            value={settings.volumeKeyShutter}
+            onToggle={v => updateSetting("volumeKeyShutter", v)}
+          />
+        </View>
+
+        <SectionLabel title="Metadata & Stamps" />
         <View style={styles.card}>
           <ToggleRow
             icon="location-outline"
             label="Embed GPS in Photos"
-            hint="Save location data in photo metadata"
+            hint="Save GPS coordinates with the file"
             value={settings.saveLocation}
             onToggle={v => updateSetting("saveLocation", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="compass-outline"
+            label="Compass Direction"
+            hint="Add bearing (GPSImgDirection) to GPS data"
+            value={settings.compassMeta}
+            onToggle={v => updateSetting("compassMeta", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="calendar-outline"
+            label="Date / Time / Location Stamp"
+            hint="Apply a timestamp watermark to photos"
+            value={settings.stampPhotos}
+            onToggle={v => updateSetting("stampPhotos", v)}
+          />
+          <View style={styles.divider} />
+          <ToggleRow
+            icon="shield-checkmark-outline"
+            label="Strip EXIF on Upload"
+            hint="Remove camera/device metadata before sending"
+            value={settings.stripExif}
+            onToggle={v => updateSetting("stripExif", v)}
           />
           <View style={styles.divider} />
           <ToggleRow
@@ -142,14 +270,6 @@ export default function CameraScreen() {
             label="Mirror Front Camera"
             value={settings.mirrorFrontCamera}
             onToggle={v => updateSetting("mirrorFrontCamera", v)}
-          />
-          <View style={styles.divider} />
-          <ToggleRow
-            icon="analytics-outline"
-            label="Level Guide"
-            hint="Show horizon guide while shooting"
-            value={settings.showLevelGuide}
-            onToggle={v => updateSetting("showLevelGuide", v)}
           />
         </View>
       </ScrollView>

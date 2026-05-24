@@ -61,7 +61,9 @@
     "expo-file-system": "^19.0.22",
     "expo-network": "^55.0.13",
     "expo-secure-store": "^15.0.8",
+    "expo-sensors": "^56.0.5",
     "expo-sharing": "^14.0.8",
+    "expo-speech": "^56.0.3",
     "react-native-purchases": "9.7.2",
     "react-native-view-shot": "^5.1.0"
   }
