@@ -225,6 +225,24 @@
         opacity: 0.9;
       }
 
+      .footer {
+        margin-top: 32px;
+        padding-top: 16px;
+        border-top: 1px solid rgba(0,0,0,0.08);
+        font-size: 12px;
+        color: #888;
+        line-height: 1.6;
+      }
+      .footer a {
+        color: #888;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        transition: color 0.15s;
+      }
+      .footer a:hover {
+        color: #333;
+      }
+
       /* Desktop styles */
       @media (min-width: 768px) {
         body {
@@ -349,6 +367,15 @@
         .open-button:hover {
           background: #e0e0e0;
         }
+        .footer {
+          border-top-color: rgba(255,255,255,0.08);
+        }
+        .footer a {
+          color: #888;
+        }
+        .footer a:hover {
+          color: #ccc;
+        }
       }
     </style>
   </head>
@@ -413,6 +440,10 @@
               >Open in Expo Go</a
             >
           </div>
+        </div>
+
+        <div class="footer">
+          Proudly Australian. 🇦🇺 Designed and <a href="https://koastal.com.au" target="_blank" rel="noopener noreferrer">Hosted by KoaSOFT — Web Design, Software and App Development</a>.
         </div>
       </div>
     </div>

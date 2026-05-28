@@ -8,7 +8,6 @@ import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
-import { Magnetometer } from "expo-sensors";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -66,6 +65,13 @@ function GridOverlay({ type }: { type: GridType }) {
 }
 
 const PRIMARY = "#b19870";
+
+// Lazy import so expo-sensors is never loaded on web (import-time crash)
+async function getMagnetometer() {
+  if (Platform.OS === "web") return null;
+  const { Magnetometer } = await import("expo-sensors");
+  return Magnetometer;
+}
 
 type FlashMode = "off" | "on" | "auto";
 type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "spatial";
@@ -189,11 +195,13 @@ export default function CameraScreen() {
 
   // Magnetometer subscription for compass bearing (GPSImgDirection)
   useEffect(() => {
-    if (!settings.compassMeta) { setHeading(null); return; }
+    if (!settings.compassMeta || Platform.OS === "web") { setHeading(null); return; }
     let sub: { remove: () => void } | null = null;
     let cancelled = false;
     (async () => {
       try {
+        const Magnetometer = await getMagnetometer();
+        if (!Magnetometer || cancelled) return;
         const available = await Magnetometer.isAvailableAsync();
         if (cancelled || !available) return;
         Magnetometer.setUpdateInterval(500);
