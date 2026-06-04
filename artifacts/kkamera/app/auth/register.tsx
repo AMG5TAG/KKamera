@@ -37,14 +37,14 @@ export default function RegisterScreen() {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       const result = await registerMutation.mutateAsync({
-        data: { name, email, password, referralCode: referralCode || null }
+        data: { name, email, password, referralCode: referralCode.trim() || undefined }
       });
       if (result.token && result.user) {
         await login(result.token, result.user as AuthUser);
         router.replace("/wizard");
       }
     } catch (e: any) {
-      setError(e?.response?.data?.message || "Registration failed. Please try again.");
+      setError(e?.data?.message || e?.message || "Registration failed. Please try again.");
     }
   };
 

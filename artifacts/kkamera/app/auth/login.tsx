@@ -42,7 +42,7 @@ export default function LoginScreen() {
         router.replace(hasCompletedWizard ? "/camera" : "/wizard");
       }
     } catch (e: any) {
-      setError(e?.response?.data?.message || "Login failed. Check your credentials.");
+      setError(e?.data?.message || e?.message || "Login failed. Check your credentials.");
     }
   };
 

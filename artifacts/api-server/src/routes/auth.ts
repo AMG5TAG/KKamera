@@ -38,13 +38,13 @@ const registerSchema = z.object({
   email: z.string().email("Invalid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
   name: z.string().min(1, "Name is required").max(100),
-  referralCode: z.string().optional(),
+  referralCode: z.string().nullish(),
 });
 
 const loginSchema = z.object({
   email: z.string().email("Invalid email address"),
   password: z.string().min(1, "Password is required"),
-  totpCode: z.string().optional().nullable(),
+  totpCode: z.string().nullish(),
 });
 
 const twoFACodeSchema = z.object({
