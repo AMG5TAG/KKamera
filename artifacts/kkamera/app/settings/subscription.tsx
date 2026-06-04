@@ -66,7 +66,7 @@ export default function SubscriptionScreen() {
       await rcSub.purchase(confirmPackage);
     } catch (err: any) {
       if (!err?.userCancelled) {
-        console.error("Purchase error", err);
+        // Purchase error surfaced via rcSub.purchaseError
       }
     }
   };

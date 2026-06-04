@@ -1,26 +1,11 @@
 import { Client as FtpClient } from "basic-ftp";
 import { createClient as createWebdavClient } from "webdav";
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 import { Readable } from "stream";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger.js";
-
-const ENC_KEY = (process.env["SESSION_SECRET"] || "dev-secret-kkamera-32-chars-paddd").slice(0, 32);
-
-function decrypt(enc: string): string {
-  const [ivHex, dataHex] = enc.split(":");
-  if (!ivHex || !dataHex) return "";
-  const decipher = createDecipheriv("aes-256-cbc", Buffer.from(ENC_KEY), Buffer.from(ivHex, "hex"));
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString();
-}
-
-function encrypt(text: string): string {
-  const iv = randomBytes(16);
-  const cipher = createCipheriv("aes-256-cbc", Buffer.from(ENC_KEY), iv);
-  return iv.toString("hex") + ":" + Buffer.concat([cipher.update(text), cipher.final()]).toString("hex");
-}
+import { encrypt, decrypt } from "./crypto.js";
 
 export interface CloudConn {
   id: number;

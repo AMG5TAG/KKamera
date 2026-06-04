@@ -128,6 +128,12 @@ export default function LoginScreen() {
           <Text style={styles.loginText}>{loginMutation.isPending ? "Signing in..." : "Sign In"}</Text>
         </TouchableOpacity>
 
+        {!requires2FA && (
+          <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")}>
+            <Text style={styles.forgotLinkText}>Forgot password?</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity style={styles.registerLink} onPress={() => router.push("/auth/register")}>
           <Text style={styles.registerLinkText}>Don't have an account? <Text style={{ color: PRIMARY }}>Create one free</Text></Text>
         </TouchableOpacity>
@@ -162,7 +168,9 @@ const styles = StyleSheet.create({
   eyeBtn: { paddingLeft: 8 },
   twoFAHint: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 10 },
   totpInput: { fontSize: 24, textAlign: "center", letterSpacing: 8, fontFamily: "Inter_700Bold", color: PRIMARY },
-  loginBtn: { backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 16, alignItems: "center", marginTop: 8, marginBottom: 16 },
+  loginBtn: { backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 16, alignItems: "center", marginTop: 8, marginBottom: 12 },
+  forgotLink: { alignItems: "center", marginBottom: 16 },
+  forgotLinkText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_400Regular" },
   loginBtnDisabled: { opacity: 0.6 },
   loginText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
   registerLink: { alignItems: "center", marginBottom: 24 },

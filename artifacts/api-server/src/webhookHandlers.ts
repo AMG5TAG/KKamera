@@ -1,9 +1,10 @@
 import { getStripeSync, getUncachableStripeClient } from "./stripeClient.js";
 import { db } from "@workspace/db";
-import { subscriptionsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { subscriptionsTable, referralsTable, usersTable } from "@workspace/db";
+import { eq, and } from "drizzle-orm";
 import { logger } from "./lib/logger.js";
 import { sendPushToUser } from "./lib/pushNotifications.js";
+import { sendEmail, referralRewardEmail } from "./lib/email.js";
 
 /** Look up userId from a Stripe customerId */
 async function getUserIdForCustomer(customerId: string): Promise<number | null> {
@@ -13,6 +14,77 @@ async function getUserIdForCustomer(customerId: string): Promise<number | null> 
     .where(eq(subscriptionsTable.stripeCustomerId, customerId))
     .limit(1);
   return sub?.userId ?? null;
+}
+
+/** Complete pending referrals for a newly-paid user and award referrer milestones */
+async function completeReferralForUser(referredUserId: number): Promise<void> {
+  const [pendingReferral] = await db
+    .select()
+    .from(referralsTable)
+    .where(
+      and(
+        eq(referralsTable.referredId, referredUserId),
+        eq(referralsTable.status, "pending")
+      )
+    )
+    .limit(1);
+
+  if (!pendingReferral) return;
+
+  await db
+    .update(referralsTable)
+    .set({ status: "completed" })
+    .where(eq(referralsTable.id, pendingReferral.id));
+
+  const referrerId = pendingReferral.referrerId;
+
+  const completedReferrals = await db
+    .select()
+    .from(referralsTable)
+    .where(and(eq(referralsTable.referrerId, referrerId), eq(referralsTable.status, "completed")));
+
+  const total = completedReferrals.length;
+
+  // Award 1 free year per 5 completed referrals
+  if (total > 0 && total % 5 === 0) {
+    const [referrerSub] = await db
+      .select()
+      .from(subscriptionsTable)
+      .where(eq(subscriptionsTable.userId, referrerId))
+      .limit(1);
+
+    const base =
+      referrerSub?.currentPeriodEnd && referrerSub.currentPeriodEnd > new Date()
+        ? referrerSub.currentPeriodEnd
+        : new Date();
+    const newEnd = new Date(base);
+    newEnd.setFullYear(newEnd.getFullYear() + 1);
+
+    if (referrerSub) {
+      await db.update(subscriptionsTable)
+        .set({ status: "active", currentPeriodEnd: newEnd })
+        .where(eq(subscriptionsTable.userId, referrerId));
+    } else {
+      await db.insert(subscriptionsTable).values({
+        userId: referrerId, status: "active", currentPeriodEnd: newEnd,
+      });
+    }
+
+    // Notify referrer
+    const [referrer] = await db
+      .select({ name: usersTable.name, email: usersTable.email })
+      .from(usersTable)
+      .where(eq(usersTable.id, referrerId))
+      .limit(1);
+
+    if (referrer) {
+      const freeYearsTotal = Math.floor(total / 5);
+      const template = referralRewardEmail(referrer.name, freeYearsTotal);
+      sendEmail({ to: referrer.email, ...template }).catch(() => {});
+    }
+
+    logger.info({ referrerId, total }, "Referral milestone reached — 1 free year awarded");
+  }
 }
 
 export class WebhookHandlers {
@@ -53,6 +125,12 @@ export class WebhookHandlers {
             })
             .where(eq(subscriptionsTable.stripeCustomerId, obj.customer as string));
           logger.info({ customerId: obj.customer }, "Subscription activated via checkout");
+
+          // Complete any pending referrals and check for milestones
+          const userId = await getUserIdForCustomer(obj.customer as string);
+          if (userId) {
+            await completeReferralForUser(userId);
+          }
         } catch (err) {
           logger.error({ err }, "Failed to activate subscription after checkout");
         }

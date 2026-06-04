@@ -26,15 +26,14 @@ function getRevenueCatApiKey(): string | null {
 export function initializeRevenueCat() {
   const apiKey = getRevenueCatApiKey();
   if (!apiKey) {
-    console.warn("RevenueCat: no API key configured for this platform — purchases unavailable.");
-    return;
+    return; // Purchases unavailable — no API key for this platform
   }
   try {
     Purchases.setLogLevel(Purchases.LOG_LEVEL.WARN);
     Purchases.configure({ apiKey });
     _revenueCatReady = true;
-  } catch (err) {
-    console.warn("RevenueCat configure failed:", err);
+  } catch {
+    // RevenueCat configure failed — purchases unavailable on this build
   }
 }
 

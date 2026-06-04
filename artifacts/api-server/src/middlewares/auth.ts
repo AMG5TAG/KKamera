@@ -9,7 +9,8 @@ declare global {
   }
 }
 
-const JWT_SECRET = process.env["SESSION_SECRET"] || "dev-secret-kkamera";
+// Validated at startup in index.ts — guaranteed to be set
+export const JWT_SECRET = process.env["SESSION_SECRET"]!;
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const auth = req.headers["authorization"];
@@ -26,5 +27,3 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     res.status(401).json({ message: "Invalid token" });
   }
 }
-
-export { JWT_SECRET };

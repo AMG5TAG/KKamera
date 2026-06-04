@@ -8,6 +8,14 @@ if (!rawPort) throw new Error("PORT environment variable is required but was not
 const port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) throw new Error(`Invalid PORT value: "${rawPort}"`);
 
+const sessionSecret = process.env["SESSION_SECRET"];
+if (!sessionSecret || sessionSecret.length < 32) {
+  throw new Error(
+    "SESSION_SECRET environment variable must be set and at least 32 characters long. " +
+    "Generate one with: openssl rand -hex 32"
+  );
+}
+
 async function initStripe() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {

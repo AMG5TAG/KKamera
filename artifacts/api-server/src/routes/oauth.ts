@@ -1,20 +1,12 @@
 import { Router } from "express";
-import { createHash, randomBytes, createCipheriv, createDecipheriv } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { encrypt, decrypt } from "../lib/crypto.js";
 
 const router = Router();
-
-// ─── Encryption (same key as cloudConnections.ts) ───────────────────────────
-const ENC_KEY = (process.env["SESSION_SECRET"] || "dev-secret-kkamera-32-chars-paddd").slice(0, 32);
-
-function encrypt(text: string): string {
-  const iv = randomBytes(16);
-  const cipher = createCipheriv("aes-256-cbc", Buffer.from(ENC_KEY), iv);
-  return iv.toString("hex") + ":" + Buffer.concat([cipher.update(text), cipher.final()]).toString("hex");
-}
 
 // ─── PKCE ────────────────────────────────────────────────────────────────────
 
@@ -315,10 +307,7 @@ router.post("/oauth/:provider/refresh/:connectionId", requireAuth, async (req, r
 });
 
 function decryptToken(enc: string): string {
-  const [ivHex, dataHex] = enc.split(":");
-  if (!ivHex || !dataHex) return "";
-  const decipher = createDecipheriv("aes-256-cbc", Buffer.from(ENC_KEY), Buffer.from(ivHex, "hex"));
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString();
+  return decrypt(enc);
 }
 
 export default router;

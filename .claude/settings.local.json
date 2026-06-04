@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm --filter @workspace/api-server add helmet express-rate-limit)",
+      "Bash(pnpm *)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

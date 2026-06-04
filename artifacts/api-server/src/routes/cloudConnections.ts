@@ -1,20 +1,38 @@
 import { Router } from "express";
+import { z } from "zod";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+import { encrypt } from "../lib/crypto.js";
 import { testCloudConnection } from "../lib/cloudUpload.js";
+import { CLOUD_PROVIDER } from "../lib/constants.js";
 
 const router = Router();
 
-const ENC_KEY = (process.env["SESSION_SECRET"] || "dev-secret-kkamera-32-chars-paddd").slice(0, 32);
+const cloudProviders = Object.values(CLOUD_PROVIDER) as [string, ...string[]];
 
-function encrypt(text: string): string {
-  const iv = randomBytes(16);
-  const cipher = createCipheriv("aes-256-cbc", Buffer.from(ENC_KEY), iv);
-  return iv.toString("hex") + ":" + Buffer.concat([cipher.update(text), cipher.final()]).toString("hex");
-}
+const createConnectionSchema = z.object({
+  type: z.enum(cloudProviders as [string, ...string[]]),
+  name: z.string().min(1).max(100),
+  host: z.string().url().optional().or(z.string().min(1)).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  username: z.string().max(200).optional(),
+  password: z.string().max(500).optional(),
+  uploadPath: z.string().max(500).optional(),
+  oauthCode: z.string().max(2000).optional(),
+});
+
+const updateConnectionSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  active: z.boolean().optional(),
+  uploadPath: z.string().max(500).optional(),
+  host: z.string().max(500).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  username: z.string().max(200).optional(),
+  password: z.string().max(500).optional(),
+  oauthCode: z.string().max(2000).optional(),
+}).strict();
 
 function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
   return {
@@ -38,17 +56,18 @@ router.get("/cloud-connections", requireAuth, async (req, res) => {
 
 router.post("/cloud-connections", requireAuth, async (req, res) => {
   try {
-    const { type, name, host, port, username, password, uploadPath, oauthCode } = req.body as {
-      type: string; name: string; host?: string; port?: number; username?: string;
-      password?: string; uploadPath?: string; oauthCode?: string;
-    };
+    const parsed = createConnectionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { type, name, host, port, username, password, uploadPath, oauthCode } = parsed.data;
     const [conn] = await db.insert(cloudConnectionsTable).values({
       userId: req.userId!, type, name,
       host: host ?? null,
       port: port ?? null,
       username: username ?? null,
       passwordEncrypted: password ? encrypt(password) : null,
-      // oauthCode is reused as the access token for OAuth providers
       accessTokenEncrypted: oauthCode ? encrypt(oauthCode) : null,
       uploadPath: uploadPath ?? "/KKamera",
       active: true,
@@ -64,10 +83,13 @@ router.post("/cloud-connections", requireAuth, async (req, res) => {
 router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
-    const { name, active, uploadPath, host, port, username, password, oauthCode } = req.body as {
-      name?: string; active?: boolean; uploadPath?: string; host?: string;
-      port?: number; username?: string; password?: string; oauthCode?: string;
-    };
+    if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
+    const parsed = updateConnectionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { name, active, uploadPath, host, port, username, password, oauthCode } = parsed.data;
     const updates: Partial<typeof cloudConnectionsTable.$inferInsert> = {};
     if (name !== undefined) updates.name = name;
     if (active !== undefined) updates.active = active;
@@ -91,6 +113,7 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
 router.delete("/cloud-connections/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
+    if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
     await db.delete(cloudConnectionsTable)
       .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)));
     res.json({ message: "Deleted" });
@@ -103,6 +126,7 @@ router.delete("/cloud-connections/:id", requireAuth, async (req, res) => {
 router.post("/cloud-connections/:id/test", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
+    if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
     const [conn] = await db.select().from(cloudConnectionsTable)
       .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
       .limit(1);

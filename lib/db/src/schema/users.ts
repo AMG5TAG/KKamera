@@ -11,6 +11,7 @@ export const usersTable = pgTable("users", {
   referrerId: integer("referrer_id"),
   twoFASecret: text("two_fa_secret"),
   twoFAEnabled: boolean("two_fa_enabled").notNull().default(false),
+  twoFABackupCodes: text("two_fa_backup_codes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
