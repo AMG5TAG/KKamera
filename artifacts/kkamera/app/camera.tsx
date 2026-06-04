@@ -8,6 +8,7 @@ import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
+import * as FileSystem from "expo-file-system";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -20,6 +21,8 @@ import { useUpload } from "@/contexts/UploadContext";
 import { useSettings, type GridType } from "@/contexts/SettingsContext";
 import { useGetSubscription } from "@workspace/api-client-react";
 import Svg, { Line, Rect, G } from "react-native-svg";
+import { TrialBanner } from "@/components/TrialBanner";
+import { WebCamera } from "@/components/WebCamera";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -137,11 +140,16 @@ export default function CameraScreen() {
   const { lastUpload, executeUpload } = useUpload();
   const { settings, updateSetting } = useSettings();
   const { data: sub, isLoading: subLoading } = useGetSubscription();
+  const [showWebCamera, setShowWebCamera] = useState(false);
 
   const hasAccess = subLoading
     || sub?.status === "active"
     || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date())
     || sub == null;
+
+  const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
+    ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
+    : null;
 
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
@@ -277,18 +285,33 @@ export default function CameraScreen() {
     });
   }, [settings.promptBeforeUpload]);
 
+  const notifyWitness = useCallback(async (fileName: string) => {
+    if (!settings.witnessOnSuccess || !settings.witnessEmail || !token) return;
+    const BASE = process.env["EXPO_PUBLIC_DOMAIN"] ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}` : "";
+    fetch(`${BASE}/api/uploads/witness-notify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ witnessEmail: settings.witnessEmail, fileName }),
+    }).catch(() => {});
+  }, [settings.witnessOnSuccess, settings.witnessEmail, token]);
+
   const doUpload = useCallback(async (uri: string, fileName: string, type: "image" | "video") => {
     const onWifi = await checkWifi();
     if (!onWifi) { Alert.alert("WiFi Only", "File captured but not uploaded — connect to WiFi."); return; }
     const confirmed = await confirmUpload();
     if (!confirmed) return;
 
+    const onDeleteLocal = settings.deleteLocalAfterUpload && Platform.OS !== "web"
+      ? async () => { await FileSystem.deleteAsync(uri, { idempotent: true }); }
+      : undefined;
+
     if (type === "image" && settings.photoMarkup) {
       router.push({ pathname: "/markup", params: { uri, fileName } });
     } else {
-      await executeUpload(uri, fileName, type, token);
+      await executeUpload(uri, fileName, type, token, undefined, onDeleteLocal);
+      notifyWitness(fileName);
     }
-  }, [checkWifi, confirmUpload, settings.photoMarkup, executeUpload, token]);
+  }, [checkWifi, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, executeUpload, token, notifyWitness]);
 
   const pulseCaptureBtn = () => {
     Animated.sequence([
@@ -428,7 +451,8 @@ export default function CameraScreen() {
       setIsRecording(true);
       setRecordSeconds(0);
       recordTimer.current = setInterval(() => setRecordSeconds(s => s + 1), 1000);
-      cameraRef.current?.recordAsync({ maxDuration: 600 }).then(async (video) => {
+      const maxDuration = settings.maxVideoDurationSeconds > 0 ? settings.maxVideoDurationSeconds : 600;
+      cameraRef.current?.recordAsync({ maxDuration }).then(async (video) => {
         setIsRecording(false);
         if (recordTimer.current) clearInterval(recordTimer.current);
         setRecordSeconds(0);
@@ -631,10 +655,24 @@ export default function CameraScreen() {
     if (!captureIsActive) setExtMode(STRIP_MODES[clamped]!.mode);
   };
 
+  // Web camera overlay (PWA capture using getUserMedia)
+  if (Platform.OS === "web" && showWebCamera) {
+    return (
+      <WebCamera
+        onCapture={async (uri, fileName, type) => {
+          setShowWebCamera(false);
+          await doUpload(uri, fileName, type);
+        }}
+        onClose={() => setShowWebCamera(false)}
+      />
+    );
+  }
+
   return (
     <GestureDetector gesture={pinchGesture}>
       <View style={styles.container}>
         <StatusBar barStyle="light-content" />
+        {trialDaysLeft !== null && <TrialBanner daysLeft={trialDaysLeft} />}
 
         <CameraView
           ref={cameraRef}
@@ -847,10 +885,16 @@ export default function CameraScreen() {
 
           {/* Capture row */}
           <View style={styles.captureRow}>
-            {/* Gallery import */}
-            <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={captureIsActive}>
-              <Ionicons name="images-outline" size={26} color={captureIsActive ? "#333" : "white"} />
-            </TouchableOpacity>
+            {/* Gallery import / Web camera */}
+            {Platform.OS === "web" ? (
+              <TouchableOpacity style={styles.sideBtn} onPress={() => setShowWebCamera(true)} disabled={captureIsActive}>
+                <Ionicons name="videocam-outline" size={26} color={captureIsActive ? "#333" : PRIMARY} />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={captureIsActive}>
+                <Ionicons name="images-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+              </TouchableOpacity>
+            )}
 
             {/* Capture button */}
             <Animated.View style={{ transform: [{ scale: captureScale }] }}>

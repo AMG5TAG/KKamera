@@ -17,12 +17,17 @@ export default function AffiliateScreen() {
   const progress = (stats?.completedReferrals ?? 0) % 5;
   const nextMilestone = 5;
 
+  const referralLink = stats?.referralCode
+    ? `https://kkamera.app/register?ref=${stats.referralCode}`
+    : null;
+
   const handleShare = async () => {
     if (!stats?.referralCode) return;
     try {
       await Share.share({
-        message: `Try KKamera — the camera app that uploads directly to your cloud storage, leaving no trace on your device! Use my code ${stats.referralCode} when signing up to get started. https://kkamera.app`,
-        title: "Try KKamera",
+        message: `Try KKamera — the privacy-first camera app that uploads directly to your cloud storage, leaving no trace on your device.\n\nSign up free with my link and we both benefit:\n${referralLink}\n\nOr use code: ${stats.referralCode}`,
+        url: referralLink ?? undefined,
+        title: "Try KKamera — No trace camera",
       });
     } catch { /* ignore */ }
   };
@@ -44,9 +49,15 @@ export default function AffiliateScreen() {
       <View style={styles.codeCard}>
         <Text style={styles.codePre}>YOUR REFERRAL CODE</Text>
         <Text style={styles.code}>{stats?.referralCode ?? "—"}</Text>
+        {referralLink && (
+          <View style={styles.linkRow}>
+            <Ionicons name="link-outline" size={14} color="#888" />
+            <Text style={styles.linkText} numberOfLines={1}>{referralLink}</Text>
+          </View>
+        )}
         <TouchableOpacity style={styles.shareBtn} onPress={handleShare}>
           <Ionicons name="share-outline" size={18} color="white" />
-          <Text style={styles.shareBtnText}>Share Your Code</Text>
+          <Text style={styles.shareBtnText}>Share Link & Code</Text>
         </TouchableOpacity>
       </View>
 
@@ -122,6 +133,8 @@ const styles = StyleSheet.create({
   center: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
   codeCard: { backgroundColor: "rgba(177,152,112,0.1)", borderRadius: 18, padding: 24, alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
+  linkRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 14, maxWidth: "100%" },
+  linkText: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", flex: 1 },
   codePre: { fontSize: 10, color: "#888", fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 8 },
   code: { fontSize: 36, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 4, marginBottom: 16 },
   shareBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: PRIMARY, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 12 },

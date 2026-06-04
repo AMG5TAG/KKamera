@@ -3,7 +3,12 @@
     "allow": [
       "Bash(pnpm --filter @workspace/api-server add helmet express-rate-limit)",
       "Bash(pnpm *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('\\\\n'.join\\(sorted\\(d.get\\('dependencies',{}\\).keys\\(\\)\\)\\)\\)\")",
+      "Bash(node *)",
+      "Bash(npx expo *)",
+      "Bash(sed -n '130,145p' /home/runner/.claude/projects/-home-runner-workspace/c843fdf8-7c89-4176-bf1f-8c154be08dc9/tool-results/blxri5frz.txt)",
+      "Bash(sed -n '820,870p' /home/runner/.claude/projects/-home-runner-workspace/c843fdf8-7c89-4176-bf1f-8c154be08dc9/tool-results/blxri5frz.txt)"
     ]
   }
 }

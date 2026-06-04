@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Head from "expo-router/head";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { Alert, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -17,8 +17,9 @@ import { setBaseUrl } from "@workspace/api-client-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { UploadProvider } from "@/contexts/UploadContext";
-import { SettingsProvider } from "@/contexts/SettingsContext";
+import { SettingsProvider, useSettings } from "@/contexts/SettingsContext";
 import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
+import LockScreen from "@/app/lock";
 
 const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
@@ -113,6 +114,35 @@ async function registerServiceWorker(token: string | null) {
 }
 
 // ---------------------------------------------------------------------------
+// App lock gate
+// ---------------------------------------------------------------------------
+function AppLockGate({ children }: { children: React.ReactNode }) {
+  const { settings } = useSettings();
+  const { isAuthenticated, logout } = useAuth();
+  const [locked, setLocked] = useState(settings.appLockEnabled && isAuthenticated);
+
+  // Re-lock when lock setting is enabled
+  useEffect(() => {
+    if (settings.appLockEnabled && isAuthenticated) setLocked(true);
+  }, [settings.appLockEnabled, isAuthenticated]);
+
+  // Unlock when user logs out
+  useEffect(() => {
+    if (!isAuthenticated) setLocked(false);
+  }, [isAuthenticated]);
+
+  if (locked) {
+    return (
+      <LockScreen
+        onUnlock={() => setLocked(false)}
+        onLogout={async () => { await logout(); setLocked(false); }}
+      />
+    );
+  }
+  return <>{children}</>;
+}
+
+// ---------------------------------------------------------------------------
 // Inner layout that has access to auth context for the token
 // ---------------------------------------------------------------------------
 function AppWithPush({ children }: { children: React.ReactNode }) {
@@ -153,6 +183,9 @@ function RootLayoutNav() {
       <Stack.Screen name="settings/feedback" options={{ title: "Feedback" }} />
       <Stack.Screen name="settings/privacy" options={{ title: "Privacy Policy" }} />
       <Stack.Screen name="settings/terms" options={{ title: "Terms of Service" }} />
+      <Stack.Screen name="settings/privacy-security" options={{ headerShown: false }} />
+      <Stack.Screen name="settings/delete-account" options={{ headerShown: false }} />
+      <Stack.Screen name="auth/forgot-password" options={{ headerShown: false }} />
       <Stack.Screen name="history" options={{ title: "Upload History" }} />
       <Stack.Screen name="markup" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -182,6 +215,7 @@ export default function RootLayout() {
             <SettingsProvider>
               <UploadProvider>
                 <SubscriptionProvider>
+                  <AppLockGate>
                   <AppWithPush>
                     {Platform.OS === "web" && (
                       <Head>
@@ -218,6 +252,7 @@ export default function RootLayout() {
                       <RootLayoutNav />
                     </GestureHandlerRootView>
                   </AppWithPush>
+                  </AppLockGate>
                 </SubscriptionProvider>
               </UploadProvider>
             </SettingsProvider>

@@ -3,6 +3,7 @@ import React, {
   useRef, useEffect, type ReactNode,
 } from "react";
 import { Platform } from "react-native";
+import * as FileSystem from "expo-file-system";
 
 export type UploadStatus = "idle" | "queued" | "uploading" | "done" | "failed" | "partial";
 
@@ -11,6 +12,7 @@ export interface UploadEntry {
   fileName: string;
   fileType: string;
   status: UploadStatus;
+  progress: number; // 0–100
   error?: string;
   timestamp: number;
 }
@@ -26,76 +28,109 @@ interface UploadContextValue {
     fileName: string,
     fileType: "image" | "video",
     token: string | null,
-    connectionIds?: number[]
+    connectionIds?: number[],
+    onDeleteLocal?: () => Promise<void>
   ) => Promise<void>;
   retryQueued: (token: string | null) => void;
 }
 
 const UploadContext = createContext<UploadContextValue | null>(null);
 
-// Module-level store for queued uploads when offline
 interface QueuedItem {
   id: string;
   uri: string;
   fileName: string;
   fileType: "image" | "video";
   connectionIds?: number[];
+  retries: number;
+  nextRetryAt: number;
+  onDeleteLocal?: () => Promise<void>;
 }
-const offlineQueue: QueuedItem[] = [];
 
-const BASE_URL = (process.env["EXPO_PUBLIC_DOMAIN"])
+const offlineQueue: QueuedItem[] = [];
+const MAX_RETRIES = 5;
+
+function backoffMs(retries: number): number {
+  return Math.min(30_000, 1_000 * Math.pow(2, retries));
+}
+
+const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
   ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
   : "";
 
-async function fileUriToBlob(uri: string): Promise<Blob> {
-  if (Platform.OS === "web") {
-    // On web the URI is already a blob URL or data URI
-    const res = await fetch(uri);
-    return res.blob();
-  }
-  // React Native: fetch a local file URI
-  const res = await fetch(uri);
-  return res.blob();
-}
-
-async function doUpload(
+function xhrUpload(
   uri: string,
   fileName: string,
   fileType: "image" | "video",
   token: string,
-  connectionIds?: number[]
+  connectionIds: number[] | undefined,
+  onProgress: (pct: number) => void
 ): Promise<{ status: string; results: any[] }> {
-  const blob = await fileUriToBlob(uri);
-  const mimeType = fileType === "video" ? "video/mp4" : "image/jpeg";
+  return new Promise(async (resolve, reject) => {
+    try {
+      let blob: Blob;
+      if (Platform.OS === "web") {
+        const r = await fetch(uri);
+        blob = await r.blob();
+      } else {
+        const r = await fetch(uri);
+        blob = await r.blob();
+      }
 
-  const formData = new FormData();
-  formData.append("file", blob, fileName);
-  formData.append("fileName", fileName);
-  formData.append("mimeType", mimeType);
-  if (connectionIds?.length) {
-    formData.append("connectionIds", JSON.stringify(connectionIds));
-  }
+      const mimeType = fileType === "video" ? "video/mp4" : "image/jpeg";
+      const form = new FormData();
+      form.append("file", blob, fileName);
+      form.append("fileName", fileName);
+      form.append("mimeType", mimeType);
+      if (connectionIds?.length) {
+        form.append("connectionIds", JSON.stringify(connectionIds));
+      }
 
-  const res = await fetch(`${BASE_URL}/api/uploads/execute`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: formData,
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE_URL}/api/uploads/execute`);
+      xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch { reject(new Error("Invalid server response")); }
+        } else {
+          reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("Network error during upload"));
+      xhr.ontimeout = () => reject(new Error("Upload timed out"));
+      xhr.timeout = 5 * 60 * 1000; // 5 min
+
+      xhr.send(form);
+    } catch (err) {
+      reject(err);
+    }
   });
+}
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`Upload failed: ${res.status} ${text}`);
-  }
-  return res.json();
+async function deleteLocalFile(uri: string) {
+  if (Platform.OS === "web") return;
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch { /* best-effort */ }
 }
 
 export function UploadProvider({ children }: { children: ReactNode }) {
   const [uploads, setUploads] = useState<UploadEntry[]>([]);
   const tokenRef = useRef<string | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const addUpload = useCallback((fileName: string, fileType: string): string => {
     const id = Date.now().toString() + Math.random().toString(36).slice(2, 9);
-    const entry: UploadEntry = { id, fileName, fileType, status: "uploading", timestamp: Date.now() };
+    const entry: UploadEntry = {
+      id, fileName, fileType, status: "uploading", progress: 0, timestamp: Date.now(),
+    };
     setUploads(prev => [entry, ...prev].slice(0, 50));
     return id;
   }, []);
@@ -108,26 +143,92 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     setUploads(prev => prev.filter(u => u.status !== "done"));
   }, []);
 
+  const scheduleRetry = useCallback((token: string) => {
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    const ready = offlineQueue.filter(i => i.nextRetryAt <= Date.now());
+    if (ready.length === 0) {
+      const soonest = Math.min(...offlineQueue.map(i => i.nextRetryAt));
+      const delay = Math.max(1000, soonest - Date.now());
+      retryTimerRef.current = setTimeout(() => scheduleRetry(token), delay);
+      return;
+    }
+    const items = offlineQueue.splice(0, offlineQueue.length);
+    for (const item of items) {
+      if (item.nextRetryAt > Date.now()) {
+        offlineQueue.push(item); // not ready yet, put back
+        continue;
+      }
+      executeUploadInner(item.uri, item.fileName, item.fileType, token, item.connectionIds, item.id, item.retries, item.onDeleteLocal);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const executeUploadInner = useCallback(async (
+    uri: string,
+    fileName: string,
+    fileType: "image" | "video",
+    token: string,
+    connectionIds: number[] | undefined,
+    existingId: string,
+    retries: number,
+    onDeleteLocal?: () => Promise<void>
+  ) => {
+    updateUpload(existingId, { status: "uploading", progress: 0 });
+    try {
+      const result = await xhrUpload(uri, fileName, fileType, token, connectionIds, (pct) => {
+        updateUpload(existingId, { progress: pct });
+      });
+      const status = (result.status as UploadStatus) || "done";
+      const errors = result.results?.filter((r: any) => !r.success).map((r: any) => r.error).join("; ");
+      updateUpload(existingId, { status, progress: 100, error: errors || undefined });
+
+      if (status === "done" || status === "partial") {
+        // Delete the local temp file after confirmed upload
+        if (onDeleteLocal) {
+          await onDeleteLocal().catch(() => {});
+        } else {
+          await deleteLocalFile(uri);
+        }
+      }
+    } catch (err: any) {
+      const isNetwork = err.message?.includes("Network") || err.message?.includes("network") || err.message?.includes("timed out");
+      if (isNetwork && retries < MAX_RETRIES) {
+        const delay = backoffMs(retries);
+        offlineQueue.push({
+          id: existingId, uri, fileName, fileType, connectionIds,
+          retries: retries + 1, nextRetryAt: Date.now() + delay, onDeleteLocal,
+        });
+        updateUpload(existingId, {
+          status: "queued",
+          error: `Retrying in ${Math.round(delay / 1000)}s (attempt ${retries + 1}/${MAX_RETRIES})`,
+        });
+        scheduleRetry(token);
+      } else {
+        updateUpload(existingId, { status: "failed", error: err.message });
+      }
+    }
+  }, [updateUpload, scheduleRetry]);
+
   const executeUpload = useCallback(async (
     uri: string,
     fileName: string,
     fileType: "image" | "video",
     token: string | null,
-    connectionIds?: number[]
+    connectionIds?: number[],
+    onDeleteLocal?: () => Promise<void>
   ) => {
     const id = addUpload(fileName, fileType);
     if (token) tokenRef.current = token;
     const effectiveToken = token ?? tokenRef.current;
 
-    // Check online status
-    const isOnline = Platform.OS !== "web" || navigator.onLine;
+    const isOnline = Platform.OS !== "web" ? true : navigator.onLine;
 
     if (!effectiveToken || !isOnline) {
-      // Queue offline
-      offlineQueue.push({ id, uri, fileName, fileType, connectionIds });
-      updateUpload(id, { status: "queued" });
+      offlineQueue.push({
+        id, uri, fileName, fileType, connectionIds,
+        retries: 0, nextRetryAt: Date.now(), onDeleteLocal,
+      });
+      updateUpload(id, { status: "queued", error: "Queued — will upload when online" });
 
-      // Register background sync on web
       if (Platform.OS === "web" && "serviceWorker" in navigator) {
         const sw = await navigator.serviceWorker.ready.catch(() => null);
         if (sw && "sync" in sw) {
@@ -137,33 +238,16 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    try {
-      const result = await doUpload(uri, fileName, fileType, effectiveToken, connectionIds);
-      const status = (result.status as UploadStatus) || "done";
-      const errors = result.results?.filter((r: any) => !r.success).map((r: any) => r.error).join("; ");
-      updateUpload(id, { status, error: errors || undefined });
-    } catch (err: any) {
-      // Queue for retry if network error
-      const isNetworkError = err.message?.includes("fetch") || err.message?.includes("network") || !navigator?.onLine;
-      if (isNetworkError) {
-        offlineQueue.push({ id, uri, fileName, fileType, connectionIds });
-        updateUpload(id, { status: "queued", error: "Queued — will upload when online" });
-      } else {
-        updateUpload(id, { status: "failed", error: err.message });
-      }
-    }
-  }, [addUpload, updateUpload]);
+    await executeUploadInner(uri, fileName, fileType, effectiveToken, connectionIds, id, 0, onDeleteLocal);
+  }, [addUpload, updateUpload, executeUploadInner]);
 
   const retryQueued = useCallback((token: string | null) => {
     const effectiveToken = token ?? tokenRef.current;
     if (!effectiveToken || offlineQueue.length === 0) return;
-    const items = offlineQueue.splice(0, offlineQueue.length);
-    for (const item of items) {
-      executeUpload(item.uri, item.fileName, item.fileType, effectiveToken, item.connectionIds);
-    }
-  }, [executeUpload]);
+    scheduleRetry(effectiveToken);
+  }, [scheduleRetry]);
 
-  // Listen for service worker RETRY_UPLOADS message
+  // Service worker retry messages
   useEffect(() => {
     if (Platform.OS !== "web" || !("serviceWorker" in navigator)) return;
     const handler = (event: MessageEvent) => {

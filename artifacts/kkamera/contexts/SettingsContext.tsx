@@ -20,14 +20,24 @@ export interface AppSettings {
   gridType: GridType;
   timerSeconds: 0 | 3 | 10;
   timerBeep: boolean;
-  burstCount: number;        // 1 = off, otherwise 2..10
-  burstDelay: number;        // seconds between shots
+  burstCount: number;
+  burstDelay: number;
   screenFlashSelfie: boolean;
   flipPreview: boolean;
   stampPhotos: boolean;
   stripExif: boolean;
   compassMeta: boolean;
   volumeKeyShutter: boolean;
+  // Privacy & security
+  appLockEnabled: boolean;
+  appLockType: "biometric" | "pin";
+  appPin: string;
+  // Upload behaviour
+  maxVideoDurationSeconds: 0 | 30 | 60 | 300;
+  deleteLocalAfterUpload: boolean;
+  // Witness mode
+  witnessEmail: string;
+  witnessOnSuccess: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -54,6 +64,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   stripExif: false,
   compassMeta: false,
   volumeKeyShutter: true,
+  appLockEnabled: false,
+  appLockType: "biometric",
+  appPin: "",
+  maxVideoDurationSeconds: 0,
+  deleteLocalAfterUpload: true,
+  witnessEmail: "",
+  witnessOnSuccess: false,
 };
 
 const SETTINGS_KEY = "kkamera_settings";

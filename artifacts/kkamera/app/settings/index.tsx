@@ -131,6 +131,7 @@ export default function SettingsScreen() {
             onPress={() => router.push("/settings/subscription")}
           />
           <View style={styles.divider} />
+          <View style={styles.divider} />
           <MenuRow
             icon="shield-checkmark-outline"
             iconColor={user?.twoFAEnabled ? "#22c55e" : undefined}
@@ -138,6 +139,13 @@ export default function SettingsScreen() {
             hint="Two-factor authentication"
             value={user?.twoFAEnabled ? "2FA On" : "2FA Off"}
             onPress={() => router.push("/settings/security")}
+          />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="lock-closed-outline"
+            label="Privacy & Security"
+            hint="App lock, panic wipe, witness mode"
+            onPress={() => router.push("/settings/privacy-security")}
           />
         </View>
 

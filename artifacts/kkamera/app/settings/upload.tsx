@@ -181,6 +181,27 @@ export default function UploadScreen() {
             onToggle={v => updateSetting("promptBeforeUpload", v)}
           />
         </View>
+
+        {/* Video duration limit */}
+        <Text style={styles.sectionLabel}>Video Duration Limit</Text>
+        <View style={styles.card}>
+          {([
+            { label: "Unlimited", hint: "Up to 10 minutes per clip", value: 0 },
+            { label: "30 seconds", hint: "Good for quick evidence clips", value: 30 },
+            { label: "1 minute", hint: "Balanced for mobile uploads", value: 60 },
+            { label: "5 minutes", hint: "Long-form capture", value: 300 },
+          ] as const).map((opt, i, arr) => (
+            <React.Fragment key={opt.value}>
+              <RadioRow
+                label={opt.label}
+                hint={opt.hint}
+                selected={settings.maxVideoDurationSeconds === opt.value}
+                onPress={() => updateSetting("maxVideoDurationSeconds", opt.value)}
+              />
+              {i < arr.length - 1 && <View style={styles.divider} />}
+            </React.Fragment>
+          ))}
+        </View>
       </ScrollView>
     </View>
   );
