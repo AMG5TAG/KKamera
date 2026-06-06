@@ -34,7 +34,11 @@
       "Bash(curl -s \"https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?client_id=c6c169bc-af8a-4020-9dee-1bbc06ca0d0d&redirect_uri=https%3A%2F%2F5e3d593d-9411-4f16-b370-f99bce22bfc7-00-u3cnmuqmbswc.spock.replit.dev%2Fapi%2Foauth%2Fonedrive%2Fcallback&response_type=code&state=test&code_challenge=-SvZCp75o90Y7q3pkdjgOQqVeC51BzmMmnu9D5gkqNA&code_challenge_method=S256&scope=Files.ReadWrite+offline_access&response_mode=query\" -o /tmp/ms_auth2.html -w 'HTTP %{http_code}\\\\n')",
       "Bash(curl -s -D - -o /dev/null \"https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?client_id=c6c169bc-af8a-4020-9dee-1bbc06ca0d0d&redirect_uri=https%3A%2F%2F5e3d593d-9411-4f16-b370-f99bce22bfc7-00-u3cnmuqmbswc.spock.replit.dev%2Fapi%2Foauth%2Fonedrive%2Fcallback&response_type=code&state=test&code_challenge=-SvZCp75o90Y7q3pkdjgOQqVeC51BzmMmnu9D5gkqNA&code_challenge_method=S256&scope=Files.ReadWrite+offline_access&response_mode=query\")",
       "Bash(sed -n 351,384p /home/runner/workspace/lib/api-spec/openapi.yaml)",
-      "Bash(sed -n 185,210p /home/runner/workspace/artifacts/api-server/src/routes/uploads.ts)"
+      "Bash(sed -n 185,210p /home/runner/workspace/artifacts/api-server/src/routes/uploads.ts)",
+      "Bash(sed -n 40,70p /home/runner/workspace/artifacts/kkamera/app/wizard.tsx)",
+      "Bash(sed -n 10,45p /home/runner/workspace/artifacts/kkamera/app/auth/forgot-password.tsx)",
+      "Bash(sed -n 20,40p /home/runner/workspace/artifacts/api-server/src/routes/passwordReset.ts)",
+      "Bash(sed -n 75,95p /home/runner/workspace/artifacts/api-server/src/routes/passwordReset.ts)"
     ]
   }
 }

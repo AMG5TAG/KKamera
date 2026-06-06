@@ -62,7 +62,9 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   },
 };
 
-// ─── State store (in-memory, entries expire after 10 min) ───────────────────
+// ─── OAuth state (stateless, signed JWT) ─────────────────────────────────────
+// The state travels with the redirect as a short-lived signed token, so the
+// callback can land on any instance (autoscale) or survive a restart.
 
 interface OAuthState {
   userId: number;
@@ -71,25 +73,43 @@ interface OAuthState {
   platform: "web" | "native";
   uploadPath: string;
   verifier: string;
-  expiresAt: number;
 }
 
-const stateStore = new Map<string, OAuthState>();
+function signState(s: OAuthState): string {
+  return jwt.sign(
+    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: s.verifier },
+    JWT_SECRET,
+    { expiresIn: "10m" }
+  );
+}
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of stateStore) {
-    if (val.expiresAt < now) stateStore.delete(key);
+function verifyState(state: string): OAuthState | null {
+  try {
+    const d = jwt.verify(state, JWT_SECRET) as Record<string, string>;
+    return {
+      userId: Number(d["sub"]),
+      provider: d["p"] ?? "",
+      name: d["n"] ?? "",
+      platform: d["pf"] === "native" ? "native" : "web",
+      uploadPath: d["up"] ?? "/KKamera",
+      verifier: d["v"] ?? "",
+    };
+  } catch {
+    return null;
   }
-}, 60_000);
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getCallbackUrl(req: import("express").Request, provider: string): string {
   const prod = process.env["REPLIT_DOMAINS"]?.split(",")[0];
   const dev = process.env["REPLIT_DEV_DOMAIN"];
-  const domain = prod || dev;
-  if (domain) return `https://${domain}/api/oauth/${provider}/callback`;
+  if (process.env["REPLIT_DEPLOYMENT"] === "1" && prod) {
+    return `https://${prod}/api/oauth/${provider}/callback`;
+  }
+  // Workspace dev: the API server is exposed on external port 8080 (see .replit)
+  if (dev) return `https://${dev}:8080/api/oauth/${provider}/callback`;
+  if (prod) return `https://${prod}/api/oauth/${provider}/callback`;
   return `${req.protocol}://${req.get("host")}/api/oauth/${provider}/callback`;
 }
 
@@ -172,18 +192,16 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
       name?: string; platform?: "web" | "native"; uploadPath?: string;
     };
 
-    const state = randomBytes(20).toString("hex");
     const verifier = generateVerifier();
     const challenge = generateChallenge(verifier);
 
-    stateStore.set(state, {
+    const state = signState({
       userId: req.userId!,
       provider,
       name,
       platform: platform === "native" ? "native" : "web",
       uploadPath,
       verifier,
-      expiresAt: Date.now() + 10 * 60 * 1000,
     });
 
     const redirectUri = getCallbackUrl(req, provider);
@@ -208,12 +226,11 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   if (error) { errorRedirect(error); return; }
   if (!code || !state) { errorRedirect("Missing code or state"); return; }
 
-  const entry = stateStore.get(state);
-  if (!entry || entry.provider !== provider || entry.expiresAt < Date.now()) {
+  const entry = verifyState(state);
+  if (!entry || entry.provider !== provider) {
     errorRedirect("Invalid or expired OAuth state — please try again");
     return;
   }
-  stateStore.delete(state);
 
   const cfg = PROVIDERS[provider];
   if (!cfg) { errorRedirect("Unknown provider"); return; }

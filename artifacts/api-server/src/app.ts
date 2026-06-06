@@ -2,11 +2,18 @@ import express, { type Express } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
+import path from "path";
+import fs from "fs";
 import { WebhookHandlers } from "./webhookHandlers.js";
 import router from "./routes/index.js";
 import { logger } from "./lib/logger.js";
 
 const app: Express = express();
+
+// Behind the Replit proxy: required so req.ip is the real client IP
+// (rate limiting would otherwise share one bucket across ALL users) and
+// req.protocol reflects https.
+app.set("trust proxy", 1);
 
 // Allowed origins: explicit whitelist in prod, permissive in dev
 const ALLOWED_ORIGINS = process.env["ALLOWED_ORIGINS"]
@@ -14,6 +21,11 @@ const ALLOWED_ORIGINS = process.env["ALLOWED_ORIGINS"]
   : null;
 
 const replitDomain = process.env["REPLIT_DOMAINS"]?.split(",")[0];
+
+/** Hostname of an Origin header, ignoring port (Replit dev ports vary). */
+function originHost(origin: string): string {
+  try { return new URL(origin).hostname; } catch { return origin; }
+}
 
 app.use(helmet({
   // Expo web / PWA needs cross-origin isolation disabled
@@ -27,16 +39,17 @@ app.use(cors({
     if (!origin) return callback(null, true);
     // Dev: allow all
     if (!ALLOWED_ORIGINS && !replitDomain) return callback(null, true);
+    const host = originHost(origin);
     // Explicit whitelist
-    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.some(o => origin === o || origin.endsWith(`.${o}`))) {
+    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.some(o => origin === o || host === originHost(o) || host.endsWith(`.${originHost(o)}`))) {
       return callback(null, true);
     }
-    // Replit domain
-    if (replitDomain && (origin.endsWith(`.${replitDomain}`) || origin === `https://${replitDomain}`)) {
+    // Replit domain (any port — dev preview and API run on different external ports)
+    if (replitDomain && (host === replitDomain || host.endsWith(`.${replitDomain}`))) {
       return callback(null, true);
     }
     // Allow localhost in dev
-    if (process.env.NODE_ENV !== "production" && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+    if (process.env.NODE_ENV !== "production" && (host === "localhost" || host === "127.0.0.1")) {
       return callback(null, true);
     }
     callback(new Error(`CORS: origin ${origin} not allowed`));
@@ -83,5 +96,22 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+// ─── Static web app (single-origin deployment) ────────────────────────────────
+// When the Expo web export is present (artifacts/kkamera/dist or WEB_BUILD_DIR),
+// serve it from this process so the published app and /api share one origin.
+const WEB_BUILD_DIR = process.env["WEB_BUILD_DIR"]
+  ?? path.resolve(import.meta.dirname, "../../kkamera/dist");
+
+if (fs.existsSync(path.join(WEB_BUILD_DIR, "index.html"))) {
+  logger.info({ dir: WEB_BUILD_DIR }, "Serving web build");
+  app.use(express.static(WEB_BUILD_DIR, { index: "index.html", maxAge: "1h" }));
+  // SPA fallback: any non-API GET renders the app shell (expo-router handles the route)
+  app.get(/^\/(?!api\/).*/, (_req, res) => {
+    res.sendFile(path.join(WEB_BUILD_DIR, "index.html"));
+  });
+} else {
+  logger.info({ dir: WEB_BUILD_DIR }, "No web build found — serving API only");
+}
 
 export default app;
