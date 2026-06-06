@@ -31,7 +31,7 @@ const OAUTH_CONFIG: Record<string, { tokenUrl: string; clientIdEnv: string; clie
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
   },
   onedrive: {
-    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    tokenUrl: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
     clientIdEnv: "ONEDRIVE_CLIENT_ID",
     clientSecretEnv: "ONEDRIVE_CLIENT_SECRET",
   },
@@ -251,12 +251,13 @@ async function uploadOneDrive(conn: CloudConn, buf: Buffer, fileName: string): P
 async function testOneDrive(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
     const token = await getAccessToken(conn);
-    const res = await fetch("https://graph.microsoft.com/v1.0/me", {
+    // /me requires User.Read; the token only carries Files.ReadWrite, so probe the drive instead
+    const res = await fetch("https://graph.microsoft.com/v1.0/me/drive", {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) return { success: false, message: `Token invalid (${res.status}) — re-connect your Microsoft account.` };
     const data = await res.json() as any;
-    return { success: true, message: `Connected as ${data.displayName ?? "Microsoft user"}` };
+    return { success: true, message: `Connected as ${data.owner?.user?.displayName ?? "Microsoft user"}` };
   } catch (err: any) {
     return { success: false, message: err.message };
   }

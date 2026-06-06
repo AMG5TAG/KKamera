@@ -23,6 +23,7 @@ import { useGetSubscription } from "@workspace/api-client-react";
 import Svg, { Line, Rect, G } from "react-native-svg";
 import { TrialBanner } from "@/components/TrialBanner";
 import { WebCamera } from "@/components/WebCamera";
+import { processDocumentScan } from "@/lib/documentScan";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -177,6 +178,8 @@ export default function CameraScreen() {
   const [scanUri, setScanUri] = useState<string | null>(null);
   const [scanFileName, setScanFileName] = useState("");
   const [showScanModal, setShowScanModal] = useState(false);
+  const [scanCropped, setScanCropped] = useState(false);
+  const [isProcessingScan, setIsProcessingScan] = useState(false);
 
   // Mode strip scroll ref
   const modeScrollRef = useRef<ScrollView>(null);
@@ -481,8 +484,20 @@ export default function CameraScreen() {
     try {
       const photo = await cameraRef.current?.takePictureAsync({ quality: 0.95 });
       if (photo?.uri) {
+        // Auto-crop, deskew and enhance on web; native keeps the raw capture
+        let uri = photo.uri;
+        let cropped = false;
+        if (Platform.OS === "web") {
+          setIsProcessingScan(true);
+          try {
+            const result = await processDocumentScan(photo.uri);
+            uri = result.uri;
+            cropped = result.cropped;
+          } finally { setIsProcessingScan(false); }
+        }
         const fileName = `SCAN_${Date.now()}.jpg`;
-        setScanUri(photo.uri);
+        setScanUri(uri);
+        setScanCropped(cropped);
         setScanFileName(fileName);
         setShowScanModal(true);
       }
@@ -732,7 +747,7 @@ export default function CameraScreen() {
 
           {/* Portrait overlay */}
           {extMode === "portrait" && (
-            <View style={[StyleSheet.absoluteFill, styles.overlayTop]} pointerEvents="none">
+            <View style={[StyleSheet.absoluteFill, styles.overlayCenter]} pointerEvents="none">
               <View style={styles.portraitOval} />
               <Text style={styles.modeHint}>Portrait Mode — subject in centre</Text>
             </View>
@@ -871,12 +886,11 @@ export default function CameraScreen() {
                 return (
                   <TouchableOpacity
                     key={m.mode}
-                    style={{ width: ITEM_W, alignItems: "center", paddingVertical: 10 }}
+                    style={{ width: ITEM_W, alignItems: "center", justifyContent: "center", paddingVertical: 10 }}
                     onPress={() => { if (!captureIsActive) { setExtMode(m.mode); scrollToMode(i); } }}
                     activeOpacity={0.7}
                   >
                     <Text style={[styles.stripLabel, isActive && styles.stripLabelActive]}>{lbl}</Text>
-                    {isActive && <View style={styles.modeDot} />}
                   </TouchableOpacity>
                 );
               })}
@@ -933,7 +947,14 @@ export default function CameraScreen() {
             {/* Flip camera */}
             <TouchableOpacity
               style={styles.sideBtn}
-              onPress={() => setFacing(f => f === "back" ? "front" : "back")}
+              onPress={() => {
+                const next = facing === "back" ? "front" : "back";
+                // Front camera starts at 0.5× (zoom 0); rear resumes at the 1× default
+                const z = next === "front" ? 0 : 0.25;
+                setFacing(next);
+                setZoom(z);
+                baseZoom.current = z;
+              }}
               disabled={captureIsActive}
             >
               <Ionicons name="camera-reverse-outline" size={26} color={captureIsActive ? "#333" : "white"} />
@@ -964,6 +985,13 @@ export default function CameraScreen() {
           </View>
         )}
 
+        {isProcessingScan && (
+          <View style={[styles.stampToast, { bottom: insets.bottom + 180 }]} pointerEvents="none">
+            <Ionicons name="scan-outline" size={13} color={PRIMARY} />
+            <Text style={styles.stampToastText}>Processing document…</Text>
+          </View>
+        )}
+
         {/* ── Scan result modal ───────────────────────────────────────────── */}
         <Modal visible={showScanModal} animationType="slide" onRequestClose={() => setShowScanModal(false)}>
           <View style={styles.scanModal}>
@@ -974,6 +1002,14 @@ export default function CameraScreen() {
               <Text style={styles.scanModalTitle}>Document Scan</Text>
               <View style={{ width: 40 }} />
             </View>
+            {Platform.OS === "web" && (
+              <View style={styles.scanBadgeRow}>
+                <Ionicons name={scanCropped ? "scan-outline" : "color-wand-outline"} size={13} color={PRIMARY} />
+                <Text style={styles.scanBadgeText}>
+                  {scanCropped ? "Auto-cropped · Flattened · Enhanced" : "Enhanced (edges not detected — full frame kept)"}
+                </Text>
+              </View>
+            )}
             {scanUri && (
               <Image source={{ uri: scanUri }} style={styles.scanPreview} resizeMode="contain" accessibilityLabel="Document scan preview" />
             )}
@@ -1018,7 +1054,6 @@ const styles = StyleSheet.create({
   },
   uploadStatusText: { fontSize: 11, fontFamily: "Inter_500Medium" },
   overlayCenter: { alignItems: "center", justifyContent: "center" },
-  overlayTop: { alignItems: "center", paddingTop: "20%" },
   levelContainer: { alignItems: "center", justifyContent: "center" },
   levelLine: { width: "60%", height: 1, backgroundColor: "rgba(177,152,112,0.6)", position: "absolute" },
   levelDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: PRIMARY },
@@ -1133,7 +1168,6 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     letterSpacing: 1,
   },
-  modeDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: "white", marginTop: 3 },
   captureRow: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingHorizontal: 48, paddingTop: 14, paddingBottom: 10,
@@ -1168,6 +1202,11 @@ const styles = StyleSheet.create({
   },
   scanModalClose: { padding: 8 },
   scanModalTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
+  scanBadgeRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
+    paddingVertical: 6,
+  },
+  scanBadgeText: { color: PRIMARY, fontSize: 12, fontFamily: "Inter_500Medium" },
   scanPreview: { flex: 1, width: "100%" },
   scanModalFooter: {
     flexDirection: "row", gap: 12, padding: 20, paddingBottom: 40,

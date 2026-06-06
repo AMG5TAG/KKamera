@@ -1690,6 +1690,81 @@ export const useCreateUpload = <
   return useMutation(getCreateUploadMutationOptions(options));
 };
 
+export const getClearUploadsUrl = () => {
+  return `/api/uploads`;
+};
+
+export const clearUploads = async (
+  options?: RequestInit,
+): Promise<MessageResponse> => {
+  return customFetch<MessageResponse>(getClearUploadsUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getClearUploadsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof clearUploads>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof clearUploads>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["clearUploads"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof clearUploads>>,
+    void
+  > = () => {
+    return clearUploads(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ClearUploadsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof clearUploads>>
+>;
+
+export type ClearUploadsMutationError = ErrorType<unknown>;
+
+export const useClearUploads = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof clearUploads>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof clearUploads>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getClearUploadsMutationOptions(options));
+};
+
 export const getUpdateUploadUrl = (id: number) => {
   return `/api/uploads/${id}`;
 };

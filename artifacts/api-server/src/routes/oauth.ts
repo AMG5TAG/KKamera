@@ -42,8 +42,10 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   },
   onedrive: {
     label: "OneDrive",
-    authUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+    // The Azure app registration is "personal Microsoft accounts only" — it must
+    // use the /consumers tenant; /common fails with AADSTS50059.
+    authUrl: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
+    tokenUrl: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
     scopes: "Files.ReadWrite offline_access",
     clientIdEnv: "ONEDRIVE_CLIENT_ID",
     clientSecretEnv: "ONEDRIVE_CLIENT_SECRET",

@@ -381,6 +381,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UploadItem"
+    delete:
+      operationId: clearUploads
+      tags: [uploads]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: All upload history cleared
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /uploads/{id}:
     patch:

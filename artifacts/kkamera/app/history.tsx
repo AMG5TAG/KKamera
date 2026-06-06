@@ -8,7 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useListUploads, useDeleteUpload, getListUploadsQueryKey,
+  useListUploads, useDeleteUpload, useClearUploads, getListUploadsQueryKey,
 } from "@workspace/api-client-react";
 import { useSettings } from "@/contexts/SettingsContext";
 
@@ -52,6 +52,7 @@ export default function HistoryScreen() {
   const { settings } = useSettings();
   const { data: uploads, isLoading, refetch, isRefetching } = useListUploads();
   const deleteMutation = useDeleteUpload();
+  const clearMutation = useClearUploads();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [isClearing, setIsClearing] = useState(false);
 
@@ -88,11 +89,9 @@ export default function HistoryScreen() {
           onPress: async () => {
             setIsClearing(true);
             try {
-              await fetch("/api/uploads", {
-                method: "DELETE",
-                headers: { "Content-Type": "application/json" },
-                credentials: "include",
-              });
+              await clearMutation.mutateAsync();
+              // Scrub the cached list immediately, then revalidate against the server
+              queryClient.setQueryData(getListUploadsQueryKey(), []);
               queryClient.invalidateQueries({ queryKey: getListUploadsQueryKey() });
             } catch { Alert.alert("Error", "Could not clear history."); }
             finally { setIsClearing(false); }
@@ -100,7 +99,7 @@ export default function HistoryScreen() {
         },
       ]
     );
-  }, [sorted.length, queryClient]);
+  }, [sorted.length, queryClient, clearMutation]);
 
   if (!settings.recordHistory) {
     return (

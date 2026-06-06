@@ -212,6 +212,10 @@ export const CreateUploadBody = zod.object({
   connectionIds: zod.string().nullish(),
 });
 
+export const ClearUploadsResponse = zod.object({
+  message: zod.string(),
+});
+
 export const UpdateUploadParams = zod.object({
   id: zod.coerce.number(),
 });
