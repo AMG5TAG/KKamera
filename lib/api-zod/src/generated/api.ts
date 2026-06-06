@@ -43,6 +43,25 @@ export const LogoutResponse = zod.object({
   message: zod.string(),
 });
 
+export const ForgotPasswordBody = zod.object({
+  email: zod.string().email(),
+});
+
+export const ForgotPasswordResponse = zod.object({
+  message: zod.string(),
+});
+
+export const resetPasswordBodyPasswordMin = 8;
+
+export const ResetPasswordBody = zod.object({
+  token: zod.string(),
+  password: zod.string().min(resetPasswordBodyPasswordMin),
+});
+
+export const ResetPasswordResponse = zod.object({
+  message: zod.string(),
+});
+
 export const Setup2FAResponse = zod.object({
   secret: zod.string(),
   qrCodeUrl: zod.string(),
@@ -128,6 +147,19 @@ export const GetReferralsResponseItem = zod.object({
   createdAt: zod.string(),
 });
 export const GetReferralsResponse = zod.array(GetReferralsResponseItem);
+
+export const inviteCoworkersBodyEmailsMax = 10;
+
+export const InviteCoworkersBody = zod.object({
+  emails: zod
+    .array(zod.string().email())
+    .min(1)
+    .max(inviteCoworkersBodyEmailsMax),
+});
+
+export const InviteCoworkersResponse = zod.object({
+  message: zod.string(),
+});
 
 export const ListCloudConnectionsResponseItem = zod.object({
   id: zod.number(),

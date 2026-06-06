@@ -38,7 +38,18 @@
       "Bash(sed -n 40,70p /home/runner/workspace/artifacts/kkamera/app/wizard.tsx)",
       "Bash(sed -n 10,45p /home/runner/workspace/artifacts/kkamera/app/auth/forgot-password.tsx)",
       "Bash(sed -n 20,40p /home/runner/workspace/artifacts/api-server/src/routes/passwordReset.ts)",
-      "Bash(sed -n 75,95p /home/runner/workspace/artifacts/api-server/src/routes/passwordReset.ts)"
+      "Bash(sed -n 75,95p /home/runner/workspace/artifacts/api-server/src/routes/passwordReset.ts)",
+      "Bash(sed -n 125,140p src/components/ui/calendar.tsx)",
+      "Bash(sed -n 1,15p src/components/ui/spinner.tsx)",
+      "Bash(curl -s -X POST http://localhost:8090/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"probe+test1@example.com\",\"password\":\"password123\"}')",
+      "Bash(curl -s -m 5 -X OPTIONS http://localhost:8090/api/auth/login -H \"Origin: https://5e3d593d-9411-4f16-b370-f99bce22bfc7-00-u3cnmuqmbswc.spock.replit.dev:3000\" -H \"Access-Control-Request-Method: POST\" -D - -o /dev/null)",
+      "Bash(pkill -f \"8090\")",
+      "Bash(kill %1)",
+      "Bash(pkill -f \"dist/index.mjs\" -n)",
+      "Bash(RESEND_API_KEY= npx tsx -e \"import\\('./src/lib/email.js'\\).then\\(async m => { await m.sendEmail\\({ to: 'test@example.com', subject: 'x', html: '<p>x</p>' }\\); console.log\\('OK — graceful no-op'\\); }\\)\")",
+      "Bash(RESEND_API_KEY= node --input-type=module -e \"const m = await import\\('./dist/index.mjs'\\).catch\\(\\(\\) => import\\('./dist/email-test.mjs'\\)\\); \")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

@@ -23,7 +23,7 @@ async function getCredentials(): Promise<{ secretKey: string }> {
   const response = await fetch(url.toString(), {
     headers: { Accept: "application/json", "X-Replit-Token": xReplitToken },
   });
-  const data = await response.json();
+  const data = await response.json() as { items?: Array<{ settings?: { secret?: string } }> };
   const settings = data.items?.[0]?.settings;
   if (!settings?.secret) throw new Error("Stripe connection not found. Connect via Integrations tab.");
   return { secretKey: settings.secret };

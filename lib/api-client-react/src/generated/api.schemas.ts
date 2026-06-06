@@ -28,6 +28,24 @@ export interface LoginInput {
   totpCode?: string | null;
 }
 
+export interface ForgotPasswordInput {
+  email: string;
+}
+
+export interface ResetPasswordInput {
+  token: string;
+  /** @minLength 8 */
+  password: string;
+}
+
+export interface InviteCoworkersInput {
+  /**
+   * @minItems 1
+   * @maxItems 10
+   */
+  emails: string[];
+}
+
 export interface User {
   id: number;
   email: string;

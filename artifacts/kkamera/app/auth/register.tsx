@@ -59,7 +59,7 @@ export default function RegisterScreen() {
           <Text style={styles.homeBtnText}>kkamera.app</Text>
         </TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Create Account</Text>
         <Text style={styles.subtitle}>Start your 14-day free trial — no credit card needed</Text>
 
@@ -76,15 +76,20 @@ export default function RegisterScreen() {
         ) : null}
 
         <Field label="Your Name" hint="How you'll be identified in KKamera">
-          <TextInput style={styles.input} placeholder="Full name" placeholderTextColor="#555" autoCapitalize="words" value={name} onChangeText={setName} />
+          <TextInput style={styles.input} placeholder="Full name" placeholderTextColor="#555" autoCapitalize="words" autoComplete="name" textContentType="name" value={name} onChangeText={setName} />
         </Field>
         <Field label="Email Address" hint="Used for your account login">
-          <TextInput style={styles.input} placeholder="your@email.com" placeholderTextColor="#555" keyboardType="email-address" autoCapitalize="none" value={email} onChangeText={setEmail} />
+          <TextInput style={styles.input} placeholder="your@email.com" placeholderTextColor="#555" keyboardType="email-address" autoCapitalize="none" autoComplete="email" textContentType="emailAddress" value={email} onChangeText={setEmail} />
         </Field>
         <Field label="Password" hint="At least 8 characters for security">
           <View style={styles.inputRow}>
-            <TextInput style={[styles.input, { flex: 1, borderWidth: 0 }]} placeholder="••••••••" placeholderTextColor="#555" secureTextEntry={!showPassword} value={password} onChangeText={setPassword} />
-            <TouchableOpacity onPress={() => setShowPassword(v => !v)} style={styles.eyeBtn}>
+            <TextInput style={[styles.input, { flex: 1, borderWidth: 0 }]} placeholder="••••••••" placeholderTextColor="#555" secureTextEntry={!showPassword} autoComplete="new-password" textContentType="newPassword" value={password} onChangeText={setPassword} />
+            <TouchableOpacity
+              onPress={() => setShowPassword(v => !v)}
+              style={styles.eyeBtn}
+              accessibilityRole="button"
+              accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+            >
               <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
             </TouchableOpacity>
           </View>

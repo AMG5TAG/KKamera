@@ -52,7 +52,7 @@ export default function LoginScreen() {
         <Ionicons name="chevron-back" size={18} color={PRIMARY} />
         <Text style={styles.homeBtnText}>kkamera.app</Text>
       </TouchableOpacity>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {/* Logo */}
         <View style={styles.logoWrap}>
           <Image
@@ -83,6 +83,8 @@ export default function LoginScreen() {
                 placeholderTextColor="#555"
                 keyboardType="email-address"
                 autoCapitalize="none"
+                autoComplete="email"
+                textContentType="emailAddress"
                 value={email}
                 onChangeText={setEmail}
               />
@@ -95,10 +97,17 @@ export default function LoginScreen() {
                   placeholder="••••••••"
                   placeholderTextColor="#555"
                   secureTextEntry={!showPassword}
+                  autoComplete="current-password"
+                  textContentType="password"
                   value={password}
                   onChangeText={setPassword}
                 />
-                <TouchableOpacity onPress={() => setShowPassword(v => !v)} style={styles.eyeBtn}>
+                <TouchableOpacity
+                  onPress={() => setShowPassword(v => !v)}
+                  style={styles.eyeBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                >
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                 </TouchableOpacity>
               </View>

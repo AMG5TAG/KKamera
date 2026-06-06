@@ -1,21 +1,16 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import { logger } from "./logger.js";
 
 const FROM = process.env["EMAIL_FROM"] ?? "KKamera <noreply@kkamera.app>";
 
-function createTransport() {
-  const host = process.env["SMTP_HOST"];
-  const user = process.env["SMTP_USER"];
-  const pass = process.env["SMTP_PASS"];
+let client: Resend | null | undefined;
 
-  if (!host || !user || !pass) return null;
-
-  return nodemailer.createTransport({
-    host,
-    port: parseInt(process.env["SMTP_PORT"] ?? "587"),
-    secure: process.env["SMTP_PORT"] === "465",
-    auth: { user, pass },
-  });
+function getClient(): Resend | null {
+  if (client === undefined) {
+    const apiKey = process.env["RESEND_API_KEY"];
+    client = apiKey ? new Resend(apiKey) : null;
+  }
+  return client;
 }
 
 export async function sendEmail(opts: {
@@ -23,13 +18,17 @@ export async function sendEmail(opts: {
   subject: string;
   html: string;
 }): Promise<void> {
-  const transport = createTransport();
-  if (!transport) {
-    logger.warn("Email not sent — SMTP not configured (SMTP_HOST, SMTP_USER, SMTP_PASS)");
+  const resend = getClient();
+  if (!resend) {
+    logger.warn("Email not sent — Resend not configured (RESEND_API_KEY)");
     return;
   }
   try {
-    await transport.sendMail({ from: FROM, ...opts });
+    const { error } = await resend.emails.send({ from: FROM, ...opts });
+    if (error) {
+      logger.error({ error, to: opts.to }, "Failed to send email");
+      return;
+    }
     logger.info({ to: opts.to, subject: opts.subject }, "Email sent");
   } catch (err) {
     logger.error({ err, to: opts.to }, "Failed to send email");
@@ -111,6 +110,19 @@ export function subscriptionCancelledEmail(name: string, accessUntil: string): {
       <p>Your KKamera subscription has been cancelled. You'll retain full access until <strong style="color:#b19870">${accessUntil}</strong>.</p>
       <p>If you change your mind, you can resubscribe anytime from Settings → Subscription.</p>
       <a href="https://kkamera.app/settings/subscription" class="btn">Resubscribe</a>
+    `),
+  };
+}
+
+export function coworkerInviteEmail(inviterName: string, referralCode: string): { subject: string; html: string } {
+  const link = `https://kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
+  return {
+    subject: `${inviterName} invited you to KKamera 📷`,
+    html: wrap(`${inviterName} thinks you'd love KKamera`, `
+      <p><strong style="color:#b19870">${inviterName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
+      <p>Sign up with their invite and you'll get a <strong style="color:#b19870">14-day free trial</strong> — no credit card required.</p>
+      <a href="${link}" class="btn">Accept Invite — Try Free</a>
+      <p>Or enter the code <strong style="color:#b19870">${referralCode}</strong> when you register.</p>
     `),
   };
 }

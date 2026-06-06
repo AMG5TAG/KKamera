@@ -294,8 +294,15 @@ export default function AddCloudScreen() {
                       value={password} onChangeText={setPassword}
                       placeholder="password" placeholderTextColor="#555"
                       secureTextEntry={!showPassword}
+                      autoComplete="off"
+                      textContentType="password"
                     />
-                    <TouchableOpacity onPress={() => setShowPassword(v => !v)} style={styles.eyeBtn}>
+                    <TouchableOpacity
+                      onPress={() => setShowPassword(v => !v)}
+                      style={styles.eyeBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                    >
                       <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                     </TouchableOpacity>
                   </View>

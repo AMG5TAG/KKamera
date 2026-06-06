@@ -1,11 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Platform, Linking, Modal, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useGetSubscription, useCancelSubscription, useCreateCheckout,
@@ -29,6 +29,16 @@ const FEATURES = [
 export default function SubscriptionScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const { success } = useLocalSearchParams<{ success?: string }>();
+
+  // Stripe checkout redirects back here with ?success=true —
+  // refresh the subscription and celebrate with the invite screen
+  useEffect(() => {
+    if (success === "true") {
+      queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
+      router.replace("/invite?celebrate=1");
+    }
+  }, [success, queryClient]);
 
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const cancelMutation = useCancelSubscription();
@@ -64,6 +74,8 @@ export default function SubscriptionScreen() {
     if (!confirmPackage) return;
     try {
       await rcSub.purchase(confirmPackage);
+      // Successful payment → invite co-workers
+      router.push("/invite?celebrate=1");
     } catch (err: any) {
       if (!err?.userCancelled) {
         // Purchase error surfaced via rcSub.purchaseError

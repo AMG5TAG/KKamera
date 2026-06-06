@@ -6,15 +6,15 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useForgotPassword } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 
-const API_BASE = process.env["EXPO_PUBLIC_API_URL"] ?? "";
-
 export default function ForgotPasswordScreen() {
   const insets = useSafeAreaInsets();
+  const forgotMutation = useForgotPassword();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
@@ -26,11 +26,7 @@ export default function ForgotPasswordScreen() {
 
     setLoading(true);
     try {
-      await fetch(`${API_BASE}/api/auth/forgot-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: email.trim().toLowerCase() }),
-      });
+      await forgotMutation.mutateAsync({ data: { email: email.trim().toLowerCase() } });
       // Always show success to avoid email enumeration
       setSent(true);
     } catch {

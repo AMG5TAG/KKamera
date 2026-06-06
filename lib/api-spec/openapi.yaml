@@ -87,12 +87,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [email]
-              properties:
-                email:
-                  type: string
-                  format: email
+              $ref: "#/components/schemas/ForgotPasswordInput"
       responses:
         "200":
           description: Reset link sent if the account exists
@@ -110,14 +105,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [token, password]
-              properties:
-                token:
-                  type: string
-                password:
-                  type: string
-                  minLength: 8
+              $ref: "#/components/schemas/ResetPasswordInput"
       responses:
         "200":
           description: Password reset
@@ -297,6 +285,26 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Referral"
+
+  /affiliates/invite:
+    post:
+      operationId: inviteCoworkers
+      tags: [affiliates]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InviteCoworkersInput"
+      responses:
+        "200":
+          description: Invites sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /cloud-connections:
     get:
@@ -550,6 +558,36 @@ components:
           type: string
         totpCode:
           type: ["string", "null"]
+
+    ForgotPasswordInput:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    ResetPasswordInput:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+        password:
+          type: string
+          minLength: 8
+
+    InviteCoworkersInput:
+      type: object
+      required: [emails]
+      properties:
+        emails:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: string
+            format: email
 
     AuthResponse:
       type: object

@@ -4,8 +4,9 @@ A subscription-based camera app (iOS/Android/PWA) that directly uploads photos a
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000 → internal 8080)
-- `pnpm --filter @workspace/kkamera run dev` — run the Expo app (web on port from $PORT env)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (local 8080 → external :8080 on the dev domain)
+- `pnpm --filter @workspace/kkamera run dev` — run the Expo app (web on port from $PORT env; API base URL is `https://$REPLIT_DEV_DOMAIN:8080` via EXPO_PUBLIC_DOMAIN)
+- `pnpm --filter @workspace/kkamera run build:web` — Expo web export to `artifacts/kkamera/dist`; the API server auto-serves it (same-origin SPA + /api) when present — this is the production deployment shape
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
@@ -13,6 +14,7 @@ A subscription-based camera app (iOS/Android/PWA) that directly uploads photos a
 - Required env: `DATABASE_URL` — Postgres connection string
 - Required env: `SESSION_SECRET` — used as JWT secret and AES-256 key (first 32 chars)
 - Required env (production): `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` — Stripe subscription
+- Required env (production): `RESEND_API_KEY` — all outbound email via Resend (no-ops with a warning if unset); optional `EMAIL_FROM` overrides the default `KKamera <noreply@kkamera.app>` sender (domain must be verified in Resend)
 
 ## Stack
 
@@ -37,7 +39,10 @@ A subscription-based camera app (iOS/Android/PWA) that directly uploads photos a
 ## Architecture decisions
 
 - JWT-based auth (bcrypt passwords, optional TOTP 2FA via otplib, QR code via qrcode)
-- Cloud connection credentials stored AES-256 encrypted in DB (key = `SESSION_SECRET` first 32 chars)
+- Cloud connection credentials stored AES-256-GCM encrypted in DB (key = `SESSION_SECRET` first 32 chars); legacy CBC values still decrypt
+- OAuth connect flow uses stateless signed-JWT state (autoscale-safe, no in-memory store)
+- Express runs with `trust proxy` (required behind Replit's proxy for per-client rate limiting)
+- Production deployment is single-origin: api-server serves both `/api` and the Expo web export
 - Affiliate programme: 5 successful referral signups = 1 free year added to subscription
 - Stripe handles subscription billing (14-day trial → $25/year)
 - Offline upload queue via PWA Background Sync API

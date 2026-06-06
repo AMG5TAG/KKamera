@@ -9,6 +9,8 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useAuth } from "@/contexts/AuthContext";
+import type { AuthUser } from "@/contexts/AuthContext";
+import { useUpdateMe } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
 const SECONDARY = "#c3b091";
@@ -34,7 +36,8 @@ const CLOUD_OPTIONS = [
 
 export default function WizardScreen() {
   const insets = useSafeAreaInsets();
-  const { user, completeWizard, token, updateUser } = useAuth();
+  const { user, completeWizard, updateUser } = useAuth();
+  const updateMeMutation = useUpdateMe();
   const [step, setStep] = useState(0);
   const [selectedStorage, setSelectedStorage] = useState<string | null>(null);
   const [profileName, setProfileName] = useState(user?.name ?? "");
@@ -50,18 +53,8 @@ export default function WizardScreen() {
     if (!trimmed || trimmed === user?.name) return;
     setIsSavingProfile(true);
     try {
-      const res = await fetch("/api/users/me", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ name: trimmed }),
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        updateUser(updated);
-      }
+      const updated = await updateMeMutation.mutateAsync({ data: { name: trimmed } });
+      updateUser(updated as AuthUser);
     } catch { /* ignore */ }
     setIsSavingProfile(false);
   };

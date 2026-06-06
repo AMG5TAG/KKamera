@@ -186,6 +186,7 @@ function RootLayoutNav() {
       <Stack.Screen name="settings/privacy-security" options={{ headerShown: false }} />
       <Stack.Screen name="settings/delete-account" options={{ headerShown: false }} />
       <Stack.Screen name="auth/forgot-password" options={{ headerShown: false }} />
+      <Stack.Screen name="auth/reset-password" options={{ headerShown: false }} />
       <Stack.Screen name="history" options={{ title: "Upload History" }} />
       <Stack.Screen name="markup" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

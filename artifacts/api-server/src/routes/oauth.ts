@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
+import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { requireAuth } from "../middlewares/auth.js";
+import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 
 const router = Router();
