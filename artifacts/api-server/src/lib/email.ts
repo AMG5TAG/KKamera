@@ -3,6 +3,16 @@ import { logger } from "./logger.js";
 
 const FROM = process.env["EMAIL_FROM"] ?? "KKamera <noreply@kkamera.app>";
 
+/** Escape user-controlled text before interpolating into email HTML. */
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 let client: Resend | null | undefined;
 
 function getClient(): Resend | null {
@@ -68,7 +78,7 @@ function wrap(title: string, body: string): string {
 export function welcomeEmail(name: string): { subject: string; html: string } {
   return {
     subject: "Welcome to KKamera 📷",
-    html: wrap("Welcome, " + name + "!", `
+    html: wrap("Welcome, " + escapeHtml(name) + "!", `
       <p>Your account is all set. KKamera captures your photos and videos and instantly uploads them to your cloud storage — leaving no trace on your device.</p>
       <p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>
       <a href="https://kkamera.app" class="btn">Open KKamera</a>
@@ -81,7 +91,7 @@ export function trialEndingEmail(name: string, daysLeft: number): { subject: str
   return {
     subject: `Your KKamera trial ends in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`,
     html: wrap("Your trial is almost over", `
-      <p>Hi ${name},</p>
+      <p>Hi ${escapeHtml(name)},</p>
       <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.</p>
       <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$25/year</strong>, less than 7¢ a day.</p>
       <a href="https://kkamera.app/settings/subscription" class="btn">Subscribe — $25/year</a>
@@ -94,7 +104,7 @@ export function subscriptionActiveEmail(name: string): { subject: string; html: 
   return {
     subject: "KKamera subscription confirmed",
     html: wrap("Subscription active", `
-      <p>Hi ${name},</p>
+      <p>Hi ${escapeHtml(name)},</p>
       <p>Your KKamera subscription is now active. You have full access for the next 12 months.</p>
       <p>Thank you for supporting KKamera — your subscription helps us keep the app ad-free and privacy-first.</p>
       <a href="https://kkamera.app" class="btn">Open KKamera</a>
@@ -106,8 +116,8 @@ export function subscriptionCancelledEmail(name: string, accessUntil: string): {
   return {
     subject: "KKamera subscription cancelled",
     html: wrap("Subscription cancelled", `
-      <p>Hi ${name},</p>
-      <p>Your KKamera subscription has been cancelled. You'll retain full access until <strong style="color:#b19870">${accessUntil}</strong>.</p>
+      <p>Hi ${escapeHtml(name)},</p>
+      <p>Your KKamera subscription has been cancelled. You'll retain full access until <strong style="color:#b19870">${escapeHtml(accessUntil)}</strong>.</p>
       <p>If you change your mind, you can resubscribe anytime from Settings → Subscription.</p>
       <a href="https://kkamera.app/settings/subscription" class="btn">Resubscribe</a>
     `),
@@ -116,13 +126,15 @@ export function subscriptionCancelledEmail(name: string, accessUntil: string): {
 
 export function coworkerInviteEmail(inviterName: string, referralCode: string): { subject: string; html: string } {
   const link = `https://kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
+  const safeName = escapeHtml(inviterName);
+  const safeCode = escapeHtml(referralCode);
   return {
     subject: `${inviterName} invited you to KKamera 📷`,
-    html: wrap(`${inviterName} thinks you'd love KKamera`, `
-      <p><strong style="color:#b19870">${inviterName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
+    html: wrap(`${safeName} thinks you'd love KKamera`, `
+      <p><strong style="color:#b19870">${safeName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
       <p>Sign up with their invite and you'll get a <strong style="color:#b19870">14-day free trial</strong> — no credit card required.</p>
       <a href="${link}" class="btn">Accept Invite — Try Free</a>
-      <p>Or enter the code <strong style="color:#b19870">${referralCode}</strong> when you register.</p>
+      <p>Or enter the code <strong style="color:#b19870">${safeCode}</strong> when you register.</p>
     `),
   };
 }
@@ -131,7 +143,7 @@ export function referralRewardEmail(name: string, freeYearsTotal: number): { sub
   return {
     subject: "You earned a free year of KKamera! 🎉",
     html: wrap("Free year unlocked!", `
-      <p>Hi ${name},</p>
+      <p>Hi ${escapeHtml(name)},</p>
       <p>You've reached 5 successful referrals — we've added <strong style="color:#b19870">1 free year</strong> to your KKamera subscription!</p>
       <p>You now have <strong>${freeYearsTotal} free year${freeYearsTotal !== 1 ? "s" : ""}</strong> banked. Keep sharing to earn more — there's no limit!</p>
       <a href="https://kkamera.app/settings/subscription" class="btn">View Your Subscription</a>

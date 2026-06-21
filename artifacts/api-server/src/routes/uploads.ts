@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { uploadsTable, cloudConnectionsTable, usersTable } from "@workspace/db";
 import { eq, and, inArray, desc } from "drizzle-orm";
@@ -8,7 +9,7 @@ import { requireAuth } from "../middlewares/auth.js";
 import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendPushToUser } from "../lib/pushNotifications.js";
-import { sendEmail } from "../lib/email.js";
+import { sendEmail, escapeHtml } from "../lib/email.js";
 
 const router = Router();
 
@@ -204,12 +205,22 @@ router.delete("/uploads", requireAuth, async (req, res) => {
   }
 });
 
+// Witness emails go to arbitrary addresses from our sending domain — rate limit
+// per IP to prevent the endpoint being used as a spam/phishing relay.
+const witnessLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many witness notifications. Please try again later." },
+});
+
 const witnessSchema = z.object({
   witnessEmail: z.string().email(),
   fileName: z.string().min(1).max(500),
 });
 
-router.post("/uploads/witness-notify", requireAuth, async (req, res) => {
+router.post("/uploads/witness-notify", requireAuth, witnessLimiter, async (req, res) => {
   try {
     const parsed = witnessSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ message: "Invalid request" }); return; }
@@ -219,6 +230,8 @@ router.post("/uploads/witness-notify", requireAuth, async (req, res) => {
       .where(eq(usersTable.id, req.userId!)).limit(1);
 
     const userName = user?.name ?? "A KKamera user";
+    const safeUserName = escapeHtml(userName);
+    const safeFileName = escapeHtml(fileName);
     const timestamp = new Date().toLocaleString("en-AU", { timeZone: "UTC", dateStyle: "short", timeStyle: "medium" });
 
     await sendEmail({
@@ -227,8 +240,8 @@ router.post("/uploads/witness-notify", requireAuth, async (req, res) => {
       html: `<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0d0b08;color:#ccc;padding:40px">
         <div style="max-width:480px;margin:0 auto;background:#1a1710;border-radius:16px;padding:28px;border:1px solid rgba(177,152,112,0.2)">
           <p style="color:#b19870;font-size:20px;font-weight:700;margin:0 0 20px">KKamera — Witness Notification</p>
-          <p><strong style="color:white">${userName}</strong> captured and uploaded a file to their cloud storage.</p>
-          <p style="color:#888">File: <code style="color:#b19870">${fileName}</code></p>
+          <p><strong style="color:white">${safeUserName}</strong> captured and uploaded a file to their cloud storage.</p>
+          <p style="color:#888">File: <code style="color:#b19870">${safeFileName}</code></p>
           <p style="color:#888">Time: ${timestamp} UTC</p>
           <p style="color:#666;font-size:12px;margin-top:20px">You received this because you are listed as a witness for this KKamera account.</p>
         </div></body></html>`,

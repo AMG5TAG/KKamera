@@ -6,6 +6,20 @@ import { logger } from "./lib/logger.js";
 import { sendPushToUser } from "./lib/pushNotifications.js";
 import { sendEmail, referralRewardEmail } from "./lib/email.js";
 
+/**
+ * Extract the current period end from a Stripe Subscription object.
+ * In API version 2025-08-27.basil, `current_period_end` was removed from the
+ * Subscription object and now lives on each subscription *item*. We read the
+ * item value first and fall back to the legacy top-level field for safety.
+ * Returns null if no valid timestamp is present (never an Invalid Date).
+ */
+function periodEndFromSubscription(sub: any): Date | null {
+  const epochSeconds: unknown =
+    sub?.items?.data?.[0]?.current_period_end ?? sub?.current_period_end;
+  if (typeof epochSeconds !== "number" || !Number.isFinite(epochSeconds)) return null;
+  return new Date(epochSeconds * 1000);
+}
+
 /** Look up userId from a Stripe customerId */
 async function getUserIdForCustomer(customerId: string): Promise<number | null> {
   const [sub] = await db
@@ -116,12 +130,12 @@ export class WebhookHandlers {
         try {
           const stripe = await getUncachableStripeClient();
           const stripeSub = await stripe.subscriptions.retrieve(obj.subscription as string) as any;
-          const periodEnd = new Date((stripeSub.current_period_end as number) * 1000);
+          const periodEnd = periodEndFromSubscription(stripeSub);
           await db.update(subscriptionsTable)
             .set({
               stripeSubscriptionId: obj.subscription as string,
               status: "active",
-              currentPeriodEnd: periodEnd,
+              ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}),
             })
             .where(eq(subscriptionsTable.stripeCustomerId, obj.customer as string));
           logger.info({ customerId: obj.customer }, "Subscription activated via checkout");
@@ -139,7 +153,7 @@ export class WebhookHandlers {
 
       case "customer.subscription.updated": {
         const customerId = obj.customer as string;
-        const periodEnd = new Date(obj.current_period_end * 1000);
+        const periodEnd = periodEndFromSubscription(obj);
         const stripeStatus: string = obj.status;
         const status =
           stripeStatus === "active" ? "active"
@@ -149,7 +163,7 @@ export class WebhookHandlers {
           : stripeStatus === "unpaid" ? "past_due"
           : "none";
         await db.update(subscriptionsTable)
-          .set({ status, currentPeriodEnd: periodEnd, stripeSubscriptionId: obj.id as string })
+          .set({ status, ...(periodEnd ? { currentPeriodEnd: periodEnd } : {}), stripeSubscriptionId: obj.id as string })
           .where(eq(subscriptionsTable.stripeCustomerId, customerId));
         logger.info({ customerId, status }, "Subscription updated");
         break;

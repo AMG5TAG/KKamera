@@ -22,6 +22,17 @@ export interface CloudConn {
 
 export type UploadResult = { connectionId: number; success: boolean; error?: string };
 
+/**
+ * Strip any path components from a client-supplied filename so it cannot
+ * traverse out of the configured upload directory (e.g. "../../etc/x").
+ * Returns just the final path segment with separators removed.
+ */
+function sanitizeFileName(name: string): string {
+  const base = name.split(/[/\\]/).pop() ?? "";
+  const cleaned = base.replace(/^\.+/, "").trim();
+  return cleaned || `upload_${Date.now()}`;
+}
+
 // ─── OAuth Auto-Refresh ───────────────────────────────────────────────────────
 
 const OAUTH_CONFIG: Record<string, { tokenUrl: string; clientIdEnv: string; clientSecretEnv: string }> = {
@@ -181,7 +192,10 @@ async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message:
 // ─── Google Drive ─────────────────────────────────────────────────────────────
 
 async function ensureDriveFolder(token: string, folderName: string): Promise<string> {
-  const q = `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  // Escape single quotes and backslashes per Google Drive query syntax so the
+  // folder name can't break out of the quoted string in the `q` parameter.
+  const escaped = folderName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const q = `name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
   const search = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -297,7 +311,8 @@ async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export async function uploadToCloud(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string): Promise<UploadResult> {
+export async function uploadToCloud(conn: CloudConn, buf: Buffer, rawFileName: string, mimeType: string): Promise<UploadResult> {
+  const fileName = sanitizeFileName(rawFileName);
   try {
     switch (conn.type) {
       case "ftp":         await uploadFtp(conn, buf, fileName); break;

@@ -67,6 +67,11 @@ function hashBackupCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
 }
 
+// A precomputed bcrypt hash (of a random string) used to spend roughly the same
+// time on the "user not found" path as on a real comparison, so response timing
+// doesn't reveal whether an email is registered.
+const DUMMY_BCRYPT_HASH = "$2b$12$.mHbRuuNFGfnrol8lmQ/sOUly9knVchhRMliScqUwz8h5lSb47iYe";
+
 function generateBackupCodes(): string[] {
   return Array.from({ length: 8 }, () => randomBytes(4).toString("hex").toUpperCase());
 }
@@ -153,7 +158,12 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
     const { email, password, totpCode } = parsed.data;
 
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    if (!user) { res.status(401).json({ message: "Invalid credentials" }); return; }
+    if (!user) {
+      // Spend comparable time so timing doesn't reveal whether the email exists.
+      await bcryptjs.compare(password, DUMMY_BCRYPT_HASH);
+      res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
 
     const valid = await bcryptjs.compare(password, user.passwordHash);
     if (!valid) { res.status(401).json({ message: "Invalid credentials" }); return; }
@@ -199,9 +209,16 @@ router.post("/auth/logout", (_req, res) => {
 
 router.post("/auth/2fa/setup", requireAuth, async (req, res) => {
   try {
-    const secret = authenticator.generateSecret();
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    // Don't let an already-enabled secret be silently overwritten — the user
+    // must disable 2FA first (which requires a valid code or backup code).
+    if (user.twoFAEnabled) {
+      res.status(400).json({ message: "2FA is already enabled. Disable it before setting up again." });
+      return;
+    }
+
+    const secret = authenticator.generateSecret();
 
     // Generate and hash backup codes — return plaintext once, store hashes
     const backupCodesPlain = generateBackupCodes();

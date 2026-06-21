@@ -8,6 +8,7 @@ import {
 } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { getUncachableStripeClient } from "../stripeClient.js";
 
 const router = Router();
 
@@ -91,6 +92,18 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
 router.delete("/users/me", requireAuth, async (req, res) => {
   try {
     const userId = req.userId!;
+
+    // Cancel any live Stripe subscription immediately so a deleted account is
+    // not billed again. Best-effort — never block account deletion on Stripe.
+    try {
+      const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
+      if (sub?.stripeSubscriptionId) {
+        const stripe = await getUncachableStripeClient();
+        await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
+      }
+    } catch (err) {
+      req.log.error({ err }, "Failed to cancel Stripe subscription during account deletion");
+    }
 
     await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
     await db.delete(feedbackTable).where(eq(feedbackTable.userId, userId));

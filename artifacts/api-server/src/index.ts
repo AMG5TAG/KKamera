@@ -25,6 +25,9 @@ async function runAppMigrations() {
       ALTER TABLE users
         ADD COLUMN IF NOT EXISTS two_fa_backup_codes TEXT;
 
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
+
       CREATE TABLE IF NOT EXISTS password_reset_tokens (
         id              SERIAL PRIMARY KEY,
         user_id         INTEGER NOT NULL,
