@@ -3,6 +3,12 @@ modules = ["nodejs-24"]
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
+# Build the workspace libs, bundle the API server (esbuild -> dist/index.mjs),
+# and produce the Expo web export to artifacts/kkamera/dist — which the API
+# server auto-serves same-origin alongside /api (the production shape).
+build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/kkamera run build:web"]
+# Single start command: the API server serves both /api and the web build.
+run = ["sh", "-c", "pnpm --filter @workspace/api-server run start"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
@@ -55,5 +61,4 @@ REVENUECAT_APPLE_APP_STORE_APP_ID = "app2dcde5071a"
 REVENUECAT_GOOGLE_PLAY_STORE_APP_ID = "appc0295905b9"
 STRIPE_PRICE_ID = "price_1TWTGOGekgZzXXmJ35Xd9601"
 VAPID_PUBLIC_KEY = "BFx4rA_8GPP1NOcnbbmMQxLBxNr-8dM0K9iX_Tv4bGOxUMgc8OnFh_KBzbbwy0nv2KmNdLj3dssaRizYi8SkGIU"
-VAPID_PRIVATE_KEY = "n8Am3w_fejm9TxUke6OLaXFx3FJxSABAlBQiIiRzsg4"
 VAPID_SUBJECT = "mailto:hello@kkamera.app"
