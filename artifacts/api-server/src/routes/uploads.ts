@@ -10,6 +10,7 @@ import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendPushToUser } from "../lib/pushNotifications.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
+import { normalizeConnectionIds } from "../lib/connectionIds.js";
 
 const router = Router();
 
@@ -35,23 +36,6 @@ const updateUploadSchema = z.object({
   status: z.enum(UPLOAD_STATUS_VALUES).optional(),
   error: z.string().max(2000).optional(),
 }).strict();
-
-/** Parse a client-supplied connectionIds value (JSON array or CSV) into a
- *  canonical CSV of integer ids, or null when none are valid. */
-function normalizeConnectionIds(raw: string | undefined | null): string | null {
-  if (!raw) return null;
-  let parts: unknown[];
-  try {
-    const j = JSON.parse(raw);
-    parts = Array.isArray(j) ? j : [j];
-  } catch {
-    parts = raw.split(",");
-  }
-  const ids = parts
-    .map((p) => parseInt(String(p).trim(), 10))
-    .filter((n) => Number.isInteger(n) && n > 0);
-  return ids.length ? ids.join(",") : null;
-}
 
 function fmt(u: typeof uploadsTable.$inferSelect) {
   return {
