@@ -90,7 +90,14 @@ async function completeReferralForUser(referredUserId: number): Promise<void> {
 
     const referrerId = claimed.referrerId;
 
-    // Lock the referrer's subscription row to serialise concurrent milestone math.
+    // Guarantee a subscription row exists, then lock it. Doing this as an upsert
+    // (rather than select-then-insert) means the FOR UPDATE lock is always real —
+    // even for a referrer who never started a trial — so concurrent completions
+    // serialise instead of racing into a unique-violation that would roll back
+    // the legitimately-claimed referral above.
+    await tx.insert(subscriptionsTable)
+      .values({ userId: referrerId, status: "none" })
+      .onConflictDoNothing();
     const [referrerSub] = await tx
       .select()
       .from(subscriptionsTable)
@@ -116,15 +123,9 @@ async function completeReferralForUser(referredUserId: number): Promise<void> {
     const newEnd = new Date(base);
     newEnd.setFullYear(newEnd.getFullYear() + yearsToAdd);
 
-    if (referrerSub) {
-      await tx.update(subscriptionsTable)
-        .set({ status: "active", currentPeriodEnd: newEnd, freeYearsAwarded: targetYears })
-        .where(eq(subscriptionsTable.userId, referrerId));
-    } else {
-      await tx.insert(subscriptionsTable).values({
-        userId: referrerId, status: "active", currentPeriodEnd: newEnd, freeYearsAwarded: targetYears,
-      });
-    }
+    await tx.update(subscriptionsTable)
+      .set({ status: "active", currentPeriodEnd: newEnd, freeYearsAwarded: targetYears })
+      .where(eq(subscriptionsTable.userId, referrerId));
 
     return { referrerId, total, targetYears };
   });
@@ -191,7 +192,13 @@ export class WebhookHandlers {
             const metaUserId = Number(obj.metadata?.userId);
             if (Number.isFinite(metaUserId) && metaUserId > 0) {
               await db.update(subscriptionsTable)
-                .set({ ...setFields, stripeCustomerId: obj.customer as string })
+                .set({
+                  ...setFields,
+                  // Only adopt this customer id if the row doesn't already have one,
+                  // so a stray second Stripe customer can't hijack the mapping and
+                  // orphan the original customer's future webhooks.
+                  stripeCustomerId: sql`COALESCE(${subscriptionsTable.stripeCustomerId}, ${obj.customer as string})`,
+                })
                 .where(eq(subscriptionsTable.userId, metaUserId));
               userId = metaUserId;
               logger.warn({ customerId: obj.customer, userId }, "Checkout matched 0 rows by customer; used metadata.userId");
@@ -213,8 +220,19 @@ export class WebhookHandlers {
 
       case "customer.subscription.updated": {
         const customerId = obj.customer as string;
-        const periodEnd = periodEndFromSubscription(obj);
-        const stripeStatus: string = obj.status;
+        // Stripe does not guarantee event ordering, so the event payload can be
+        // stale (e.g. an old `past_due` delivered after `active`). Re-fetch the
+        // subscription so we mirror its CURRENT state and never apply a stale
+        // downgrade to a paying user. Fall back to the payload if the fetch fails.
+        let sub: any = obj;
+        try {
+          const stripe = await getUncachableStripeClient();
+          sub = await stripe.subscriptions.retrieve(obj.id as string);
+        } catch (err) {
+          logger.warn({ err, subscriptionId: obj.id }, "Could not refetch subscription; using event payload");
+        }
+        const periodEnd = periodEndFromSubscription(sub);
+        const stripeStatus: string = sub.status;
         // Map to our status. `null` means "don't touch status" — used for
         // transient/unknown Stripe states (e.g. `incomplete` right after
         // checkout) so an out-of-order event can't downgrade an active user.
@@ -282,8 +300,15 @@ export class WebhookHandlers {
       case "invoice.payment_succeeded": {
         if (obj.billing_reason === "subscription_cycle") {
           const customerId = obj.customer as string;
-          const periodEnd = obj.lines?.data?.[0]?.period?.end
-            ? new Date(obj.lines.data[0].period.end * 1000)
+          // Take the furthest period end across all invoice lines — a multi-line
+          // invoice (proration + subscription) could otherwise pick an earlier
+          // proration period and, with the forward-only GREATEST write, fail to
+          // extend a paid renewal.
+          const lineEnds: number[] = (obj.lines?.data ?? [])
+            .map((l: any) => l?.period?.end)
+            .filter((n: unknown): n is number => typeof n === "number" && Number.isFinite(n));
+          const periodEnd = lineEnds.length
+            ? new Date(Math.max(...lineEnds) * 1000)
             : null;
           await db.update(subscriptionsTable)
             .set({ status: "active", ...forwardPeriodEnd(periodEnd) })

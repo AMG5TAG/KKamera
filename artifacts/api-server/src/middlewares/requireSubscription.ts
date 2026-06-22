@@ -31,7 +31,9 @@ export async function requireSubscription(req: Request, res: Response, next: Nex
     }
 
     if (sub.status === SUBSCRIPTION_STATUS.ACTIVE) {
-      if (sub.currentPeriodEnd && sub.currentPeriodEnd < now) {
+      // An active row with no period end is untrusted (e.g. an activation that
+      // raced the Stripe fetch) — deny rather than grant perpetual free access.
+      if (!sub.currentPeriodEnd || sub.currentPeriodEnd < now) {
         res.status(402).json({ message: "Your subscription has expired. Renew to continue uploading." });
         return;
       }

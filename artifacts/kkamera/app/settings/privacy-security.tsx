@@ -78,15 +78,15 @@ export default function PrivacySecurityScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              const token = (await import("@/contexts/AuthContext")).useAuth;
-              // Fire API calls to clear server-side data
-              const BASE = API_BASE_URL;
+              // Fire API calls to clear server-side data. API_BASE_URL is "" on
+              // web (same-origin) — a valid prefix — so DON'T gate on it being
+              // truthy, or the wipe silently no-ops for web users.
               const auth = (await import("@react-native-async-storage/async-storage")).default;
               const storedToken = await auth.getItem("kkamera_token");
-              if (storedToken && BASE) {
+              if (storedToken) {
                 await Promise.allSettled([
-                  fetch(`${BASE}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
-                  fetch(`${BASE}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
+                  fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
+                  fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
                 ]);
               }
             } catch { /* best effort */ }

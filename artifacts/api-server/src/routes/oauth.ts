@@ -220,7 +220,7 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   const { code, state, error } = req.query as Record<string, string>;
 
   const errorRedirect = (msg: string) => {
-    res.redirect(`/oauth-error?error=${encodeURIComponent(msg)}&provider=${provider}`);
+    res.redirect(`/oauth-error?error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`);
   };
 
   if (error) { errorRedirect(error); return; }

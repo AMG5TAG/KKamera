@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   Alert, Platform,
@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
-import { verifyPin } from "@/lib/appLock";
+import { verifyPin, hashPin } from "@/lib/appLock";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -20,8 +20,9 @@ interface LockScreenProps {
 
 export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
   const insets = useSafeAreaInsets();
-  const { settings } = useSettings();
+  const { settings, updateSetting } = useSettings();
   const [pin, setPin] = useState("");
+  const checkingRef = useRef(false);
   const [error, setError] = useState("");
   const [biometricAvailable, setBiometricAvailable] = useState(false);
 
@@ -59,18 +60,29 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
   }, [biometricAvailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePinDigit = (digit: string) => {
+    // Ignore input while a check is in flight or the PIN is already complete,
+    // so a fast extra tap can't append a 5th digit or race the async compare.
+    if (checkingRef.current || pin.length >= 4) return;
     const next = pin + digit;
     setPin(next);
     setError("");
     if (next.length === 4) {
-      void verifyPin(next, settings.appPin).then((ok) => {
-        if (ok) {
-          onUnlock();
-        } else {
-          setError("Incorrect PIN");
-          setPin("");
-        }
-      });
+      checkingRef.current = true;
+      void verifyPin(next, settings.appPin)
+        .then((ok) => {
+          if (ok) {
+            // Upgrade a legacy cleartext PIN to a salted hash on first unlock
+            // (a stored hash is 64 hex chars; anything else is legacy cleartext).
+            if (settings.appPin.length !== 64) {
+              hashPin(next).then((h) => updateSetting("appPin", h)).catch(() => {});
+            }
+            onUnlock();
+          } else {
+            setError("Incorrect PIN");
+            setPin("");
+          }
+        })
+        .finally(() => { checkingRef.current = false; });
     }
   };
 

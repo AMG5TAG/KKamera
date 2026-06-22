@@ -78,7 +78,9 @@ app.use(cors({
     }
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
-  credentials: true,
+  // Auth is via the Authorization bearer header, not cookies — so cross-origin
+  // credentials (cookies) are intentionally NOT enabled.
+  credentials: false,
 }));
 
 app.use(
