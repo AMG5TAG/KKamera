@@ -143,10 +143,14 @@ export default function CameraScreen() {
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const [showWebCamera, setShowWebCamera] = useState(false);
 
+  // Gate the camera UI on a real entitlement. While the subscription is still
+  // loading we optimistically allow it (the server enforces /uploads/execute
+  // regardless), but we do NOT grant access just because `sub` is missing —
+  // past_due is allowed to match the server's grace behaviour.
   const hasAccess = subLoading
     || sub?.status === "active"
-    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date())
-    || sub == null;
+    || sub?.status === "past_due"
+    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date());
 
   const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
     ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))

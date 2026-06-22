@@ -11,7 +11,9 @@ export type UploadItemStatus =
 
 export const UploadItemStatus = {
   pending: "pending",
+  queued: "queued",
   uploading: "uploading",
   done: "done",
   failed: "failed",
+  partial: "partial",
 } as const;

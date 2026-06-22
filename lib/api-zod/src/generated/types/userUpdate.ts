@@ -9,6 +9,4 @@
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
-  /** @nullable */
-  email?: string | null;
 }

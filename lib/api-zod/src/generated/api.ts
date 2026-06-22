@@ -95,7 +95,6 @@ export const GetMeResponse = zod.object({
 
 export const UpdateMeBody = zod.object({
   name: zod.string().nullish(),
-  email: zod.string().nullish(),
 });
 
 export const UpdateMeResponse = zod.object({
@@ -110,7 +109,14 @@ export const UpdateMeResponse = zod.object({
 export const GetSubscriptionResponse = zod.object({
   id: zod.number(),
   userId: zod.number(),
-  status: zod.enum(["trial", "active", "cancelled", "expired", "none"]),
+  status: zod.enum([
+    "trial",
+    "active",
+    "cancelled",
+    "expired",
+    "past_due",
+    "none",
+  ]),
   trialEnd: zod.string().nullish(),
   currentPeriodEnd: zod.string().nullish(),
   createdAt: zod.string(),
@@ -119,7 +125,14 @@ export const GetSubscriptionResponse = zod.object({
 export const StartTrialResponse = zod.object({
   id: zod.number(),
   userId: zod.number(),
-  status: zod.enum(["trial", "active", "cancelled", "expired", "none"]),
+  status: zod.enum([
+    "trial",
+    "active",
+    "cancelled",
+    "expired",
+    "past_due",
+    "none",
+  ]),
   trialEnd: zod.string().nullish(),
   currentPeriodEnd: zod.string().nullish(),
   createdAt: zod.string(),
@@ -168,6 +181,7 @@ export const ListCloudConnectionsResponseItem = zod.object({
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  hasCredentials: zod.boolean(),
   createdAt: zod.string(),
 });
 export const ListCloudConnectionsResponse = zod.array(
@@ -197,6 +211,7 @@ export const UpdateCloudConnectionBody = zod.object({
   port: zod.number().nullish(),
   username: zod.string().nullish(),
   password: zod.string().nullish(),
+  oauthCode: zod.string().nullish(),
 });
 
 export const UpdateCloudConnectionResponse = zod.object({
@@ -206,6 +221,7 @@ export const UpdateCloudConnectionResponse = zod.object({
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  hasCredentials: zod.boolean(),
   createdAt: zod.string(),
 });
 
@@ -231,7 +247,14 @@ export const ListUploadsResponseItem = zod.object({
   userId: zod.number(),
   fileName: zod.string(),
   fileType: zod.string(),
-  status: zod.enum(["pending", "uploading", "done", "failed"]),
+  status: zod.enum([
+    "pending",
+    "queued",
+    "uploading",
+    "done",
+    "failed",
+    "partial",
+  ]),
   connectionIds: zod.string().nullish(),
   error: zod.string().nullish(),
   createdAt: zod.string(),
@@ -262,7 +285,14 @@ export const UpdateUploadResponse = zod.object({
   userId: zod.number(),
   fileName: zod.string(),
   fileType: zod.string(),
-  status: zod.enum(["pending", "uploading", "done", "failed"]),
+  status: zod.enum([
+    "pending",
+    "queued",
+    "uploading",
+    "done",
+    "failed",
+    "partial",
+  ]),
   connectionIds: zod.string().nullish(),
   error: zod.string().nullish(),
   createdAt: zod.string(),

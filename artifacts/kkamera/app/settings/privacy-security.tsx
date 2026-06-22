@@ -9,6 +9,7 @@ import { router } from "expo-router";
 import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { hashPin } from "@/lib/appLock";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -44,7 +45,7 @@ export default function PrivacySecurityScreen() {
     }
   };
 
-  const handlePinSubmit = () => {
+  const handlePinSubmit = async () => {
     if (pinEntry.length !== 4) {
       Alert.alert("Invalid PIN", "PIN must be exactly 4 digits.");
       return;
@@ -57,7 +58,8 @@ export default function PrivacySecurityScreen() {
         setPinEntry(""); setConfirmPin(""); setPinStep("enter");
         return;
       }
-      updateSetting("appPin", pinEntry);
+      // Store only a salted hash, never the cleartext PIN.
+      updateSetting("appPin", await hashPin(pinEntry));
       updateSetting("appLockEnabled", true);
       updateSetting("appLockType", "pin");
       setPinEntry(""); setConfirmPin(""); setPinStep("idle");

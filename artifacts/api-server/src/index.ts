@@ -20,27 +20,32 @@ if (!sessionSecret || sessionSecret.length < 32) {
 /** Idempotent schema migrations — add new columns/tables without wiping data. */
 async function runAppMigrations() {
   if (!process.env.DATABASE_URL) return;
-  try {
-    await pool.query(`
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS two_fa_backup_codes TEXT;
-
-      ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ;
-
-      CREATE TABLE IF NOT EXISTS password_reset_tokens (
-        id              SERIAL PRIMARY KEY,
-        user_id         INTEGER NOT NULL,
-        token_hash      TEXT    NOT NULL UNIQUE,
-        expires_at      TIMESTAMPTZ NOT NULL,
-        used_at         TIMESTAMPTZ,
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-    `);
-    logger.info("App schema migrations applied");
-  } catch (err) {
-    logger.error({ err }, "App schema migration failed — continuing");
+  // Run each statement independently so one failure can't leave a half-applied
+  // batch. Optional column adds are best-effort; the reset-tokens table is
+  // required, so its failure is fatal rather than silently masked.
+  const optional = [
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_backup_codes TEXT`,
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ`,
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS free_years_awarded INTEGER NOT NULL DEFAULT 0`,
+  ];
+  for (const stmt of optional) {
+    try {
+      await pool.query(stmt);
+    } catch (err) {
+      logger.error({ err, stmt }, "Optional schema migration failed — continuing");
+    }
   }
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+      id              SERIAL PRIMARY KEY,
+      user_id         INTEGER NOT NULL,
+      token_hash      TEXT    NOT NULL UNIQUE,
+      expires_at      TIMESTAMPTZ NOT NULL,
+      used_at         TIMESTAMPTZ,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  logger.info("App schema migrations applied");
 }
 
 async function initStripe() {

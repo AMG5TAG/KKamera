@@ -175,19 +175,30 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
       // Try TOTP first, then backup codes
       const isTotpValid = authenticator.verify({ token: totpCode, secret: user.twoFASecret });
       if (!isTotpValid) {
-        // Check backup codes
-        const backupCodes: string[] = user.twoFABackupCodes ? JSON.parse(user.twoFABackupCodes) : [];
         const inputHash = hashBackupCode(totpCode.replace(/\s/g, "").toUpperCase());
-        const matchIndex = backupCodes.indexOf(inputHash);
-        if (matchIndex === -1) {
+        // Consume the single-use backup code atomically: re-read the codes under
+        // a row lock inside a transaction so two concurrent logins can't both
+        // spend the same code (or one resurrect an already-spent code).
+        const consumed = await db.transaction(async (tx) => {
+          const [locked] = await tx
+            .select({ codes: usersTable.twoFABackupCodes })
+            .from(usersTable)
+            .where(eq(usersTable.id, user.id))
+            .for("update")
+            .limit(1);
+          const codes: string[] = locked?.codes ? JSON.parse(locked.codes) : [];
+          const idx = codes.indexOf(inputHash);
+          if (idx === -1) return false;
+          codes.splice(idx, 1);
+          await tx.update(usersTable)
+            .set({ twoFABackupCodes: JSON.stringify(codes) })
+            .where(eq(usersTable.id, user.id));
+          return true;
+        });
+        if (!consumed) {
           res.status(401).json({ message: "Invalid 2FA code" });
           return;
         }
-        // Consume the backup code (single use)
-        backupCodes.splice(matchIndex, 1);
-        await db.update(usersTable)
-          .set({ twoFABackupCodes: JSON.stringify(backupCodes) })
-          .where(eq(usersTable.id, user.id));
       }
     }
 

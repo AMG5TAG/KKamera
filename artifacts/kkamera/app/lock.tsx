@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
+import { verifyPin } from "@/lib/appLock";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -62,12 +63,14 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
     setPin(next);
     setError("");
     if (next.length === 4) {
-      if (next === settings.appPin) {
-        onUnlock();
-      } else {
-        setError("Incorrect PIN");
-        setPin("");
-      }
+      void verifyPin(next, settings.appPin).then((ok) => {
+        if (ok) {
+          onUnlock();
+        } else {
+          setError("Incorrect PIN");
+          setPin("");
+        }
+      });
     }
   };
 

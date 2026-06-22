@@ -21,7 +21,9 @@ export async function requireSubscription(req: Request, res: Response, next: Nex
     const now = new Date();
 
     if (sub.status === SUBSCRIPTION_STATUS.TRIAL) {
-      if (sub.trialEnd && sub.trialEnd < now) {
+      // A trial with no end date is untrusted — deny rather than grant unlimited
+      // free access (e.g. a row left in "trial" by a webhook without a trialEnd).
+      if (!sub.trialEnd || sub.trialEnd < now) {
         res.status(402).json({ message: "Your trial has expired. Subscribe to continue uploading." });
         return;
       }
@@ -34,6 +36,17 @@ export async function requireSubscription(req: Request, res: Response, next: Nex
         return;
       }
       return next();
+    }
+
+    // Cancelled (auto-renew off): keep access until the period/trial already paid
+    // for actually elapses, then deny.
+    if (sub.status === SUBSCRIPTION_STATUS.CANCELLED) {
+      const accessUntil = sub.currentPeriodEnd ?? sub.trialEnd;
+      if (accessUntil && accessUntil > now) {
+        return next();
+      }
+      res.status(402).json({ message: "Your subscription has ended. Resubscribe to continue uploading." });
+      return;
     }
 
     // past_due: allow access (Stripe handles collection), but warn

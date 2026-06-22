@@ -36,6 +36,23 @@ const updateUploadSchema = z.object({
   error: z.string().max(2000).optional(),
 }).strict();
 
+/** Parse a client-supplied connectionIds value (JSON array or CSV) into a
+ *  canonical CSV of integer ids, or null when none are valid. */
+function normalizeConnectionIds(raw: string | undefined | null): string | null {
+  if (!raw) return null;
+  let parts: unknown[];
+  try {
+    const j = JSON.parse(raw);
+    parts = Array.isArray(j) ? j : [j];
+  } catch {
+    parts = raw.split(",");
+  }
+  const ids = parts
+    .map((p) => parseInt(String(p).trim(), 10))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length ? ids.join(",") : null;
+}
+
 function fmt(u: typeof uploadsTable.$inferSelect) {
   return {
     id: u.id, userId: u.userId, fileName: u.fileName, fileType: u.fileType,
@@ -76,7 +93,9 @@ router.post("/uploads", requireAuth, async (req, res) => {
     const { fileName, fileType, connectionIds } = parsed.data;
     const [item] = await db.insert(uploadsTable).values({
       userId: req.userId!, fileName, fileType, status: "pending",
-      connectionIds: connectionIds ?? null,
+      // Normalise to the same CSV-of-ids representation /uploads/execute writes,
+      // so the stored field has one consistent format across both paths.
+      connectionIds: normalizeConnectionIds(connectionIds),
     }).returning();
     if (!item) { res.status(500).json({ message: "Failed to create upload" }); return; }
     res.status(201).json(fmt(item));
