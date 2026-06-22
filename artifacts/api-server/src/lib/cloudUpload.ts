@@ -11,6 +11,7 @@ import { eq } from "drizzle-orm";
 import { logger } from "./logger.js";
 import { encrypt, decrypt } from "./crypto.js";
 import { isPrivateIp } from "./ssrf.js";
+import { sanitizeFileName } from "./fileNames.js";
 
 // ─── SSRF guard ───────────────────────────────────────────────────────────────
 // User-supplied FTP/WebDAV hosts are attacker-controlled. We resolve the host and
@@ -92,16 +93,6 @@ export interface CloudConn {
 
 export type UploadResult = { connectionId: number; success: boolean; error?: string };
 
-/**
- * Strip any path components from a client-supplied filename so it cannot
- * traverse out of the configured upload directory (e.g. "../../etc/x").
- * Returns just the final path segment with separators removed.
- */
-function sanitizeFileName(name: string): string {
-  const base = name.split(/[/\\]/).pop() ?? "";
-  const cleaned = base.replace(/^\.+/, "").trim();
-  return cleaned || `upload_${Date.now()}`;
-}
 
 // ─── OAuth Auto-Refresh ───────────────────────────────────────────────────────
 

@@ -1,17 +1,9 @@
 import { Resend } from "resend";
 import { logger } from "./logger.js";
+import { escapeHtml } from "./escapeHtml.js";
+export { escapeHtml };
 
 const FROM = process.env["EMAIL_FROM"] ?? "KKamera <noreply@kkamera.app>";
-
-/** Escape user-controlled text before interpolating into email HTML. */
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
 
 let client: Resend | null | undefined;
 
