@@ -25,6 +25,23 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
   const checkingRef = useRef(false);
   const [error, setError] = useState("");
   const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [attempts, setAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState(0);
+  const [, setNowTick] = useState(0);
+
+  // Brute-force lockout: after 5 wrong PINs, lock the keypad with an escalating
+  // delay (30s, then doubling, capped at 5 min).
+  const FAIL_THRESHOLD = 5;
+  const remainingLockMs = Math.max(0, lockedUntil - Date.now());
+  const isLocked = remainingLockMs > 0;
+
+  // Tick once a second while locked so the countdown updates and the keypad
+  // re-enables when the lock expires.
+  useEffect(() => {
+    if (!isLocked) return;
+    const id = setInterval(() => setNowTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [isLocked]);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
@@ -60,9 +77,9 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
   }, [biometricAvailable]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePinDigit = (digit: string) => {
-    // Ignore input while a check is in flight or the PIN is already complete,
-    // so a fast extra tap can't append a 5th digit or race the async compare.
-    if (checkingRef.current || pin.length >= 4) return;
+    // Ignore input while locked out, while a check is in flight, or when the PIN
+    // is already complete (a fast extra tap mustn't append a 5th digit).
+    if (isLocked || checkingRef.current || pin.length >= 4) return;
     const next = pin + digit;
     setPin(next);
     setError("");
@@ -71,6 +88,8 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
       void verifyPin(next, settings.appPin)
         .then((ok) => {
           if (ok) {
+            setAttempts(0);
+            setLockedUntil(0);
             // Upgrade a legacy cleartext PIN to a salted hash on first unlock
             // (a stored hash is 64 hex chars; anything else is legacy cleartext).
             if (settings.appPin.length !== 64) {
@@ -78,8 +97,16 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
             }
             onUnlock();
           } else {
-            setError("Incorrect PIN");
+            const n = attempts + 1;
+            setAttempts(n);
             setPin("");
+            if (n >= FAIL_THRESHOLD) {
+              const lockMs = Math.min(5 * 60_000, 30_000 * 2 ** (n - FAIL_THRESHOLD));
+              setLockedUntil(Date.now() + lockMs);
+              setError(`Too many attempts. Locked for ${Math.ceil(lockMs / 1000)}s.`);
+            } else {
+              setError(`Incorrect PIN (${FAIL_THRESHOLD - n} left)`);
+            }
           }
         })
         .finally(() => { checkingRef.current = false; });
@@ -104,7 +131,9 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
         ))}
       </View>
 
-      {error ? (
+      {isLocked ? (
+        <Text style={styles.errorText}>Too many attempts. Try again in {Math.ceil(remainingLockMs / 1000)}s.</Text>
+      ) : error ? (
         <Text style={styles.errorText}>{error}</Text>
       ) : (
         <Text style={styles.hint}>Enter your 4-digit PIN</Text>
