@@ -1,6 +1,7 @@
-import { runMigrations } from "stripe-replit-sync";
+import path from "path";
+import { runMigrations as runStripeMigrations } from "stripe-replit-sync";
 import { getStripeSync } from "./stripeClient.js";
-import { pool } from "@workspace/db";
+import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
 import app from "./app.js";
 import { logger } from "./lib/logger.js";
 
@@ -17,35 +18,21 @@ if (!sessionSecret || sessionSecret.length < 32) {
   );
 }
 
-/** Idempotent schema migrations — add new columns/tables without wiping data. */
+/**
+ * Apply versioned Drizzle migrations so a fresh database is fully provisioned on
+ * boot (no manual `push` step) and existing databases stay in sync. The baseline
+ * migration is idempotent, so this is safe to run on every start.
+ */
 async function runAppMigrations() {
-  if (!process.env.DATABASE_URL) return;
-  // Run each statement independently so one failure can't leave a half-applied
-  // batch. Optional column adds are best-effort; the reset-tokens table is
-  // required, so its failure is fatal rather than silently masked.
-  const optional = [
-    `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_fa_backup_codes TEXT`,
-    `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ`,
-    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS free_years_awarded INTEGER NOT NULL DEFAULT 0`,
-  ];
-  for (const stmt of optional) {
-    try {
-      await pool.query(stmt);
-    } catch (err) {
-      logger.error({ err, stmt }, "Optional schema migration failed — continuing");
-    }
+  if (!process.env.DATABASE_URL) {
+    logger.warn("DATABASE_URL not set — skipping migrations");
+    return;
   }
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS password_reset_tokens (
-      id              SERIAL PRIMARY KEY,
-      user_id         INTEGER NOT NULL,
-      token_hash      TEXT    NOT NULL UNIQUE,
-      expires_at      TIMESTAMPTZ NOT NULL,
-      used_at         TIMESTAMPTZ,
-      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  logger.info("App schema migrations applied");
+  // Migration SQL lives in lib/db/drizzle at the repo root. From the bundled
+  // entry (artifacts/api-server/dist/index.mjs) that is three levels up.
+  const migrationsFolder = path.resolve(import.meta.dirname, "../../../lib/db/drizzle");
+  await runDbMigrations(migrationsFolder);
+  logger.info("Database migrations applied");
 }
 
 async function initStripe() {
@@ -56,7 +43,7 @@ async function initStripe() {
   }
   try {
     logger.info("Initialising Stripe schema...");
-    await runMigrations({ databaseUrl });
+    await runStripeMigrations({ databaseUrl });
     logger.info("Stripe schema ready");
 
     const stripeSync = await getStripeSync();

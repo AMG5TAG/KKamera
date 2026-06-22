@@ -10,7 +10,7 @@ A subscription-based camera app (iOS/Android/PWA) that directly uploads photos a
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
+- DB schema changes: edit `lib/db/src/schema/`, then `pnpm --filter @workspace/db run generate` to create a versioned migration in `lib/db/drizzle/` (commit it). Migrations auto-apply on API server startup (and via the post-merge hook); `pnpm --filter @workspace/db run migrate` applies them manually. `pnpm --filter @workspace/db run push` remains for throwaway local experiments only — real changes must be a committed migration.
 - Required env: `DATABASE_URL` — Postgres connection string
 - Required env: `SESSION_SECRET` — used as JWT secret and AES-256 key (first 32 chars)
 - Required env (production): `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` — Stripe subscription
