@@ -7,6 +7,7 @@ import { sendPushToUser } from "./lib/pushNotifications.js";
 import {
   sendEmail, referralRewardEmail, subscriptionActiveEmail, subscriptionCancelledEmail,
 } from "./lib/email.js";
+import { periodEndFromSubscription, mapStripeStatus } from "./lib/stripeMapping.js";
 
 /**
  * Build a `.set()` fragment that advances currentPeriodEnd but never moves it
@@ -30,31 +31,6 @@ async function emailUser(
     .where(eq(usersTable.id, userId))
     .limit(1);
   if (u) sendEmail({ to: u.email, ...build(u.name) }).catch(() => {});
-}
-
-/**
- * Extract the current period end from a Stripe Subscription object.
- * In API version 2025-08-27.basil, `current_period_end` was removed from the
- * Subscription object and now lives on each subscription *item*. We read the
- * item value first and fall back to the legacy top-level field for safety.
- * Returns null if no valid timestamp is present (never an Invalid Date).
- */
-function periodEndFromSubscription(sub: any): Date | null {
-  // Take the furthest period end across all items (a multi-item/add-on
-  // subscription would otherwise pick an arbitrary line), falling back to the
-  // legacy top-level field.
-  const itemEnds: number[] = Array.isArray(sub?.items?.data)
-    ? sub.items.data
-        .map((i: any) => i?.current_period_end)
-        .filter((n: unknown): n is number => typeof n === "number" && Number.isFinite(n))
-    : [];
-  const epochSeconds =
-    itemEnds.length > 0
-      ? Math.max(...itemEnds)
-      : typeof sub?.current_period_end === "number" && Number.isFinite(sub.current_period_end)
-        ? sub.current_period_end
-        : null;
-  return epochSeconds == null ? null : new Date(epochSeconds * 1000);
 }
 
 /** Look up userId from a Stripe customerId */
@@ -232,18 +208,7 @@ export class WebhookHandlers {
           logger.warn({ err, subscriptionId: obj.id }, "Could not refetch subscription; using event payload");
         }
         const periodEnd = periodEndFromSubscription(sub);
-        const stripeStatus: string = sub.status;
-        // Map to our status. `null` means "don't touch status" — used for
-        // transient/unknown Stripe states (e.g. `incomplete` right after
-        // checkout) so an out-of-order event can't downgrade an active user.
-        const status: string | null =
-          stripeStatus === "active" ? "active"
-          : stripeStatus === "trialing" ? "trial"
-          : stripeStatus === "past_due" ? "past_due"
-          : stripeStatus === "unpaid" ? "past_due"
-          : stripeStatus === "canceled" ? "expired"
-          : stripeStatus === "incomplete_expired" ? "expired"
-          : null;
+        const status = mapStripeStatus(sub.status as string);
         await db.update(subscriptionsTable)
           .set({
             ...(status ? { status } : {}),
@@ -251,7 +216,7 @@ export class WebhookHandlers {
             stripeSubscriptionId: obj.id as string,
           })
           .where(eq(subscriptionsTable.stripeCustomerId, customerId));
-        logger.info({ customerId, stripeStatus, status }, "Subscription updated");
+        logger.info({ customerId, stripeStatus: sub.status, status }, "Subscription updated");
         break;
       }
 
