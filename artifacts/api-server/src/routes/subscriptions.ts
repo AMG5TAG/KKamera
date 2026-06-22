@@ -68,7 +68,10 @@ router.post("/subscriptions/checkout", requireAuth, async (req, res) => {
       }
     }
 
-    const priceId: string = req.body?.priceId || process.env["STRIPE_PRICE_ID"] || "";
+    // The price is server-controlled ONLY. Never trust a client-supplied price
+    // ID — a user could otherwise check out against a cheaper/$0 price that
+    // exists in the Stripe account and still be marked "active" by the webhook.
+    const priceId: string = process.env["STRIPE_PRICE_ID"] || "";
     if (!priceId) {
       res.status(503).json({ message: "No Stripe price configured. Contact support." });
       return;

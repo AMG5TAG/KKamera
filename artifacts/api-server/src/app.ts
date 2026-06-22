@@ -30,7 +30,31 @@ function originHost(origin: string): string {
 app.use(helmet({
   // Expo web / PWA needs cross-origin isolation disabled
   crossOriginEmbedderPolicy: false,
-  contentSecurityPolicy: false,
+  // Content Security Policy: the API serves the Expo web build same-origin, so a
+  // tight CSP is our main defence against XSS stealing the bearer token.
+  //  - script-src 'self': the Expo export loads its bundle from same-origin files
+  //    and the only inline <script> is non-executable JSON-LD (not subject to CSP).
+  //  - style-src allows 'unsafe-inline' because React Native Web injects inline styles.
+  //  - js.stripe.com / checkout.stripe.com are whitelisted for the optional Stripe.js
+  //    + Checkout redirect flow.
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "default-src": ["'self'"],
+      "script-src": ["'self'", "https://js.stripe.com"],
+      "style-src": ["'self'", "'unsafe-inline'"],
+      "img-src": ["'self'", "data:", "blob:", "https:"],
+      "font-src": ["'self'", "data:"],
+      "connect-src": ["'self'", "https://api.stripe.com"],
+      "frame-src": ["'self'", "https://js.stripe.com", "https://checkout.stripe.com"],
+      "worker-src": ["'self'", "blob:"],
+      "form-action": ["'self'", "https://checkout.stripe.com"],
+      "frame-ancestors": ["'none'"],
+      "base-uri": ["'self'"],
+      "object-src": ["'none'"],
+      "upgrade-insecure-requests": [],
+    },
+  },
 }));
 
 app.use(cors({

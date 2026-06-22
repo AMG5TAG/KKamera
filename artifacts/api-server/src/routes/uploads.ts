@@ -29,6 +29,13 @@ const createUploadSchema = z.object({
   connectionIds: z.string().optional(),
 });
 
+const UPLOAD_STATUS_VALUES = ["pending", "queued", "uploading", "done", "failed", "partial"] as const;
+
+const updateUploadSchema = z.object({
+  status: z.enum(UPLOAD_STATUS_VALUES).optional(),
+  error: z.string().max(2000).optional(),
+}).strict();
+
 function fmt(u: typeof uploadsTable.$inferSelect) {
   return {
     id: u.id, userId: u.userId, fileName: u.fileName, fileType: u.fileType,
@@ -159,7 +166,8 @@ router.post(
       res.json({ uploadId: uploadRecord?.id, status: finalStatus, results });
     } catch (err) {
       req.log.error({ err }, "Execute upload error");
-      res.status(500).json({ message: "Upload failed", error: String((err as any)?.message ?? err) });
+      // Don't leak internal error details to the client; they're in the logs.
+      res.status(500).json({ message: "Upload failed" });
     }
   }
 );
@@ -168,7 +176,12 @@ router.patch("/uploads/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
     if (!id) { res.status(400).json({ message: "Invalid upload ID" }); return; }
-    const { status, error } = req.body as { status?: string; error?: string };
+    const parsed = updateUploadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { status, error } = parsed.data;
     const updates: Partial<typeof uploadsTable.$inferInsert> = {};
     if (status !== undefined) updates.status = status;
     if (error !== undefined) updates.error = error;

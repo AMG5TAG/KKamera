@@ -1,11 +1,79 @@
 import { Client as FtpClient } from "basic-ftp";
 import { createClient as createWebdavClient } from "webdav";
 import { Readable } from "stream";
+import dns from "dns";
+import net from "net";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger.js";
 import { encrypt, decrypt } from "./crypto.js";
+
+// ─── SSRF guard ───────────────────────────────────────────────────────────────
+// User-supplied FTP/WebDAV hosts are attacker-controlled. Without this guard a
+// user could point a connection at internal infrastructure (cloud metadata at
+// 169.254.169.254, localhost services, RFC-1918 hosts) and use the test/upload
+// endpoints as an SSRF pivot. We resolve the host and reject private targets.
+
+/** True if an IP literal falls in a private / loopback / link-local / reserved range. */
+function isPrivateIp(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split(".").map(Number) as [number, number];
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;             // link-local (incl. cloud metadata)
+    if (a === 172 && b >= 16 && b <= 31) return true;    // 172.16/12
+    if (a === 192 && b === 168) return true;             // 192.168/16
+    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT 100.64/10
+    if (a >= 224) return true;                           // multicast / reserved
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase();
+    if (lower === "::1" || lower === "::") return true;
+    if (lower.startsWith("fe80")) return true;           // link-local
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // unique local
+    const mapped = lower.match(/::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);    // IPv4-mapped
+    if (mapped?.[1]) return isPrivateIp(mapped[1]);
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Throw unless `rawHost` (a bare hostname or a full URL) resolves only to public
+ * addresses. NOTE: this is a best-effort guard — a determined attacker could still
+ * use DNS rebinding (resolve public here, private at connect time). Pinning the
+ * resolved IP through to the FTP/WebDAV client would close that; tracked separately.
+ */
+async function assertPublicHost(rawHost: string): Promise<void> {
+  let hostname = rawHost.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(hostname)) {
+    try { hostname = new URL(hostname).hostname; } catch { /* treat as bare host */ }
+  }
+  hostname = hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  if (!hostname) throw new Error("Invalid host");
+
+  const lowered = hostname.toLowerCase();
+  if (
+    lowered === "localhost" ||
+    lowered.endsWith(".localhost") ||
+    lowered.endsWith(".local") ||
+    lowered.endsWith(".internal")
+  ) {
+    throw new Error("Host not allowed");
+  }
+
+  if (net.isIP(hostname)) {
+    if (isPrivateIp(hostname)) throw new Error("Host points to a private address and is not allowed");
+    return;
+  }
+
+  const addrs = await dns.promises.lookup(hostname, { all: true });
+  if (addrs.length === 0) throw new Error("Host did not resolve");
+  for (const { address } of addrs) {
+    if (isPrivateIp(address)) throw new Error("Host resolves to a private address and is not allowed");
+  }
+}
 
 export interface CloudConn {
   id: number;
@@ -118,16 +186,34 @@ async function getAccessToken(conn: CloudConn): Promise<string> {
 
 // ─── FTP ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Connect an FTP client, preferring an encrypted FTPS (AUTH TLS) session and
+ * only falling back to plaintext when the server doesn't support TLS. Caller
+ * must have already validated `conn.host` via assertPublicHost.
+ */
+async function ftpConnect(client: FtpClient, conn: CloudConn): Promise<void> {
+  const base = {
+    host: conn.host!,
+    port: conn.port ?? 21,
+    user: conn.username ?? "anonymous",
+    password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
+  };
+  try {
+    // Explicit FTPS. Many self-hosted FTP servers use self-signed certs, so we
+    // don't hard-fail on cert validation — encrypted-but-unpinned still beats
+    // sending credentials and photos in cleartext.
+    await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: false } });
+  } catch {
+    await client.access({ ...base, secure: false });
+    logger.warn({ connectionId: conn.id }, "FTP server does not support TLS — connection is unencrypted");
+  }
+}
+
 async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
+  await assertPublicHost(conn.host!);
   const client = new FtpClient(20_000);
   try {
-    await client.access({
-      host: conn.host!,
-      port: conn.port ?? 21,
-      user: conn.username ?? "anonymous",
-      password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
-      secure: false,
-    });
+    await ftpConnect(client, conn);
     const dir = conn.uploadPath ?? "/KKamera";
     await client.ensureDir(dir);
     await client.uploadFrom(Readable.from(buf), `${dir}/${fileName}`);
@@ -139,13 +225,8 @@ async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string): Promis
 async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   const client = new FtpClient(10_000);
   try {
-    await client.access({
-      host: conn.host!,
-      port: conn.port ?? 21,
-      user: conn.username ?? "anonymous",
-      password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
-      secure: false,
-    });
+    await assertPublicHost(conn.host!);
+    await ftpConnect(client, conn);
     await client.list("/");
     return { success: true, message: "FTP connection successful" };
   } catch (err: any) {
@@ -158,6 +239,7 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
 // ─── WebDAV ───────────────────────────────────────────────────────────────────
 
 async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
+  await assertPublicHost(conn.host!);
   const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
   const client = createWebdavClient(conn.host!, {
     username: conn.username ?? undefined,
@@ -172,6 +254,7 @@ async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Pro
 
 async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
+    await assertPublicHost(conn.host!);
     const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
     const client = createWebdavClient(conn.host!, {
       username: conn.username ?? undefined,

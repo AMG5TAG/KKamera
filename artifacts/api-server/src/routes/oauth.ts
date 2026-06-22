@@ -78,7 +78,11 @@ interface OAuthState {
 
 function signState(s: OAuthState): string {
   return jwt.sign(
-    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: s.verifier },
+    // The PKCE verifier is the one secret in the state. The state travels as a
+    // query param through the OAuth provider and redirect URLs (logs, Referer),
+    // so we encrypt the verifier — only our server can recover it, keeping PKCE's
+    // proof-of-possession actually secret rather than readable in the JWT body.
+    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: encrypt(s.verifier) },
     JWT_SECRET,
     { expiresIn: "10m" }
   );
@@ -93,7 +97,7 @@ function verifyState(state: string): OAuthState | null {
       name: d["n"] ?? "",
       platform: d["pf"] === "native" ? "native" : "web",
       uploadPath: d["up"] ?? "/KKamera",
-      verifier: d["v"] ?? "",
+      verifier: d["v"] ? decrypt(d["v"]) : "",
     };
   } catch {
     return null;

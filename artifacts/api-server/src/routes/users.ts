@@ -4,7 +4,7 @@ import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
   cloudConnectionsTable, uploadsTable, feedbackTable,
-  pushSubscriptionsTable,
+  pushSubscriptionsTable, passwordResetTokensTable,
 } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
@@ -105,6 +105,7 @@ router.delete("/users/me", requireAuth, async (req, res) => {
       req.log.error({ err }, "Failed to cancel Stripe subscription during account deletion");
     }
 
+    await db.delete(passwordResetTokensTable).where(eq(passwordResetTokensTable.userId, userId));
     await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
     await db.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
     await db.delete(uploadsTable).where(eq(uploadsTable.userId, userId));

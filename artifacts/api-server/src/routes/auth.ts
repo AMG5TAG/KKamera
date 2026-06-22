@@ -59,7 +59,8 @@ const twoFAOrBackupSchema = z.object({
 
 function generateReferralCode(name: string): string {
   const clean = name.replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 6).padEnd(3, "K");
-  const rand = Math.random().toString(36).substring(2, 5).toUpperCase();
+  // Use a CSPRNG so codes aren't predictable from Math.random's weak state.
+  const rand = randomBytes(3).toString("hex").toUpperCase();
   return `${clean}${rand}`;
 }
 
