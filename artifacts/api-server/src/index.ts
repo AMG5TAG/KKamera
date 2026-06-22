@@ -4,6 +4,7 @@ import { getStripeSync } from "./stripeClient.js";
 import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
 import app from "./app.js";
 import { logger } from "./lib/logger.js";
+import { getPublicBaseUrl } from "./lib/appUrl.js";
 
 const rawPort = process.env["PORT"];
 if (!rawPort) throw new Error("PORT environment variable is required but was not provided.");
@@ -48,8 +49,7 @@ async function initStripe() {
 
     const stripeSync = await getStripeSync();
 
-    const webhookBaseUrl = `https://${process.env.REPLIT_DOMAINS?.split(",")[0]}`;
-    await stripeSync.findOrCreateManagedWebhook(`${webhookBaseUrl}/api/stripe/webhook`);
+    await stripeSync.findOrCreateManagedWebhook(`${getPublicBaseUrl()}/api/stripe/webhook`);
     logger.info("Stripe webhook configured");
 
     // Backfill in background — don't block server startup

@@ -6,6 +6,7 @@ import { cloudConnectionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
+import { getPublicBaseUrl } from "../lib/appUrl.js";
 
 const router = Router();
 
@@ -106,16 +107,10 @@ function verifyState(state: string): OAuthState | null {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getCallbackUrl(req: import("express").Request, provider: string): string {
-  const prod = process.env["REPLIT_DOMAINS"]?.split(",")[0];
-  const dev = process.env["REPLIT_DEV_DOMAIN"];
-  if (process.env["REPLIT_DEPLOYMENT"] === "1" && prod) {
-    return `https://${prod}/api/oauth/${provider}/callback`;
-  }
-  // Workspace dev: the API server is exposed on external port 8080 (see .replit)
-  if (dev) return `https://${dev}:8080/api/oauth/${provider}/callback`;
-  if (prod) return `https://${prod}/api/oauth/${provider}/callback`;
-  return `${req.protocol}://${req.get("host")}/api/oauth/${provider}/callback`;
+function getCallbackUrl(provider: string): string {
+  // Always the canonical app origin (kkamera.app) so it matches the redirect URIs
+  // registered with each OAuth provider, regardless of where the server runs.
+  return `${getPublicBaseUrl()}/api/oauth/${provider}/callback`;
 }
 
 function buildAuthorizeUrl(provider: string, cfg: ProviderConfig, redirectUri: string, state: string, challenge: string): string {
@@ -209,7 +204,7 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
       verifier,
     });
 
-    const redirectUri = getCallbackUrl(req, provider);
+    const redirectUri = getCallbackUrl(provider);
     const authorizeUrl = buildAuthorizeUrl(provider, cfg, redirectUri, state, challenge);
 
     res.json({ authorizeUrl, state });
@@ -241,7 +236,7 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   if (!cfg) { errorRedirect("Unknown provider"); return; }
 
   try {
-    const redirectUri = getCallbackUrl(req, provider);
+    const redirectUri = getCallbackUrl(provider);
     const tokens = await exchangeCode(provider, cfg, code, redirectUri, entry.verifier);
 
     const expiry = tokens.expires_in

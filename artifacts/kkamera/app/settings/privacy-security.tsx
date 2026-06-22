@@ -10,6 +10,7 @@ import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { hashPin } from "@/lib/appLock";
+import { API_BASE_URL } from "@/lib/config";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -79,7 +80,7 @@ export default function PrivacySecurityScreen() {
             try {
               const token = (await import("@/contexts/AuthContext")).useAuth;
               // Fire API calls to clear server-side data
-              const BASE = process.env["EXPO_PUBLIC_DOMAIN"] ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}` : "";
+              const BASE = API_BASE_URL;
               const auth = (await import("@react-native-async-storage/async-storage")).default;
               const storedToken = await auth.getItem("kkamera_token");
               if (storedToken && BASE) {

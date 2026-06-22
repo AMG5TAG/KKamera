@@ -5,6 +5,7 @@ import React, {
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system";
 import { useAuth } from "./AuthContext";
+import { API_BASE_URL } from "@/lib/config";
 
 export type UploadStatus = "idle" | "queued" | "uploading" | "done" | "failed" | "partial";
 
@@ -55,9 +56,7 @@ function backoffMs(retries: number): number {
   return Math.min(30_000, 1_000 * Math.pow(2, retries));
 }
 
-const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
-  ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-  : "";
+const BASE_URL = API_BASE_URL;
 
 function xhrUpload(
   uri: string,

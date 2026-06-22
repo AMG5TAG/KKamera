@@ -4,6 +4,7 @@ import { subscriptionsTable, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { getUncachableStripeClient, getStripePublishableKey } from "../stripeClient.js";
+import { getPublicBaseUrl } from "../lib/appUrl.js";
 
 const router = Router();
 
@@ -77,7 +78,9 @@ router.post("/subscriptions/checkout", requireAuth, async (req, res) => {
       return;
     }
 
-    const origin = req.headers["origin"] || `https://${process.env.REPLIT_DOMAINS?.split(",")[0]}`;
+    // Redirect back to the canonical app origin (kkamera.app), not the Replit
+    // preview domain — so checkout always returns to the real app.
+    const origin = getPublicBaseUrl();
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: "subscription",

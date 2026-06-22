@@ -6,6 +6,7 @@ import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { sendEmail, escapeHtml } from "../lib/email.js";
+import { getPublicBaseUrl } from "../lib/appUrl.js";
 
 const router = Router();
 
@@ -60,7 +61,7 @@ router.post("/auth/forgot-password", async (req, res) => {
         expiresAt,
       });
 
-      const resetUrl = `${process.env["APP_URL"] ?? "https://kkamera.app"}/auth/reset-password?token=${token}`;
+      const resetUrl = `${getPublicBaseUrl()}/auth/reset-password?token=${token}`;
       await sendEmail({
         to: email,
         subject: "Reset your KKamera password",

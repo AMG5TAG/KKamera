@@ -10,6 +10,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
 import { useCreateCloudConnection, getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { API_BASE_URL } from "@/lib/config";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -17,9 +18,7 @@ const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 
-const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
-  ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-  : "";
+const BASE_URL = API_BASE_URL;
 
 const CLOUD_TYPES = [
   {
