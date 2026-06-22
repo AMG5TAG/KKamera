@@ -1,11 +1,82 @@
 import { Client as FtpClient } from "basic-ftp";
 import { createClient as createWebdavClient } from "webdav";
 import { Readable } from "stream";
+import dns from "dns";
+import net from "net";
+import http from "http";
+import https from "https";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger.js";
 import { encrypt, decrypt } from "./crypto.js";
+import { isPrivateIp } from "./ssrf.js";
+import { sanitizeFileName } from "./fileNames.js";
+
+// ─── SSRF guard ───────────────────────────────────────────────────────────────
+// User-supplied FTP/WebDAV hosts are attacker-controlled. We resolve the host and
+// reject private targets. IP classification lives in ./ssrf.js (unit-tested).
+
+/**
+ * Throw unless `rawHost` (a bare hostname or a full URL) resolves only to public
+ * addresses. NOTE: this is a best-effort guard — a determined attacker could still
+ * use DNS rebinding (resolve public here, private at connect time). Pinning the
+ * resolved IP through to the FTP/WebDAV client would close that; tracked separately.
+ */
+async function assertPublicHost(rawHost: string): Promise<{ pinnedIp: string | null }> {
+  let hostname = rawHost.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(hostname)) {
+    try { hostname = new URL(hostname).hostname; } catch { /* treat as bare host */ }
+  }
+  hostname = hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+  if (!hostname) throw new Error("Invalid host");
+
+  const lowered = hostname.toLowerCase();
+  if (
+    lowered === "localhost" ||
+    lowered.endsWith(".localhost") ||
+    lowered.endsWith(".local") ||
+    lowered.endsWith(".internal")
+  ) {
+    throw new Error("Host not allowed");
+  }
+
+  if (net.isIP(hostname)) {
+    if (isPrivateIp(hostname)) throw new Error("Host points to a private address and is not allowed");
+    return { pinnedIp: hostname };
+  }
+
+  const addrs = await dns.promises.lookup(hostname, { all: true });
+  if (addrs.length === 0) throw new Error("Host did not resolve");
+  for (const { address } of addrs) {
+    if (isPrivateIp(address)) throw new Error("Host resolves to a private address and is not allowed");
+  }
+  return { pinnedIp: addrs[0]!.address };
+}
+
+/**
+ * A DNS lookup that re-validates the resolved address at *connect* time and
+ * refuses private targets. Passed to the WebDAV http(s) agents so DNS rebinding
+ * (resolve public during validation, private at connect) and HTTP redirects to
+ * internal hostnames are both blocked on every new connection.
+ */
+function safeLookup(hostname: string, options: any, callback: any): void {
+  const cb = typeof options === "function" ? options : callback;
+  const opts = typeof options === "function" ? {} : (options ?? {});
+  dns.lookup(hostname, opts, (err: any, address: any, family: any) => {
+    if (err) return cb(err, address, family);
+    const list = Array.isArray(address) ? address : [{ address, family }];
+    for (const a of list) {
+      if (isPrivateIp(a.address)) {
+        return cb(new Error(`Blocked connection to private address ${a.address} (${hostname})`));
+      }
+    }
+    cb(null, address, family);
+  });
+}
+
+const safeHttpAgent = new http.Agent({ lookup: safeLookup as any });
+const safeHttpsAgent = new https.Agent({ lookup: safeLookup as any });
 
 export interface CloudConn {
   id: number;
@@ -21,6 +92,7 @@ export interface CloudConn {
 }
 
 export type UploadResult = { connectionId: number; success: boolean; error?: string };
+
 
 // ─── OAuth Auto-Refresh ───────────────────────────────────────────────────────
 
@@ -107,16 +179,42 @@ async function getAccessToken(conn: CloudConn): Promise<string> {
 
 // ─── FTP ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Connect an FTP client, preferring an encrypted FTPS (AUTH TLS) session and
+ * only falling back to plaintext when the server doesn't support TLS. Caller
+ * must have already validated `conn.host` via assertPublicHost.
+ */
+async function ftpConnect(client: FtpClient, conn: CloudConn): Promise<void> {
+  // Validate the host and pin to the resolved public IP literal, so the FTP
+  // client cannot re-resolve the hostname to an internal address between our
+  // check and the connect (DNS rebinding).
+  const { pinnedIp } = await assertPublicHost(conn.host!);
+  const base = {
+    host: pinnedIp ?? conn.host!,
+    port: conn.port ?? 21,
+    user: conn.username ?? "anonymous",
+    password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
+  };
+  try {
+    // Explicit FTPS. Many self-hosted FTP servers use self-signed certs, so we
+    // don't hard-fail on cert validation — encrypted-but-unpinned still beats
+    // sending credentials and photos in cleartext.
+    await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: false } });
+  } catch {
+    await client.access({ ...base, secure: false });
+    logger.warn({ connectionId: conn.id }, "FTP server does not support TLS — connection is unencrypted");
+  }
+  // Backstop: confirm the socket's actual peer is public.
+  const remote = client.ftp.socket?.remoteAddress;
+  if (remote && isPrivateIp(remote)) {
+    throw new Error("FTP connection resolved to a private address");
+  }
+}
+
 async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
   const client = new FtpClient(20_000);
   try {
-    await client.access({
-      host: conn.host!,
-      port: conn.port ?? 21,
-      user: conn.username ?? "anonymous",
-      password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
-      secure: false,
-    });
+    await ftpConnect(client, conn);
     const dir = conn.uploadPath ?? "/KKamera";
     await client.ensureDir(dir);
     await client.uploadFrom(Readable.from(buf), `${dir}/${fileName}`);
@@ -128,13 +226,7 @@ async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string): Promis
 async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   const client = new FtpClient(10_000);
   try {
-    await client.access({
-      host: conn.host!,
-      port: conn.port ?? 21,
-      user: conn.username ?? "anonymous",
-      password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
-      secure: false,
-    });
+    await ftpConnect(client, conn);
     await client.list("/");
     return { success: true, message: "FTP connection successful" };
   } catch (err: any) {
@@ -147,10 +239,15 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
 // ─── WebDAV ───────────────────────────────────────────────────────────────────
 
 async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
+  await assertPublicHost(conn.host!);
   const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
   const client = createWebdavClient(conn.host!, {
     username: conn.username ?? undefined,
     password: pass || undefined,
+    // Validate the resolved IP at connect time (and on every redirect) so a
+    // rebind or a 302 to an internal address is refused.
+    httpAgent: safeHttpAgent,
+    httpsAgent: safeHttpsAgent,
   });
   const dir = conn.uploadPath ?? "/KKamera";
   if (!(await client.exists(dir))) {
@@ -161,10 +258,13 @@ async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Pro
 
 async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
+    await assertPublicHost(conn.host!);
     const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
     const client = createWebdavClient(conn.host!, {
       username: conn.username ?? undefined,
       password: pass || undefined,
+      httpAgent: safeHttpAgent,
+      httpsAgent: safeHttpsAgent,
     });
     const exists = await client.exists(conn.uploadPath ?? "/");
     return {
@@ -181,7 +281,10 @@ async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message:
 // ─── Google Drive ─────────────────────────────────────────────────────────────
 
 async function ensureDriveFolder(token: string, folderName: string): Promise<string> {
-  const q = `name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  // Escape single quotes and backslashes per Google Drive query syntax so the
+  // folder name can't break out of the quoted string in the `q` parameter.
+  const escaped = folderName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const q = `name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
   const search = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -297,7 +400,8 @@ async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export async function uploadToCloud(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string): Promise<UploadResult> {
+export async function uploadToCloud(conn: CloudConn, buf: Buffer, rawFileName: string, mimeType: string): Promise<UploadResult> {
+  const fileName = sanitizeFileName(rawFileName);
   try {
     switch (conn.type) {
       case "ftp":         await uploadFtp(conn, buf, fileName); break;

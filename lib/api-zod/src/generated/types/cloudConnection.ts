@@ -15,5 +15,6 @@ export interface CloudConnection {
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  hasCredentials: boolean;
   createdAt: string;
 }

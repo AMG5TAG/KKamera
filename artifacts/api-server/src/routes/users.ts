@@ -4,10 +4,11 @@ import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
   cloudConnectionsTable, uploadsTable, feedbackTable,
-  pushSubscriptionsTable,
+  pushSubscriptionsTable, passwordResetTokensTable,
 } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { getUncachableStripeClient } from "../stripeClient.js";
 
 const router = Router();
 
@@ -92,13 +93,30 @@ router.delete("/users/me", requireAuth, async (req, res) => {
   try {
     const userId = req.userId!;
 
-    await db.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
-    await db.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
-    await db.delete(uploadsTable).where(eq(uploadsTable.userId, userId));
-    await db.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));
-    await db.delete(subscriptionsTable).where(eq(subscriptionsTable.userId, userId));
-    await db.delete(referralsTable).where(eq(referralsTable.referrerId, userId));
-    await db.delete(usersTable).where(eq(usersTable.id, userId));
+    // Cancel any live Stripe subscription immediately so a deleted account is
+    // not billed again. Best-effort — never block account deletion on Stripe.
+    try {
+      const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
+      if (sub?.stripeSubscriptionId) {
+        const stripe = await getUncachableStripeClient();
+        await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
+      }
+    } catch (err) {
+      req.log.error({ err }, "Failed to cancel Stripe subscription during account deletion");
+    }
+
+    // Delete all PII atomically — a partial delete must not leave orphaned rows
+    // (e.g. encrypted cloud credentials) behind if one statement fails.
+    await db.transaction(async (tx) => {
+      await tx.delete(passwordResetTokensTable).where(eq(passwordResetTokensTable.userId, userId));
+      await tx.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
+      await tx.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
+      await tx.delete(uploadsTable).where(eq(uploadsTable.userId, userId));
+      await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));
+      await tx.delete(subscriptionsTable).where(eq(subscriptionsTable.userId, userId));
+      await tx.delete(referralsTable).where(eq(referralsTable.referrerId, userId));
+      await tx.delete(usersTable).where(eq(usersTable.id, userId));
+    });
 
     res.json({ message: "Account and all associated data deleted." });
   } catch (err) {

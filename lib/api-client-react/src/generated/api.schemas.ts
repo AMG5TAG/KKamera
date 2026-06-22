@@ -63,8 +63,6 @@ export interface AuthResponse {
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
-  /** @nullable */
-  email?: string | null;
 }
 
 export interface TwoFASetup {
@@ -85,6 +83,7 @@ export const SubscriptionStatus = {
   active: "active",
   cancelled: "cancelled",
   expired: "expired",
+  past_due: "past_due",
   none: "none",
 } as const;
 
@@ -144,6 +143,7 @@ export interface CloudConnection {
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  hasCredentials: boolean;
   createdAt: string;
 }
 
@@ -190,6 +190,8 @@ export interface CloudConnectionUpdate {
   username?: string | null;
   /** @nullable */
   password?: string | null;
+  /** @nullable */
+  oauthCode?: string | null;
 }
 
 export interface TestResult {
@@ -202,9 +204,11 @@ export type UploadItemStatus =
 
 export const UploadItemStatus = {
   pending: "pending",
+  queued: "queued",
   uploading: "uploading",
   done: "done",
   failed: "failed",
+  partial: "partial",
 } as const;
 
 export interface UploadItem {

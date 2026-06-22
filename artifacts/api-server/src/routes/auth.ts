@@ -59,13 +59,19 @@ const twoFAOrBackupSchema = z.object({
 
 function generateReferralCode(name: string): string {
   const clean = name.replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 6).padEnd(3, "K");
-  const rand = Math.random().toString(36).substring(2, 5).toUpperCase();
+  // Use a CSPRNG so codes aren't predictable from Math.random's weak state.
+  const rand = randomBytes(3).toString("hex").toUpperCase();
   return `${clean}${rand}`;
 }
 
 function hashBackupCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
 }
+
+// A precomputed bcrypt hash (of a random string) used to spend roughly the same
+// time on the "user not found" path as on a real comparison, so response timing
+// doesn't reveal whether an email is registered.
+const DUMMY_BCRYPT_HASH = "$2b$12$.mHbRuuNFGfnrol8lmQ/sOUly9knVchhRMliScqUwz8h5lSb47iYe";
 
 function generateBackupCodes(): string[] {
   return Array.from({ length: 8 }, () => randomBytes(4).toString("hex").toUpperCase());
@@ -153,7 +159,12 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
     const { email, password, totpCode } = parsed.data;
 
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    if (!user) { res.status(401).json({ message: "Invalid credentials" }); return; }
+    if (!user) {
+      // Spend comparable time so timing doesn't reveal whether the email exists.
+      await bcryptjs.compare(password, DUMMY_BCRYPT_HASH);
+      res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
 
     const valid = await bcryptjs.compare(password, user.passwordHash);
     if (!valid) { res.status(401).json({ message: "Invalid credentials" }); return; }
@@ -164,19 +175,30 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
       // Try TOTP first, then backup codes
       const isTotpValid = authenticator.verify({ token: totpCode, secret: user.twoFASecret });
       if (!isTotpValid) {
-        // Check backup codes
-        const backupCodes: string[] = user.twoFABackupCodes ? JSON.parse(user.twoFABackupCodes) : [];
         const inputHash = hashBackupCode(totpCode.replace(/\s/g, "").toUpperCase());
-        const matchIndex = backupCodes.indexOf(inputHash);
-        if (matchIndex === -1) {
+        // Consume the single-use backup code atomically: re-read the codes under
+        // a row lock inside a transaction so two concurrent logins can't both
+        // spend the same code (or one resurrect an already-spent code).
+        const consumed = await db.transaction(async (tx) => {
+          const [locked] = await tx
+            .select({ codes: usersTable.twoFABackupCodes })
+            .from(usersTable)
+            .where(eq(usersTable.id, user.id))
+            .for("update")
+            .limit(1);
+          const codes: string[] = locked?.codes ? JSON.parse(locked.codes) : [];
+          const idx = codes.indexOf(inputHash);
+          if (idx === -1) return false;
+          codes.splice(idx, 1);
+          await tx.update(usersTable)
+            .set({ twoFABackupCodes: JSON.stringify(codes) })
+            .where(eq(usersTable.id, user.id));
+          return true;
+        });
+        if (!consumed) {
           res.status(401).json({ message: "Invalid 2FA code" });
           return;
         }
-        // Consume the backup code (single use)
-        backupCodes.splice(matchIndex, 1);
-        await db.update(usersTable)
-          .set({ twoFABackupCodes: JSON.stringify(backupCodes) })
-          .where(eq(usersTable.id, user.id));
       }
     }
 
@@ -199,9 +221,16 @@ router.post("/auth/logout", (_req, res) => {
 
 router.post("/auth/2fa/setup", requireAuth, async (req, res) => {
   try {
-    const secret = authenticator.generateSecret();
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    // Don't let an already-enabled secret be silently overwritten — the user
+    // must disable 2FA first (which requires a valid code or backup code).
+    if (user.twoFAEnabled) {
+      res.status(400).json({ message: "2FA is already enabled. Disable it before setting up again." });
+      return;
+    }
+
+    const secret = authenticator.generateSecret();
 
     // Generate and hash backup codes — return plaintext once, store hashes
     const backupCodesPlain = generateBackupCodes();

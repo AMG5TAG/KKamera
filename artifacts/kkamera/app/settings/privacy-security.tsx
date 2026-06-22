@@ -9,6 +9,8 @@ import { router } from "expo-router";
 import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { hashPin } from "@/lib/appLock";
+import { API_BASE_URL } from "@/lib/config";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -44,7 +46,7 @@ export default function PrivacySecurityScreen() {
     }
   };
 
-  const handlePinSubmit = () => {
+  const handlePinSubmit = async () => {
     if (pinEntry.length !== 4) {
       Alert.alert("Invalid PIN", "PIN must be exactly 4 digits.");
       return;
@@ -57,7 +59,8 @@ export default function PrivacySecurityScreen() {
         setPinEntry(""); setConfirmPin(""); setPinStep("enter");
         return;
       }
-      updateSetting("appPin", pinEntry);
+      // Store only a salted hash, never the cleartext PIN.
+      updateSetting("appPin", await hashPin(pinEntry));
       updateSetting("appLockEnabled", true);
       updateSetting("appLockType", "pin");
       setPinEntry(""); setConfirmPin(""); setPinStep("idle");
@@ -75,15 +78,15 @@ export default function PrivacySecurityScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              const token = (await import("@/contexts/AuthContext")).useAuth;
-              // Fire API calls to clear server-side data
-              const BASE = process.env["EXPO_PUBLIC_DOMAIN"] ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}` : "";
+              // Fire API calls to clear server-side data. API_BASE_URL is "" on
+              // web (same-origin) — a valid prefix — so DON'T gate on it being
+              // truthy, or the wipe silently no-ops for web users.
               const auth = (await import("@react-native-async-storage/async-storage")).default;
               const storedToken = await auth.getItem("kkamera_token");
-              if (storedToken && BASE) {
+              if (storedToken) {
                 await Promise.allSettled([
-                  fetch(`${BASE}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
-                  fetch(`${BASE}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
+                  fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
+                  fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
                 ]);
               }
             } catch { /* best effort */ }

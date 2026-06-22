@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { uploadsTable, cloudConnectionsTable, usersTable } from "@workspace/db";
 import { eq, and, inArray, desc } from "drizzle-orm";
@@ -8,7 +9,8 @@ import { requireAuth } from "../middlewares/auth.js";
 import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendPushToUser } from "../lib/pushNotifications.js";
-import { sendEmail } from "../lib/email.js";
+import { sendEmail, escapeHtml } from "../lib/email.js";
+import { normalizeConnectionIds } from "../lib/connectionIds.js";
 
 const router = Router();
 
@@ -27,6 +29,13 @@ const createUploadSchema = z.object({
   fileType: z.enum(["image", "video"]),
   connectionIds: z.string().optional(),
 });
+
+const UPLOAD_STATUS_VALUES = ["pending", "queued", "uploading", "done", "failed", "partial"] as const;
+
+const updateUploadSchema = z.object({
+  status: z.enum(UPLOAD_STATUS_VALUES).optional(),
+  error: z.string().max(2000).optional(),
+}).strict();
 
 function fmt(u: typeof uploadsTable.$inferSelect) {
   return {
@@ -68,7 +77,9 @@ router.post("/uploads", requireAuth, async (req, res) => {
     const { fileName, fileType, connectionIds } = parsed.data;
     const [item] = await db.insert(uploadsTable).values({
       userId: req.userId!, fileName, fileType, status: "pending",
-      connectionIds: connectionIds ?? null,
+      // Normalise to the same CSV-of-ids representation /uploads/execute writes,
+      // so the stored field has one consistent format across both paths.
+      connectionIds: normalizeConnectionIds(connectionIds),
     }).returning();
     if (!item) { res.status(500).json({ message: "Failed to create upload" }); return; }
     res.status(201).json(fmt(item));
@@ -158,7 +169,8 @@ router.post(
       res.json({ uploadId: uploadRecord?.id, status: finalStatus, results });
     } catch (err) {
       req.log.error({ err }, "Execute upload error");
-      res.status(500).json({ message: "Upload failed", error: String((err as any)?.message ?? err) });
+      // Don't leak internal error details to the client; they're in the logs.
+      res.status(500).json({ message: "Upload failed" });
     }
   }
 );
@@ -167,7 +179,12 @@ router.patch("/uploads/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
     if (!id) { res.status(400).json({ message: "Invalid upload ID" }); return; }
-    const { status, error } = req.body as { status?: string; error?: string };
+    const parsed = updateUploadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { status, error } = parsed.data;
     const updates: Partial<typeof uploadsTable.$inferInsert> = {};
     if (status !== undefined) updates.status = status;
     if (error !== undefined) updates.error = error;
@@ -204,12 +221,22 @@ router.delete("/uploads", requireAuth, async (req, res) => {
   }
 });
 
+// Witness emails go to arbitrary addresses from our sending domain — rate limit
+// per IP to prevent the endpoint being used as a spam/phishing relay.
+const witnessLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many witness notifications. Please try again later." },
+});
+
 const witnessSchema = z.object({
   witnessEmail: z.string().email(),
   fileName: z.string().min(1).max(500),
 });
 
-router.post("/uploads/witness-notify", requireAuth, async (req, res) => {
+router.post("/uploads/witness-notify", requireAuth, witnessLimiter, async (req, res) => {
   try {
     const parsed = witnessSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ message: "Invalid request" }); return; }
@@ -219,6 +246,8 @@ router.post("/uploads/witness-notify", requireAuth, async (req, res) => {
       .where(eq(usersTable.id, req.userId!)).limit(1);
 
     const userName = user?.name ?? "A KKamera user";
+    const safeUserName = escapeHtml(userName);
+    const safeFileName = escapeHtml(fileName);
     const timestamp = new Date().toLocaleString("en-AU", { timeZone: "UTC", dateStyle: "short", timeStyle: "medium" });
 
     await sendEmail({
@@ -227,8 +256,8 @@ router.post("/uploads/witness-notify", requireAuth, async (req, res) => {
       html: `<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0d0b08;color:#ccc;padding:40px">
         <div style="max-width:480px;margin:0 auto;background:#1a1710;border-radius:16px;padding:28px;border:1px solid rgba(177,152,112,0.2)">
           <p style="color:#b19870;font-size:20px;font-weight:700;margin:0 0 20px">KKamera — Witness Notification</p>
-          <p><strong style="color:white">${userName}</strong> captured and uploaded a file to their cloud storage.</p>
-          <p style="color:#888">File: <code style="color:#b19870">${fileName}</code></p>
+          <p><strong style="color:white">${safeUserName}</strong> captured and uploaded a file to their cloud storage.</p>
+          <p style="color:#888">File: <code style="color:#b19870">${safeFileName}</code></p>
           <p style="color:#888">Time: ${timestamp} UTC</p>
           <p style="color:#666;font-size:12px;margin-top:20px">You received this because you are listed as a witness for this KKamera account.</p>
         </div></body></html>`,

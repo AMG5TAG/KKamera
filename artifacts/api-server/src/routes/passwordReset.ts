@@ -5,7 +5,8 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
 import { eq, and, gt, isNull } from "drizzle-orm";
-import { sendEmail } from "../lib/email.js";
+import { sendEmail, escapeHtml } from "../lib/email.js";
+import { getPublicBaseUrl } from "../lib/appUrl.js";
 
 const router = Router();
 
@@ -60,7 +61,7 @@ router.post("/auth/forgot-password", async (req, res) => {
         expiresAt,
       });
 
-      const resetUrl = `${process.env["APP_URL"] ?? "https://kkamera.app"}/auth/reset-password?token=${token}`;
+      const resetUrl = `${getPublicBaseUrl()}/auth/reset-password?token=${token}`;
       await sendEmail({
         to: email,
         subject: "Reset your KKamera password",
@@ -106,7 +107,7 @@ router.post("/auth/reset-password", async (req, res) => {
     const passwordHash = await bcryptjs.hash(password, 12);
 
     await Promise.all([
-      db.update(usersTable).set({ passwordHash }).where(eq(usersTable.id, record.userId)),
+      db.update(usersTable).set({ passwordHash, passwordChangedAt: new Date() }).where(eq(usersTable.id, record.userId)),
       db
         .update(passwordResetTokensTable)
         .set({ usedAt: new Date() })
@@ -140,7 +141,7 @@ function passwordResetEmail(name: string, resetUrl: string): { html: string } {
     <div class="logo">KKamera</div>
     <div class="card">
       <h1>Reset your password</h1>
-      <p>Hi ${name},</p>
+      <p>Hi ${escapeHtml(name)},</p>
       <p>We received a request to reset your KKamera password. Click the button below — this link expires in <strong style="color:#b19870">1 hour</strong>.</p>
       <a href="${resetUrl}" class="btn">Reset Password</a>
       <p class="warn">If you didn't request this, you can safely ignore this email. Your password won't change.</p>

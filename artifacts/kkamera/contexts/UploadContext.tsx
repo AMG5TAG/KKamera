@@ -4,6 +4,8 @@ import React, {
 } from "react";
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system";
+import { useAuth } from "./AuthContext";
+import { API_BASE_URL } from "@/lib/config";
 
 export type UploadStatus = "idle" | "queued" | "uploading" | "done" | "failed" | "partial";
 
@@ -54,9 +56,7 @@ function backoffMs(retries: number): number {
   return Math.min(30_000, 1_000 * Math.pow(2, retries));
 }
 
-const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
-  ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-  : "";
+const BASE_URL = API_BASE_URL;
 
 function xhrUpload(
   uri: string,
@@ -125,6 +125,21 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [uploads, setUploads] = useState<UploadEntry[]>([]);
   const tokenRef = useRef<string | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { isAuthenticated } = useAuth();
+
+  // On logout/account switch, drop the cached token and abandon the in-memory
+  // retry queue so a background retry can't upload the previous user's file
+  // with the previous user's token.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      tokenRef.current = null;
+      offlineQueue.length = 0;
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    }
+  }, [isAuthenticated]);
 
   const addUpload = useCallback((fileName: string, fileType: string): string => {
     const id = Date.now().toString() + Math.random().toString(36).slice(2, 9);
@@ -145,6 +160,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
   const scheduleRetry = useCallback((token: string) => {
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    // Nothing queued — don't schedule. (Math.min([]) is Infinity, which would
+    // otherwise create a timer that effectively never fires.)
+    if (offlineQueue.length === 0) return;
     const ready = offlineQueue.filter(i => i.nextRetryAt <= Date.now());
     if (ready.length === 0) {
       const soonest = Math.min(...offlineQueue.map(i => i.nextRetryAt));

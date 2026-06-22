@@ -21,4 +21,6 @@ export interface CloudConnectionUpdate {
   username?: string | null;
   /** @nullable */
   password?: string | null;
+  /** @nullable */
+  oauthCode?: string | null;
 }

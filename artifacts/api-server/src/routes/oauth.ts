@@ -6,6 +6,7 @@ import { cloudConnectionsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
+import { getPublicBaseUrl } from "../lib/appUrl.js";
 
 const router = Router();
 
@@ -78,7 +79,11 @@ interface OAuthState {
 
 function signState(s: OAuthState): string {
   return jwt.sign(
-    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: s.verifier },
+    // The PKCE verifier is the one secret in the state. The state travels as a
+    // query param through the OAuth provider and redirect URLs (logs, Referer),
+    // so we encrypt the verifier — only our server can recover it, keeping PKCE's
+    // proof-of-possession actually secret rather than readable in the JWT body.
+    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: encrypt(s.verifier) },
     JWT_SECRET,
     { expiresIn: "10m" }
   );
@@ -93,7 +98,7 @@ function verifyState(state: string): OAuthState | null {
       name: d["n"] ?? "",
       platform: d["pf"] === "native" ? "native" : "web",
       uploadPath: d["up"] ?? "/KKamera",
-      verifier: d["v"] ?? "",
+      verifier: d["v"] ? decrypt(d["v"]) : "",
     };
   } catch {
     return null;
@@ -102,16 +107,10 @@ function verifyState(state: string): OAuthState | null {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getCallbackUrl(req: import("express").Request, provider: string): string {
-  const prod = process.env["REPLIT_DOMAINS"]?.split(",")[0];
-  const dev = process.env["REPLIT_DEV_DOMAIN"];
-  if (process.env["REPLIT_DEPLOYMENT"] === "1" && prod) {
-    return `https://${prod}/api/oauth/${provider}/callback`;
-  }
-  // Workspace dev: the API server is exposed on external port 8080 (see .replit)
-  if (dev) return `https://${dev}:8080/api/oauth/${provider}/callback`;
-  if (prod) return `https://${prod}/api/oauth/${provider}/callback`;
-  return `${req.protocol}://${req.get("host")}/api/oauth/${provider}/callback`;
+function getCallbackUrl(provider: string): string {
+  // Always the canonical app origin (kkamera.app) so it matches the redirect URIs
+  // registered with each OAuth provider, regardless of where the server runs.
+  return `${getPublicBaseUrl()}/api/oauth/${provider}/callback`;
 }
 
 function buildAuthorizeUrl(provider: string, cfg: ProviderConfig, redirectUri: string, state: string, challenge: string): string {
@@ -205,7 +204,7 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
       verifier,
     });
 
-    const redirectUri = getCallbackUrl(req, provider);
+    const redirectUri = getCallbackUrl(provider);
     const authorizeUrl = buildAuthorizeUrl(provider, cfg, redirectUri, state, challenge);
 
     res.json({ authorizeUrl, state });
@@ -221,7 +220,7 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   const { code, state, error } = req.query as Record<string, string>;
 
   const errorRedirect = (msg: string) => {
-    res.redirect(`/oauth-error?error=${encodeURIComponent(msg)}&provider=${provider}`);
+    res.redirect(`/oauth-error?error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`);
   };
 
   if (error) { errorRedirect(error); return; }
@@ -237,7 +236,7 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   if (!cfg) { errorRedirect("Unknown provider"); return; }
 
   try {
-    const redirectUri = getCallbackUrl(req, provider);
+    const redirectUri = getCallbackUrl(provider);
     const tokens = await exchangeCode(provider, cfg, code, redirectUri, entry.verifier);
 
     const expiry = tokens.expires_in

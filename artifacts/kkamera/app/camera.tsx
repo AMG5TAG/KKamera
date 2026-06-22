@@ -24,6 +24,7 @@ import Svg, { Line, Rect, G } from "react-native-svg";
 import { TrialBanner } from "@/components/TrialBanner";
 import { WebCamera } from "@/components/WebCamera";
 import { processDocumentScan } from "@/lib/documentScan";
+import { API_BASE_URL } from "@/lib/config";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -143,10 +144,14 @@ export default function CameraScreen() {
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const [showWebCamera, setShowWebCamera] = useState(false);
 
+  // Gate the camera UI on a real entitlement. While the subscription is still
+  // loading we optimistically allow it (the server enforces /uploads/execute
+  // regardless), but we do NOT grant access just because `sub` is missing —
+  // past_due is allowed to match the server's grace behaviour.
   const hasAccess = subLoading
     || sub?.status === "active"
-    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date())
-    || sub == null;
+    || sub?.status === "past_due"
+    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date());
 
   const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
     ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
@@ -290,8 +295,7 @@ export default function CameraScreen() {
 
   const notifyWitness = useCallback(async (fileName: string) => {
     if (!settings.witnessOnSuccess || !settings.witnessEmail || !token) return;
-    const BASE = process.env["EXPO_PUBLIC_DOMAIN"] ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}` : "";
-    fetch(`${BASE}/api/uploads/witness-notify`, {
+    fetch(`${API_BASE_URL}/api/uploads/witness-notify`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ witnessEmail: settings.witnessEmail, fileName }),

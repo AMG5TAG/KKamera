@@ -12,6 +12,8 @@ export const usersTable = pgTable("users", {
   twoFASecret: text("two_fa_secret"),
   twoFAEnabled: boolean("two_fa_enabled").notNull().default(false),
   twoFABackupCodes: text("two_fa_backup_codes"),
+  // Bumped whenever the password changes; tokens issued before this are rejected.
+  passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

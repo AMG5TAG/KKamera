@@ -620,8 +620,6 @@ components:
       properties:
         name:
           type: ["string", "null"]
-        email:
-          type: ["string", "null"]
 
     TwoFASetup:
       type: object
@@ -653,7 +651,7 @@ components:
           type: integer
         status:
           type: string
-          enum: [trial, active, cancelled, expired, none]
+          enum: [trial, active, cancelled, expired, past_due, none]
         trialEnd:
           type: ["string", "null"]
         currentPeriodEnd:
@@ -697,7 +695,7 @@ components:
 
     CloudConnection:
       type: object
-      required: [id, userId, type, name, active, createdAt]
+      required: [id, userId, type, name, active, hasCredentials, createdAt]
       properties:
         id:
           type: integer
@@ -712,6 +710,8 @@ components:
           type: boolean
         uploadPath:
           type: ["string", "null"]
+        hasCredentials:
+          type: boolean
         createdAt:
           type: string
 
@@ -754,6 +754,8 @@ components:
           type: ["string", "null"]
         password:
           type: ["string", "null"]
+        oauthCode:
+          type: ["string", "null"]
 
     TestResult:
       type: object
@@ -778,7 +780,7 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, uploading, done, failed]
+          enum: [pending, queued, uploading, done, failed, partial]
         connectionIds:
           type: ["string", "null"]
         error:

@@ -7,6 +7,7 @@ import fs from "fs";
 import { WebhookHandlers } from "./webhookHandlers.js";
 import router from "./routes/index.js";
 import { logger } from "./lib/logger.js";
+import { getPublicHost } from "./lib/appUrl.js";
 
 const app: Express = express();
 
@@ -15,14 +16,15 @@ const app: Express = express();
 // req.protocol reflects https.
 app.set("trust proxy", 1);
 
-// Allowed origins: explicit whitelist in prod, permissive in dev
+// Allowed origins: the canonical app host (kkamera.app, incl. subdomains) plus an
+// optional explicit ALLOWED_ORIGINS whitelist; localhost is allowed in dev only.
 const ALLOWED_ORIGINS = process.env["ALLOWED_ORIGINS"]
   ? process.env["ALLOWED_ORIGINS"].split(",").map(o => o.trim())
   : null;
 
-const replitDomain = process.env["REPLIT_DOMAINS"]?.split(",")[0];
+const APP_HOST = getPublicHost(); // e.g. "kkamera.app"
 
-/** Hostname of an Origin header, ignoring port (Replit dev ports vary). */
+/** Hostname of an Origin header, ignoring port. */
 function originHost(origin: string): string {
   try { return new URL(origin).hostname; } catch { return origin; }
 }
@@ -30,22 +32,44 @@ function originHost(origin: string): string {
 app.use(helmet({
   // Expo web / PWA needs cross-origin isolation disabled
   crossOriginEmbedderPolicy: false,
-  contentSecurityPolicy: false,
+  // Content Security Policy: the API serves the Expo web build same-origin, so a
+  // tight CSP is our main defence against XSS stealing the bearer token.
+  //  - script-src 'self': the Expo export loads its bundle from same-origin files
+  //    and the only inline <script> is non-executable JSON-LD (not subject to CSP).
+  //  - style-src allows 'unsafe-inline' because React Native Web injects inline styles.
+  //  - js.stripe.com / checkout.stripe.com are whitelisted for the optional Stripe.js
+  //    + Checkout redirect flow.
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "default-src": ["'self'"],
+      "script-src": ["'self'", "https://js.stripe.com"],
+      "style-src": ["'self'", "'unsafe-inline'"],
+      "img-src": ["'self'", "data:", "blob:", "https:"],
+      "font-src": ["'self'", "data:"],
+      "connect-src": ["'self'", "https://api.stripe.com"],
+      "frame-src": ["'self'", "https://js.stripe.com", "https://checkout.stripe.com"],
+      "worker-src": ["'self'", "blob:"],
+      "form-action": ["'self'", "https://checkout.stripe.com"],
+      "frame-ancestors": ["'none'"],
+      "base-uri": ["'self'"],
+      "object-src": ["'none'"],
+      "upgrade-insecure-requests": [],
+    },
+  },
 }));
 
 app.use(cors({
   origin: (origin, callback) => {
     // Allow server-to-server (no origin) and Stripe webhooks
     if (!origin) return callback(null, true);
-    // Dev: allow all
-    if (!ALLOWED_ORIGINS && !replitDomain) return callback(null, true);
     const host = originHost(origin);
-    // Explicit whitelist
-    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.some(o => origin === o || host === originHost(o) || host.endsWith(`.${originHost(o)}`))) {
+    // Canonical app host and its subdomains (e.g. kkamera.app, www.kkamera.app)
+    if (host === APP_HOST || host.endsWith(`.${APP_HOST}`)) {
       return callback(null, true);
     }
-    // Replit domain (any port — dev preview and API run on different external ports)
-    if (replitDomain && (host === replitDomain || host.endsWith(`.${replitDomain}`))) {
+    // Explicit whitelist override (ALLOWED_ORIGINS)
+    if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.some(o => origin === o || host === originHost(o) || host.endsWith(`.${originHost(o)}`))) {
       return callback(null, true);
     }
     // Allow localhost in dev
@@ -54,7 +78,9 @@ app.use(cors({
     }
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },
-  credentials: true,
+  // Auth is via the Authorization bearer header, not cookies — so cross-origin
+  // credentials (cookies) are intentionally NOT enabled.
+  credentials: false,
 }));
 
 app.use(

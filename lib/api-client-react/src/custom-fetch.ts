@@ -44,6 +44,16 @@ export function setAuthTokenGetter(getter: AuthTokenGetter | null): void {
   _authTokenGetter = getter;
 }
 
+let _onUnauthorized: (() => void) | null = null;
+
+/**
+ * Register a callback invoked whenever a request returns HTTP 401, so the app
+ * can clear its session / redirect to login. Pass `null` to clear.
+ */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  _onUnauthorized = handler;
+}
+
 function isRequest(input: RequestInfo | URL): input is Request {
   return typeof Request !== "undefined" && input instanceof Request;
 }
@@ -364,6 +374,10 @@ export async function customFetch<T = unknown>(
 
   if (!response.ok) {
     const errorData = await parseErrorBody(response, method);
+    // A 401 means the bearer token is missing/expired/revoked — notify the app
+    // so it can clear the session instead of leaving the user on a screen where
+    // every request silently fails.
+    if (response.status === 401) _onUnauthorized?.();
     throw new ApiError(response, errorData, requestInfo);
   }
 

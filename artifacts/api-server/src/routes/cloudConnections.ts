@@ -110,6 +110,19 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
   }
 });
 
+// Bulk delete — disconnect ALL of the user's cloud connections (used by the
+// "panic wipe" privacy action). Must be registered before the "/:id" route is
+// irrelevant (distinct path), but it is the endpoint the client relies on.
+router.delete("/cloud-connections", requireAuth, async (req, res) => {
+  try {
+    await db.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, req.userId!));
+    res.json({ message: "All connections deleted" });
+  } catch (err) {
+    req.log.error({ err }, "Bulk delete cloud connections error");
+    res.status(500).json({ message: "Failed to delete connections" });
+  }
+});
+
 router.delete("/cloud-connections/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useMemo, type Re
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
-import { setAuthTokenGetter, setBaseUrl } from "@workspace/api-client-react";
+import { setAuthTokenGetter, setBaseUrl, setUnauthorizedHandler } from "@workspace/api-client-react";
 
 export interface AuthUser {
   id: number;
@@ -99,6 +99,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setAuthTokenGetter(() => null);
   };
+
+  // When any API call returns 401 (expired/revoked token), clear the session so
+  // the user is routed back to login instead of being stuck with silent failures.
+  useEffect(() => {
+    setUnauthorizedHandler(() => { void logout(); });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   const updateUser = (newUser: AuthUser) => {
     setUser(newUser);

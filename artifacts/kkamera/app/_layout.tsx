@@ -19,14 +19,11 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { UploadProvider } from "@/contexts/UploadContext";
 import { SettingsProvider, useSettings } from "@/contexts/SettingsContext";
 import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
+import { API_BASE_URL } from "@/lib/config";
 import LockScreen from "@/app/lock";
 
-const BASE_URL = process.env["EXPO_PUBLIC_DOMAIN"]
-  ? `https://${process.env["EXPO_PUBLIC_DOMAIN"]}`
-  : "";
-
-if (BASE_URL) {
-  setBaseUrl(BASE_URL);
+if (API_BASE_URL) {
+  setBaseUrl(API_BASE_URL);
 }
 
 if (Platform.OS !== "web") {
@@ -44,7 +41,7 @@ async function registerPushSubscription(token: string) {
 
   try {
     // Fetch the server's VAPID public key
-    const resp = await fetch(`${BASE_URL}/api/push/vapid-key`, {
+    const resp = await fetch(`${API_BASE_URL}/api/push/vapid-key`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!resp.ok) return;
@@ -68,7 +65,7 @@ async function registerPushSubscription(token: string) {
 
     // Send subscription to server
     const subJson = sub.toJSON() as { endpoint: string; keys: { p256dh: string; auth: string } };
-    await fetch(`${BASE_URL}/api/push/subscribe`, {
+    await fetch(`${API_BASE_URL}/api/push/subscribe`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
