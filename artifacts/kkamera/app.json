@@ -69,7 +69,7 @@
       [
         "expo-router",
         {
-          "origin": "https://kkamera.app/"
+          "origin": "https://app.kkamera.app/"
         }
       ],
       "expo-font",

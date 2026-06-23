@@ -108,7 +108,7 @@ function verifyState(state: string): OAuthState | null {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getCallbackUrl(provider: string): string {
-  // Always the canonical app origin (kkamera.app) so it matches the redirect URIs
+  // Always the canonical app origin (app.kkamera.app) so it matches the redirect URIs
   // registered with each OAuth provider, regardless of where the server runs.
   return `${getPublicBaseUrl()}/api/oauth/${provider}/callback`;
 }

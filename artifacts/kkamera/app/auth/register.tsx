@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { useRegister } from "@workspace/api-client-react";
+import { useRegister, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AuthUser } from "@/contexts/AuthContext";
 
@@ -43,8 +43,8 @@ export default function RegisterScreen() {
         await login(result.token, result.user as AuthUser);
         router.replace("/wizard");
       }
-    } catch (e: any) {
-      setError(e?.data?.message || e?.message || "Registration failed. Please try again.");
+    } catch (e) {
+      setError(getUserFacingMessage(e, "Registration failed. Please try again."));
     }
   };
 
@@ -54,9 +54,9 @@ export default function RegisterScreen() {
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={24} color={PRIMARY} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://kkamera.app")}>
+        <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://app.kkamera.app")}>
           <Ionicons name="chevron-back" size={18} color={PRIMARY} />
-          <Text style={styles.homeBtnText}>kkamera.app</Text>
+          <Text style={styles.homeBtnText}>app.kkamera.app</Text>
         </TouchableOpacity>
       </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">

@@ -16,13 +16,13 @@ const app: Express = express();
 // req.protocol reflects https.
 app.set("trust proxy", 1);
 
-// Allowed origins: the canonical app host (kkamera.app, incl. subdomains) plus an
+// Allowed origins: the canonical app host (app.kkamera.app, incl. subdomains) plus an
 // optional explicit ALLOWED_ORIGINS whitelist; localhost is allowed in dev only.
 const ALLOWED_ORIGINS = process.env["ALLOWED_ORIGINS"]
   ? process.env["ALLOWED_ORIGINS"].split(",").map(o => o.trim())
   : null;
 
-const APP_HOST = getPublicHost(); // e.g. "kkamera.app"
+const APP_HOST = getPublicHost(); // e.g. "app.kkamera.app"
 
 /** Hostname of an Origin header, ignoring port. */
 function originHost(origin: string): string {
@@ -64,7 +64,7 @@ app.use(cors({
     // Allow server-to-server (no origin) and Stripe webhooks
     if (!origin) return callback(null, true);
     const host = originHost(origin);
-    // Canonical app host and its subdomains (e.g. kkamera.app, www.kkamera.app)
+    // Canonical app host and its subdomains (e.g. app.kkamera.app)
     if (host === APP_HOST || host.endsWith(`.${APP_HOST}`)) {
       return callback(null, true);
     }
