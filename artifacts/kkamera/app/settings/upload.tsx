@@ -182,6 +182,27 @@ export default function UploadScreen() {
           />
         </View>
 
+        {/* Uploaded badge duration */}
+        <Text style={styles.sectionLabel}>Uploaded Confirmation</Text>
+        <View style={styles.card}>
+          {([
+            { label: "3 seconds", hint: "Briefly confirm each upload", value: 3 },
+            { label: "5 seconds", hint: "Default confirmation time", value: 5 },
+            { label: "10 seconds", hint: "Keep it on screen longer", value: 10 },
+            { label: "Until next capture", hint: "Stay until you shoot again", value: 0 },
+          ] as const).map((opt, i, arr) => (
+            <React.Fragment key={opt.value}>
+              <RadioRow
+                label={opt.label}
+                hint={opt.hint}
+                selected={settings.uploadedBadgeSeconds === opt.value}
+                onPress={() => updateSetting("uploadedBadgeSeconds", opt.value)}
+              />
+              {i < arr.length - 1 && <View style={styles.divider} />}
+            </React.Fragment>
+          ))}
+        </View>
+
         {/* Video duration limit */}
         <Text style={styles.sectionLabel}>Video Duration Limit</Text>
         <View style={styles.card}>
