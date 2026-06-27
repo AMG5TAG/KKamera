@@ -124,12 +124,23 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api", router);
 
 // ─── Static web app (single-origin deployment) ────────────────────────────────
-// When the Expo web export is present (artifacts/kkamera/dist or WEB_BUILD_DIR),
-// serve it from this process so the published app and /api share one origin.
-const WEB_BUILD_DIR = process.env["WEB_BUILD_DIR"]
-  ?? path.resolve(import.meta.dirname, "../../kkamera/dist");
+// Serve the Expo web export from this process so the published app and /api share
+// one origin. The export's location varies with how the deploy is packaged, so
+// probe candidates and use the first that actually contains a build. The
+// production build (.replit) copies the export to ./web next to this bundle so it
+// always ships together with the server, regardless of the deploy file layout.
+const WEB_BUILD_CANDIDATES = [
+  process.env["WEB_BUILD_DIR"],
+  path.resolve(import.meta.dirname, "web"),                 // co-located with the server bundle (prod)
+  path.resolve(import.meta.dirname, "../../kkamera/dist"),  // monorepo layout (local dev)
+  path.resolve(process.cwd(), "artifacts/kkamera/dist"),    // run-from-repo-root fallback
+].filter((d): d is string => !!d);
 
-if (fs.existsSync(path.join(WEB_BUILD_DIR, "index.html"))) {
+const WEB_BUILD_DIR = WEB_BUILD_CANDIDATES.find(
+  (dir) => fs.existsSync(path.join(dir, "index.html"))
+);
+
+if (WEB_BUILD_DIR) {
   logger.info({ dir: WEB_BUILD_DIR }, "Serving web build");
   app.use(express.static(WEB_BUILD_DIR, { index: "index.html", maxAge: "1h" }));
   // SPA fallback: any non-API GET renders the app shell (expo-router handles the route)
@@ -137,7 +148,9 @@ if (fs.existsSync(path.join(WEB_BUILD_DIR, "index.html"))) {
     res.sendFile(path.join(WEB_BUILD_DIR, "index.html"));
   });
 } else {
-  logger.info({ dir: WEB_BUILD_DIR }, "No web build found — serving API only");
+  // Loud, with the probed paths, so a misconfigured deploy is obvious in logs
+  // instead of silently degrading to API-only (app routes 404 → "use Expo Go").
+  logger.warn({ candidates: WEB_BUILD_CANDIDATES }, "No web build found in any candidate path — serving API only");
 }
 
 export default app;

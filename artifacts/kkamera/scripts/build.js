@@ -54,10 +54,35 @@ function stripProtocol(domain) {
   return new URL(urlString).host;
 }
 
+// A baked-in API host that points at a dev/preview/local backend instead of the
+// canonical production host. A native build with one of these silently talks to
+// the wrong database, so the app shows e.g. OAuth connections as missing.
+function looksNonProduction(host) {
+  return (
+    host.includes(":") || // any explicit port (e.g. REPLIT_DEV_DOMAIN:8080)
+    /(^|\.)replit\.(dev|app)$/i.test(host) ||
+    /\.repl\.co$/i.test(host) ||
+    /^(localhost|127\.0\.0\.1|0\.0\.0\.0)$/i.test(host)
+  );
+}
+
 function getDeploymentDomain() {
   // Explicit override wins (e.g. pointing a local build at a tunnel).
   if (process.env.EXPO_PUBLIC_DOMAIN) {
-    return stripProtocol(process.env.EXPO_PUBLIC_DOMAIN);
+    const host = stripProtocol(process.env.EXPO_PUBLIC_DOMAIN);
+    // Guard: refuse to bake a dev/preview/local host into a build, since that
+    // pins the app to the wrong backend+DB. Set ALLOW_NONCANONICAL_DOMAIN=1 to
+    // override intentionally (local tunnel, staging, etc.).
+    if (looksNonProduction(host) && !process.env.ALLOW_NONCANONICAL_DOMAIN) {
+      exitWithError(
+        `Refusing to build: EXPO_PUBLIC_DOMAIN="${process.env.EXPO_PUBLIC_DOMAIN}" ` +
+          `resolves to non-production host "${host}". This bakes the wrong API ` +
+          `backend into the app (wrong database). Unset EXPO_PUBLIC_DOMAIN for a ` +
+          `canonical app.kkamera.app build, or set ALLOW_NONCANONICAL_DOMAIN=1 to ` +
+          `override intentionally.`
+      );
+    }
+    return host;
   }
   // Canonical public host — never the Replit preview domain.
   return "app.kkamera.app";
