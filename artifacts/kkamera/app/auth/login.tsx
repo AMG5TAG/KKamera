@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { useLogin } from "@workspace/api-client-react";
+import { useLogin, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AuthUser } from "@/contexts/AuthContext";
 
@@ -41,16 +41,16 @@ export default function LoginScreen() {
         await login(result.token, result.user as AuthUser);
         router.replace(hasCompletedWizard ? "/camera" : "/wizard");
       }
-    } catch (e: any) {
-      setError(e?.data?.message || e?.message || "Login failed. Check your credentials.");
+    } catch (e) {
+      setError(getUserFacingMessage(e, "Login failed. Check your credentials."));
     }
   };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://kkamera.app")}>
+      <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://app.kkamera.app")}>
         <Ionicons name="chevron-back" size={18} color={PRIMARY} />
-        <Text style={styles.homeBtnText}>kkamera.app</Text>
+        <Text style={styles.homeBtnText}>app.kkamera.app</Text>
       </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {/* Logo */}

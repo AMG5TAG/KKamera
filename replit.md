@@ -16,7 +16,7 @@ A subscription-based camera app (iOS/Android/PWA) that directly uploads photos a
 - Required env: `SESSION_SECRET` — JWT signing secret; the AES-256 cloud-credential key is HKDF-derived from it (separate key, ≥32 chars enforced at boot)
 - Required env (production): `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID` — Stripe subscription (the price is server-controlled only; never client-supplied)
 - Required env (production): `RESEND_API_KEY` — all outbound email via Resend (no-ops with a warning if unset); optional `EMAIL_FROM` overrides the default `KKamera <noreply@kkamera.app>` sender (domain must be verified in Resend)
-- Optional env: `APP_URL` — canonical public origin for OAuth callbacks, Stripe redirect/webhook, and email links (defaults to `https://kkamera.app`; never the Replit domain)
+- Optional env: `APP_URL` — canonical public origin for OAuth callbacks, Stripe redirect/webhook, and email links (defaults to `https://app.kkamera.app`; never the Replit domain)
 - Optional env: `PAST_DUE_GRACE_DAYS` — days a past_due subscription keeps access past its last paid period before being blocked (default 14)
 - Optional env: `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` (secret — keep in Secrets, not committed) / `VAPID_SUBJECT` — Web Push; OAuth provider creds `GOOGLE_*`/`ONEDRIVE_*`/`DROPBOX_CLIENT_ID|SECRET`
 

@@ -103,7 +103,9 @@ const OAUTH_CONFIG: Record<string, { tokenUrl: string; clientIdEnv: string; clie
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
   },
   onedrive: {
-    tokenUrl: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+    // Must match the authority used in routes/oauth.ts (/common) so refresh
+    // works for both personal and work/school accounts.
+    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
     clientIdEnv: "ONEDRIVE_CLIENT_ID",
     clientSecretEnv: "ONEDRIVE_CLIENT_SECRET",
   },

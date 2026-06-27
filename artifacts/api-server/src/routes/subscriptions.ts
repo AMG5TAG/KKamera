@@ -78,7 +78,7 @@ router.post("/subscriptions/checkout", requireAuth, async (req, res) => {
       return;
     }
 
-    // Redirect back to the canonical app origin (kkamera.app), not the Replit
+    // Redirect back to the canonical app origin (app.kkamera.app), not the Replit
     // preview domain — so checkout always returns to the real app.
     const origin = getPublicBaseUrl();
     const session = await stripe.checkout.sessions.create({

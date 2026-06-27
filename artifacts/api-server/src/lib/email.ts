@@ -73,7 +73,7 @@ export function welcomeEmail(name: string): { subject: string; html: string } {
     html: wrap("Welcome, " + escapeHtml(name) + "!", `
       <p>Your account is all set. KKamera captures your photos and videos and instantly uploads them to your cloud storage — leaving no trace on your device.</p>
       <p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>
-      <a href="https://kkamera.app" class="btn">Open KKamera</a>
+      <a href="https://app.kkamera.app" class="btn">Open KKamera</a>
       <p>Add your cloud connections (Google Drive, OneDrive, Dropbox, FTP, WebDAV) in Settings → Upload to start shooting.</p>
     `),
   };
@@ -86,7 +86,7 @@ export function trialEndingEmail(name: string, daysLeft: number): { subject: str
       <p>Hi ${escapeHtml(name)},</p>
       <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.</p>
       <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$25/year</strong>, less than 7¢ a day.</p>
-      <a href="https://kkamera.app/settings/subscription" class="btn">Subscribe — $25/year</a>
+      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $25/year</a>
       <p>Don't lose access to your camera uploads. Your existing cloud connections and settings will be preserved.</p>
     `),
   };
@@ -99,7 +99,7 @@ export function subscriptionActiveEmail(name: string): { subject: string; html: 
       <p>Hi ${escapeHtml(name)},</p>
       <p>Your KKamera subscription is now active. You have full access for the next 12 months.</p>
       <p>Thank you for supporting KKamera — your subscription helps us keep the app ad-free and privacy-first.</p>
-      <a href="https://kkamera.app" class="btn">Open KKamera</a>
+      <a href="https://app.kkamera.app" class="btn">Open KKamera</a>
     `),
   };
 }
@@ -111,13 +111,13 @@ export function subscriptionCancelledEmail(name: string, accessUntil: string): {
       <p>Hi ${escapeHtml(name)},</p>
       <p>Your KKamera subscription has been cancelled. You'll retain full access until <strong style="color:#b19870">${escapeHtml(accessUntil)}</strong>.</p>
       <p>If you change your mind, you can resubscribe anytime from Settings → Subscription.</p>
-      <a href="https://kkamera.app/settings/subscription" class="btn">Resubscribe</a>
+      <a href="https://app.kkamera.app/settings/subscription" class="btn">Resubscribe</a>
     `),
   };
 }
 
 export function coworkerInviteEmail(inviterName: string, referralCode: string): { subject: string; html: string } {
-  const link = `https://kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
+  const link = `https://app.kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
   const safeName = escapeHtml(inviterName);
   const safeCode = escapeHtml(referralCode);
   return {
@@ -138,7 +138,7 @@ export function referralRewardEmail(name: string, freeYearsTotal: number): { sub
       <p>Hi ${escapeHtml(name)},</p>
       <p>You've reached 5 successful referrals — we've added <strong style="color:#b19870">1 free year</strong> to your KKamera subscription!</p>
       <p>You now have <strong>${freeYearsTotal} free year${freeYearsTotal !== 1 ? "s" : ""}</strong> banked. Keep sharing to earn more — there's no limit!</p>
-      <a href="https://kkamera.app/settings/subscription" class="btn">View Your Subscription</a>
+      <a href="https://app.kkamera.app/settings/subscription" class="btn">View Your Subscription</a>
     `),
   };
 }

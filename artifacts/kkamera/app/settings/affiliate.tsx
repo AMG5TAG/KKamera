@@ -18,7 +18,7 @@ export default function AffiliateScreen() {
   const nextMilestone = 5;
 
   const referralLink = stats?.referralCode
-    ? `https://kkamera.app/register?ref=${stats.referralCode}`
+    ? `https://app.kkamera.app/register?ref=${stats.referralCode}`
     : null;
 
   const handleShare = async () => {

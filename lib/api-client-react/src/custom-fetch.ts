@@ -243,6 +243,51 @@ export class ResponseParseError extends Error {
   }
 }
 
+/**
+ * Convert a thrown request error into a short, user-safe message.
+ *
+ * Critically, this never surfaces a raw response body to the user: when the
+ * server — or a hosting proxy in front of it — returns a non-JSON error page
+ * (e.g. an HTML "there was a problem running the requested app" interstitial),
+ * we show a friendly "temporarily unavailable" line instead of dumping the
+ * markup into the UI. Expected errors that carry the API's own structured
+ * `{ message }` (validation, invalid credentials, rate limiting, …) are passed
+ * through verbatim.
+ */
+export function getUserFacingMessage(
+  error: unknown,
+  fallback = "Something went wrong. Please try again.",
+): string {
+  // fetch() rejects with a TypeError when the network is unreachable.
+  if (error instanceof TypeError) {
+    return "Can't reach the server. Check your connection and try again.";
+  }
+
+  // A 2xx response whose body wasn't the expected JSON — treat it as a
+  // server-side problem rather than echoing the raw (possibly HTML) payload.
+  if (error instanceof ResponseParseError) {
+    return "Server temporarily unavailable. Please try again in a moment.";
+  }
+
+  if (error instanceof ApiError) {
+    // Structured JSON error from our API → trust its message.
+    if (error.data && typeof error.data === "object") {
+      const message = (error.data as Record<string, unknown>)["message"];
+      if (typeof message === "string" && message.trim()) return message.trim();
+    }
+    // A server error, or a non-JSON body (a string here means an HTML/text
+    // error page): never show raw markup — report a generic status instead.
+    if (error.status >= 500 || typeof error.data === "string") {
+      return "Server temporarily unavailable. Please try again in a moment.";
+    }
+    // Other 4xx with no structured message.
+    return fallback;
+  }
+
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+}
+
 async function parseJsonBody(
   response: Response,
   requestInfo: { method: string; url: string },

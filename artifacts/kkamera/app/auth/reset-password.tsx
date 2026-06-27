@@ -6,7 +6,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useResetPassword } from "@workspace/api-client-react";
+import { useResetPassword, getUserFacingMessage } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -33,8 +33,8 @@ export default function ResetPasswordScreen() {
     try {
       await resetMutation.mutateAsync({ data: { token: token ?? "", password } });
       setDone(true);
-    } catch (e: any) {
-      setError(e?.data?.message || e?.message || "Failed to reset password. Please try again.");
+    } catch (e) {
+      setError(getUserFacingMessage(e, "Failed to reset password. Please try again."));
     } finally {
       setLoading(false);
     }

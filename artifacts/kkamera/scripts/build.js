@@ -60,7 +60,7 @@ function getDeploymentDomain() {
     return stripProtocol(process.env.EXPO_PUBLIC_DOMAIN);
   }
   // Canonical public host — never the Replit preview domain.
-  return "kkamera.app";
+  return "app.kkamera.app";
 }
 
 function prepareDirectories(timestamp) {

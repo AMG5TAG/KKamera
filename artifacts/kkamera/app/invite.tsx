@@ -47,7 +47,7 @@ export default function InviteScreen() {
 
   const canPickContacts = Platform.OS === "web" && !!(navigator as any)?.contacts?.select;
   const referralCode = stats?.referralCode ?? "";
-  const referralLink = referralCode ? `https://kkamera.app/register?ref=${referralCode}` : "";
+  const referralLink = referralCode ? `https://app.kkamera.app/register?ref=${referralCode}` : "";
 
   const addEmail = useCallback((raw: string) => {
     const e = raw.trim().toLowerCase();

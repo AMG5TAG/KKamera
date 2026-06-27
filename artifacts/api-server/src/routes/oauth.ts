@@ -44,10 +44,13 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   },
   onedrive: {
     label: "OneDrive",
-    // The Azure app registration is "personal Microsoft accounts only" — it must
-    // use the /consumers tenant; /common fails with AADSTS50059.
-    authUrl: "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
-    tokenUrl: "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
+    // Use /common so both personal Microsoft accounts and work/school (M365 org)
+    // accounts can sign in. The Azure app registration's "Supported account types"
+    // must be set to "Accounts in any organizational directory and personal
+    // Microsoft accounts" to match, otherwise /common returns AADSTS700016
+    // (unauthorized_client).
+    authUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+    tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
     scopes: "Files.ReadWrite offline_access",
     clientIdEnv: "ONEDRIVE_CLIENT_ID",
     clientSecretEnv: "ONEDRIVE_CLIENT_SECRET",
@@ -108,7 +111,7 @@ function verifyState(state: string): OAuthState | null {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getCallbackUrl(provider: string): string {
-  // Always the canonical app origin (kkamera.app) so it matches the redirect URIs
+  // Always the canonical app origin (app.kkamera.app) so it matches the redirect URIs
   // registered with each OAuth provider, regardless of where the server runs.
   return `${getPublicBaseUrl()}/api/oauth/${provider}/callback`;
 }

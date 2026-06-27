@@ -2,10 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { getPublicBaseUrl, getPublicHost } from "../src/lib/appUrl.ts";
 
-test("defaults to kkamera.app when APP_URL is unset", () => {
+test("defaults to app.kkamera.app when APP_URL is unset", () => {
   delete process.env.APP_URL;
-  assert.equal(getPublicBaseUrl(), "https://kkamera.app");
-  assert.equal(getPublicHost(), "kkamera.app");
+  assert.equal(getPublicBaseUrl(), "https://app.kkamera.app");
+  assert.equal(getPublicHost(), "app.kkamera.app");
 });
 
 test("uses the APP_URL override and strips trailing slashes", () => {
@@ -17,12 +17,12 @@ test("uses the APP_URL override and strips trailing slashes", () => {
 
 test("ignores an empty/whitespace APP_URL", () => {
   process.env.APP_URL = "   ";
-  assert.equal(getPublicBaseUrl(), "https://kkamera.app");
+  assert.equal(getPublicBaseUrl(), "https://app.kkamera.app");
   delete process.env.APP_URL;
 });
 
-test("getPublicHost falls back to kkamera.app on an unparseable APP_URL", () => {
+test("getPublicHost falls back to app.kkamera.app on an unparseable APP_URL", () => {
   process.env.APP_URL = "not a url";
-  assert.equal(getPublicHost(), "kkamera.app");
+  assert.equal(getPublicHost(), "app.kkamera.app");
   delete process.env.APP_URL;
 });
