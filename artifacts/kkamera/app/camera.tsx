@@ -292,6 +292,8 @@ export default function CameraScreen() {
       try {
         const Accelerometer = await getAccelerometer();
         if (!Accelerometer || cancelled) return;
+        const available = await Accelerometer.isAvailableAsync().catch(() => false);
+        if (!available || cancelled) return;
         Accelerometer.setUpdateInterval(100);
         const created = Accelerometer.addListener(({ x, y }) => {
           // Roll around the screen-normal axis; 0° when held upright/level.
@@ -303,6 +305,21 @@ export default function CameraScreen() {
     })();
     return () => { cancelled = true; sub?.remove(); };
   }, [settings.showLevelGuide]);
+
+  // Toggle the level guide. On iOS web, motion/orientation access must be
+  // requested from inside a user gesture (this tap) before events will fire.
+  const toggleLevelGuide = useCallback(async () => {
+    const next = !settings.showLevelGuide;
+    if (next && Platform.OS === "web") {
+      try {
+        const DOE: any = (globalThis as any).DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          await DOE.requestPermission();
+        }
+      } catch { /* denied or unsupported — guide just stays flat */ }
+    }
+    updateSetting("showLevelGuide", next);
+  }, [settings.showLevelGuide, updateSetting]);
 
   // Web volume keys / spacebar shutter — use a ref so we don't re-bind every render
   const handleCaptureRef = useRef<() => void>(() => {});
@@ -522,6 +539,8 @@ export default function CameraScreen() {
     const photo = await cameraRef.current?.takePictureAsync({
       quality: 0.9,
       exif: !settings.stripExif,
+      // Silent capture in covert (hidden) mode.
+      shutterSound: extMode !== "hidden",
     });
     if (!photo?.uri) return;
     let uri = photo.uri;
@@ -958,7 +977,7 @@ export default function CameraScreen() {
           <TouchableOpacity style={styles.iconBtn} onPress={cycleFlash}>
             <Ionicons name={flashIcon as any} size={21} color={flash === "on" ? "#FFD700" : "white"} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => updateSetting("showLevelGuide", !settings.showLevelGuide)}>
+          <TouchableOpacity style={styles.iconBtn} onPress={toggleLevelGuide}>
             <MaterialCommunityIcons name="spirit-level" size={19} color={settings.showLevelGuide ? PRIMARY : "white"} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconBtn} onPress={() => {
