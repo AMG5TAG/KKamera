@@ -6,7 +6,7 @@ deploymentTarget = "autoscale"
 # Build the workspace libs, bundle the API server (esbuild -> dist/index.mjs),
 # and produce the Expo web export to artifacts/kkamera/dist — which the API
 # server auto-serves same-origin alongside /api (the production shape).
-build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/kkamera run build:web"]
+build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/kkamera run build:web && mkdir -p artifacts/api-server/dist/web && cp -r artifacts/kkamera/dist/. artifacts/api-server/dist/web/"]
 # Single start command: the API server serves both /api and the web build.
 run = ["sh", "-c", "pnpm --filter @workspace/api-server run start"]
 
