@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, Platform,
   Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
-  useWindowDimensions,
+  useWindowDimensions, BackHandler,
 } from "react-native";
 import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
@@ -83,6 +83,9 @@ async function getAccelerometer() {
   const { Accelerometer } = await import("expo-sensors");
   return Accelerometer;
 }
+
+// Tilt within this many degrees of horizontal counts as "level" → green guide.
+const LEVEL_TOLERANCE_DEG = 2;
 
 type FlashMode = "off" | "on" | "auto";
 type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "spatial" | "hidden";
@@ -305,6 +308,17 @@ export default function CameraScreen() {
     })();
     return () => { cancelled = true; sub?.remove(); };
   }, [settings.showLevelGuide]);
+
+  // Give a light haptic tick the moment the guide snaps to level.
+  const wasLevel = useRef(false);
+  useEffect(() => {
+    if (!settings.showLevelGuide) { wasLevel.current = false; return; }
+    const level = Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG;
+    if (level && !wasLevel.current && Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+    wasLevel.current = level;
+  }, [levelRoll, settings.showLevelGuide]);
 
   // Toggle the level guide. On iOS web, motion/orientation access must be
   // requested from inside a user gesture (this tap) before events will fire.
@@ -648,6 +662,36 @@ export default function CameraScreen() {
     setExtMode("photo");
   }, [isRecording, handleVideoToggle]);
 
+  // Tap the top of the screen to switch (flip) cameras while staying covert.
+  const handleHiddenFlip = useCallback(() => {
+    const next = facing === "back" ? "front" : "back";
+    // Front camera starts at 0.5× (zoom 0); rear resumes at the 1× default
+    const z = next === "front" ? 0 : 0.25;
+    setFacing(next);
+    setZoom(z);
+    baseZoom.current = z;
+  }, [facing]);
+
+  // Triple-press the bottom of the screen to close the app completely.
+  const closeTapCount = useRef(0);
+  const closeTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleHiddenClose = useCallback(() => {
+    if (closeTapTimer.current) clearTimeout(closeTapTimer.current);
+    closeTapCount.current += 1;
+    if (closeTapCount.current >= 3) {
+      closeTapCount.current = 0;
+      if (isRecording) handleVideoToggle(); // stop & upload any active recording first
+      if (Platform.OS === "web") {
+        window.close();
+      } else {
+        BackHandler.exitApp();
+      }
+      return;
+    }
+    // Reset the counter if the three taps aren't quick enough.
+    closeTapTimer.current = setTimeout(() => { closeTapCount.current = 0; }, 600);
+  }, [isRecording, handleVideoToggle]);
+
   const handleScan = useCallback(async () => {
     if (isBusy) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -906,17 +950,20 @@ export default function CameraScreen() {
           {/* Level guide */}
           {settings.showLevelGuide && (
             <View style={[StyleSheet.absoluteFill, styles.levelContainer]} pointerEvents="none">
-              {/* Fixed reference line */}
-              <View style={styles.levelRefLine} />
+              {/* Fixed reference line — goes green too when level */}
+              <View style={[
+                styles.levelRefLine,
+                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelRefLineActive,
+              ]} />
               {/* Tilt line — rotates with the device, snaps green when level */}
               <View style={[
                 styles.levelLine,
                 { transform: [{ rotate: `${-levelRoll}deg` }] },
-                Math.abs(levelRoll) <= 1 && styles.levelLineActive,
+                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelLineActive,
               ]} />
               <View style={[
                 styles.levelDot,
-                Math.abs(levelRoll) <= 1 && styles.levelDotActive,
+                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelDotActive,
               ]} />
             </View>
           )}
@@ -1250,6 +1297,22 @@ export default function CameraScreen() {
               delayLongPress={650}
               accessibilityLabel="Tap to start or stop video, long-press to exit hidden mode"
             />
+            {/* Top band — tap to switch (flip) cameras */}
+            <Pressable
+              style={styles.hiddenTopZone}
+              onPress={handleHiddenFlip}
+              onLongPress={exitHiddenMode}
+              delayLongPress={650}
+              accessibilityLabel="Tap to switch cameras, long-press to exit hidden mode"
+            />
+            {/* Bottom band — triple-press to close the app completely */}
+            <Pressable
+              style={styles.hiddenBottomZone}
+              onPress={handleHiddenClose}
+              onLongPress={exitHiddenMode}
+              delayLongPress={650}
+              accessibilityLabel="Triple-press to close the app, long-press to exit hidden mode"
+            />
             {/* Dim recording indicator — subtle so the screen still reads as off */}
             {isRecording && (
               <View style={styles.hiddenRecDot} pointerEvents="none" />
@@ -1258,7 +1321,8 @@ export default function CameraScreen() {
             {showHiddenHint && (
               <View style={styles.hiddenHint} pointerEvents="none">
                 <Text style={styles.hiddenHintText}>Tap left · Photo      Tap right · Video</Text>
-                <Text style={styles.hiddenHintSub}>Long-press anywhere to exit</Text>
+                <Text style={styles.hiddenHintText}>Tap top · Switch camera</Text>
+                <Text style={styles.hiddenHintSub}>Triple-tap bottom · Close app   ·   Long-press to exit</Text>
               </View>
             )}
           </View>
@@ -1285,6 +1349,12 @@ const styles = StyleSheet.create({
     zIndex: 100,
   },
   hiddenZone: { flex: 1 },
+  hiddenTopZone: {
+    position: "absolute", top: 0, left: 0, right: 0, height: "22%",
+  },
+  hiddenBottomZone: {
+    position: "absolute", bottom: 0, left: 0, right: 0, height: "22%",
+  },
   hiddenRecDot: {
     position: "absolute", top: 10, left: 10,
     width: 7, height: 7, borderRadius: 4,
@@ -1312,6 +1382,7 @@ const styles = StyleSheet.create({
   overlayCenter: { alignItems: "center", justifyContent: "center" },
   levelContainer: { alignItems: "center", justifyContent: "center" },
   levelRefLine: { width: "30%", height: 1, backgroundColor: "rgba(255,255,255,0.25)", position: "absolute" },
+  levelRefLineActive: { backgroundColor: "rgba(34,197,94,0.6)" },
   levelLine: { width: "60%", height: 2, backgroundColor: "rgba(177,152,112,0.85)", position: "absolute" },
   levelLineActive: { backgroundColor: "#22c55e" },
   levelDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: PRIMARY },

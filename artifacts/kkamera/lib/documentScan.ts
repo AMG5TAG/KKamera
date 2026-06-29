@@ -2,8 +2,9 @@
  * Document scan post-processing for the web/PWA build (pure canvas, no deps).
  *
  * Pipeline: detect the paper boundary in the capture, perspective-correct the
- * quad to a flat rectangle (auto-crop + deskew), then stretch contrast so the
- * result reads as a crisp digital scan rather than a photo.
+ * quad to a flat rectangle (auto-crop + deskew), then run an adaptive local
+ * threshold so the result reads as a crisp digital scan — even lighting,
+ * white paper and dense, sharp text — rather than a photo.
  *
  * Detection: downscale → grayscale → blur → Otsu threshold → largest bright
  * connected component → quad corners from diagonal extremes. If no plausible
@@ -36,7 +37,7 @@ export async function processDocumentScan(dataUri: string): Promise<ScanResult> 
     const out = quad
       ? warpPerspective(src, quad.map(p => ({ x: p.x * srcScale, y: p.y * srcScale })) as [Pt, Pt, Pt, Pt])
       : src;
-    enhanceContrast(out);
+    enhanceScan(out);
     return { uri: out.toDataURL("image/jpeg", 0.92), cropped: !!quad };
   } catch {
     return { uri: dataUri, cropped: false };
@@ -84,9 +85,11 @@ function detectDocumentQuad(img: HTMLImageElement): [Pt, Pt, Pt, Pt] | null {
   for (let i = 0; i < w * h; i++) {
     if (gray[i]! > threshold) { bright[i] = 1; brightCount++; }
   }
-  // Nearly-all-bright or nearly-all-dark frames have no separable document
+  // A nearly-all-dark frame has no separable document. A nearly-all-bright
+  // frame is the common "page fills the viewfinder" case — keep it so the page
+  // still gets cropped to its edges rather than left as a plain photo.
   const frac = brightCount / (w * h);
-  if (frac > 0.95 || frac < MIN_AREA_FRACTION) return null;
+  if (frac > 0.998 || frac < MIN_AREA_FRACTION) return null;
 
   const comp = largestComponent(bright, w, h);
   if (!comp || comp.count < MIN_AREA_FRACTION * w * h) return null;
@@ -276,40 +279,67 @@ function warpPerspective(src: HTMLCanvasElement, quad: [Pt, Pt, Pt, Pt]): HTMLCa
   return out;
 }
 
-// ─── Contrast enhancement ─────────────────────────────────────────────────────
+// ─── Scan enhancement ─────────────────────────────────────────────────────────
 
-/** Percentile contrast stretch + slight gamma lift — whitens paper, darkens ink. */
-function enhanceContrast(canvas: HTMLCanvasElement): void {
+/**
+ * Adaptive local-threshold "scan" enhancement. Each pixel is compared to the
+ * average brightness of its neighbourhood rather than a single global cutoff,
+ * which removes uneven lighting/shadows, whitens the paper and pushes text to
+ * solid, dense black while keeping anti-aliased edges smooth. Colour is kept by
+ * scaling RGB with the per-pixel luminance gain, so coloured ink/stamps survive.
+ */
+function enhanceScan(canvas: HTMLCanvasElement): void {
   const ctx = canvas.getContext("2d")!;
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const w = canvas.width, h = canvas.height, n = w * h;
+  const imgData = ctx.getImageData(0, 0, w, h);
   const data = imgData.data;
-  const n = canvas.width * canvas.height;
 
-  const hist = new Array<number>(256).fill(0);
+  // Per-pixel luminance.
+  const lum = new Float32Array(n);
   for (let i = 0; i < n; i++) {
-    hist[(data[i * 4]! * 77 + data[i * 4 + 1]! * 150 + data[i * 4 + 2]! * 29) >> 8]!++;
+    lum[i] = (data[i * 4]! * 77 + data[i * 4 + 1]! * 150 + data[i * 4 + 2]! * 29) / 256;
   }
-  const percentile = (p: number): number => {
-    const target = p * n;
-    let acc = 0;
-    for (let t = 0; t < 256; t++) {
-      acc += hist[t]!;
-      if (acc >= target) return t;
+
+  // Summed-area table of luminance → O(1) local means.
+  const iw = w + 1;
+  const integral = new Float64Array(iw * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let rowSum = 0;
+    for (let x = 0; x < w; x++) {
+      rowSum += lum[y * w + x]!;
+      integral[(y + 1) * iw + (x + 1)] = integral[y * iw + (x + 1)] + rowSum;
     }
-    return 255;
-  };
-  const lo = percentile(0.02);
-  const hi = Math.max(lo + 16, percentile(0.9)); // p90 → paper whitens to full white
-
-  const lut = new Uint8Array(256);
-  for (let t = 0; t < 256; t++) {
-    const norm = Math.max(0, Math.min(1, (t - lo) / (hi - lo)));
-    lut[t] = Math.round(255 * Math.pow(norm, 0.9));
   }
-  for (let i = 0; i < n; i++) {
-    data[i * 4] = lut[data[i * 4]!]!;
-    data[i * 4 + 1] = lut[data[i * 4 + 1]!]!;
-    data[i * 4 + 2] = lut[data[i * 4 + 2]!]!;
+  const r = Math.max(8, Math.round(Math.min(w, h) * 0.06)); // local window radius
+  const localMean = (x: number, y: number): number => {
+    const x0 = Math.max(0, x - r), y0 = Math.max(0, y - r);
+    const x1 = Math.min(w - 1, x + r), y1 = Math.min(h - 1, y + r);
+    const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+    const s = integral[(y1 + 1) * iw + (x1 + 1)]!
+            - integral[y0 * iw + (x1 + 1)]!
+            - integral[(y1 + 1) * iw + x0]!
+            + integral[y0 * iw + x0]!;
+    return s / area;
+  };
+
+  // Map a pixel's brightness relative to its local background onto [0,1]:
+  // ≤ T_LOW of the background → solid ink, ≥ T_HIGH → clean white paper, with a
+  // smooth ramp between so strokes stay sharp without jaggies. Lowering T_LOW or
+  // the gamma thickens text ("font density").
+  const T_LOW = 0.6, T_HIGH = 0.95, RANGE = T_HIGH - T_LOW;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const bg = Math.max(1, localMean(x, y));
+      let t = (lum[i]! / bg - T_LOW) / RANGE;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const target = Math.pow(t, 0.7) * 255;
+      const gain = target / Math.max(1, lum[i]!);
+      const o = i * 4;
+      data[o]     = Math.min(255, data[o]! * gain);
+      data[o + 1] = Math.min(255, data[o + 1]! * gain);
+      data[o + 2] = Math.min(255, data[o + 2]! * gain);
+    }
   }
   ctx.putImageData(imgData, 0, 0);
 }
