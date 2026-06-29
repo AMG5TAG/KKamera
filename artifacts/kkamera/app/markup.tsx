@@ -42,6 +42,10 @@ export default function MarkupScreen() {
   const lastPoint = useRef<{ x: number; y: number } | null>(null);
 
   const panGesture = Gesture.Pan()
+    // Run callbacks on the JS thread so we can call React setState directly.
+    // Without this, reanimated workletizes them onto the UI thread and calling
+    // a non-worklet (setState) there crashes the app as soon as you draw.
+    .runOnJS(true)
     .onStart((e) => {
       lastPoint.current = { x: e.x, y: e.y };
       setCurrentPoints(`M${e.x.toFixed(1)},${e.y.toFixed(1)}`);

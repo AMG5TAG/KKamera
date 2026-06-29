@@ -35,6 +35,8 @@ export interface AppSettings {
   // Upload behaviour
   maxVideoDurationSeconds: 0 | 30 | 60 | 300;
   deleteLocalAfterUpload: boolean;
+  // How long the "Uploaded" success badge stays on screen (0 = until next capture)
+  uploadedBadgeSeconds: 0 | 3 | 5 | 10;
   // Witness mode
   witnessEmail: string;
   witnessOnSuccess: boolean;
@@ -69,6 +71,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   appPin: "",
   maxVideoDurationSeconds: 0,
   deleteLocalAfterUpload: true,
+  uploadedBadgeSeconds: 5,
   witnessEmail: "",
   witnessOnSuccess: false,
 };

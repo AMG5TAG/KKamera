@@ -1,8 +1,8 @@
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, Platform,
+  View, Text, StyleSheet, TouchableOpacity, Pressable, Platform,
   Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
-  useWindowDimensions,
+  useWindowDimensions, BackHandler,
 } from "react-native";
 import * as Network from "expo-network";
 import * as ImagePicker from "expo-image-picker";
@@ -78,8 +78,17 @@ async function getMagnetometer() {
   return Magnetometer;
 }
 
+async function getAccelerometer() {
+  if (Platform.OS === "web") return null;
+  const { Accelerometer } = await import("expo-sensors");
+  return Accelerometer;
+}
+
+// Tilt within this many degrees of horizontal counts as "level" → green guide.
+const LEVEL_TOLERANCE_DEG = 2;
+
 type FlashMode = "off" | "on" | "auto";
-type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "spatial";
+type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "spatial" | "hidden";
 
 interface ModeConfig { mode: ExtMode; label: string; cameraMode: CameraMode; isVideo: boolean }
 
@@ -93,20 +102,31 @@ const EXT_MODES: ModeConfig[] = [
   { mode: "pano",      label: "PANO",       cameraMode: "picture", isVideo: false },
   { mode: "scan",      label: "SCAN",       cameraMode: "picture", isVideo: false },
   { mode: "spatial",   label: "SPATIAL",    cameraMode: "video",   isVideo: true  },
+  { mode: "hidden",    label: "HIDDEN",     cameraMode: "picture", isVideo: false },
 ];
 
-const FILTERS = [
-  { name: "None",       color: null,        isBeauty: false },
-  { name: "Vivid",      color: "#ff6b35",   isBeauty: false },
-  { name: "Warm",       color: "#f59e0b",   isBeauty: false },
-  { name: "Cool",       color: "#60a5fa",   isBeauty: false },
-  { name: "B&W",        color: "#888",      isBeauty: false },
-  { name: "Fade",       color: "#d4c5b0",   isBeauty: false },
-  { name: "Noir",       color: "#1a1a1a",   isBeauty: false },
-  { name: "Beauty",     color: "#ffb7c5",   isBeauty: true  },
-  { name: "Smooth",     color: "#f0e6d3",   isBeauty: true  },
-  { name: "Glow",       color: "#fff9c4",   isBeauty: true  },
-  { name: "Porcelain",  color: "#dfe8f0",   isBeauty: true  },
+// Each filter carries a real color-grade (CSS filter string) that is applied to
+// the web preview AND baked into the saved photo, plus a subtle tint overlay used
+// to approximate the look in the native preview (where GPU grading isn't available).
+interface FilterDef {
+  name: string;
+  css: string | null;                       // web preview + capture grade
+  swatch: string;                           // thumbnail colour
+  overlay: { color: string; opacity: number } | null; // native preview approximation
+  isBeauty: boolean;
+}
+const FILTERS: FilterDef[] = [
+  { name: "None",      css: null, swatch: "#2a2a2a", overlay: null, isBeauty: false },
+  { name: "Vivid",     css: "saturate(1.5) contrast(1.12) brightness(1.03)",                 swatch: "#ff6b35", overlay: { color: "#ff6b35", opacity: 0.07 }, isBeauty: false },
+  { name: "Warm",      css: "sepia(0.28) saturate(1.3) brightness(1.04) hue-rotate(-8deg)",  swatch: "#f59e0b", overlay: { color: "#f59e0b", opacity: 0.10 }, isBeauty: false },
+  { name: "Cool",      css: "saturate(1.08) contrast(1.06) brightness(1.02) hue-rotate(14deg)", swatch: "#60a5fa", overlay: { color: "#60a5fa", opacity: 0.10 }, isBeauty: false },
+  { name: "B&W",       css: "grayscale(1) contrast(1.15) brightness(1.03)",                  swatch: "#888888", overlay: { color: "#000000", opacity: 0.12 }, isBeauty: false },
+  { name: "Fade",      css: "contrast(0.82) brightness(1.1) saturate(0.82) sepia(0.1)",      swatch: "#d4c5b0", overlay: { color: "#d4c5b0", opacity: 0.12 }, isBeauty: false },
+  { name: "Noir",      css: "grayscale(1) contrast(1.5) brightness(0.92)",                   swatch: "#1a1a1a", overlay: { color: "#000000", opacity: 0.18 }, isBeauty: false },
+  { name: "Beauty",    css: "brightness(1.07) saturate(1.06) contrast(0.97) blur(0.4px)",    swatch: "#ffb7c5", overlay: { color: "#ffb7c5", opacity: 0.07 }, isBeauty: true  },
+  { name: "Smooth",    css: "brightness(1.06) saturate(0.98) contrast(0.96) sepia(0.05) blur(0.6px)", swatch: "#f0e6d3", overlay: { color: "#f0e6d3", opacity: 0.07 }, isBeauty: true  },
+  { name: "Glow",      css: "brightness(1.12) saturate(1.1) contrast(0.95) blur(0.5px)",     swatch: "#fff9c4", overlay: { color: "#fff9c4", opacity: 0.07 }, isBeauty: true  },
+  { name: "Porcelain", css: "brightness(1.09) saturate(0.9) contrast(0.98) hue-rotate(4deg) blur(0.5px)", swatch: "#dfe8f0", overlay: { color: "#dfe8f0", opacity: 0.07 }, isBeauty: true  },
 ];
 
 const ZOOM_LEVELS = [
@@ -128,6 +148,7 @@ const STRIP_MODES: ModeConfig[] = [
   EXT_MODES.find(m => m.mode === "slow-mo")!,
   EXT_MODES.find(m => m.mode === "timelapse")!,
   EXT_MODES.find(m => m.mode === "spatial")!,
+  EXT_MODES.find(m => m.mode === "hidden")!,
 ];
 const STRIP_LABEL: Partial<Record<ExtMode, string>> = {
   scan: "DOC", "slow-mo": "SLO-MO", timelapse: "TIME-LAPSE",
@@ -169,6 +190,12 @@ export default function CameraScreen() {
   const [showFilters, setShowFilters] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
 
+  // Hidden (covert) mode — black screen, left=photo / right=video.
+  // The CameraView mode is switched on demand since recordAsync needs "video"
+  // and takePictureAsync needs "picture".
+  const [hiddenCamMode, setHiddenCamMode] = useState<CameraMode>("picture");
+  const [showHiddenHint, setShowHiddenHint] = useState(false);
+
   // Time-lapse state
   const [isTimelapsing, setIsTimelapsing] = useState(false);
   const [tlCount, setTlCount] = useState(0);
@@ -188,6 +215,13 @@ export default function CameraScreen() {
 
   // Mode strip scroll ref
   const modeScrollRef = useRef<ScrollView>(null);
+  // Stable initial offset — a fresh object here would make web re-apply it on
+  // every render, snapping the strip back to default whenever the mode changes.
+  const stripContentOffset = useRef({ x: DEFAULT_STRIP_IDX * ITEM_W, y: 0 }).current;
+  // Guards mode-strip scrolls we trigger ourselves (taps / sync) so the
+  // scroll-end handler doesn't echo them back into another setExtMode.
+  const programmaticScroll = useRef(false);
+  const programmaticClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Zoom collapse
   const [zoomExpanded, setZoomExpanded] = useState(false);
@@ -233,6 +267,74 @@ export default function CameraScreen() {
     return () => { cancelled = true; sub?.remove(); };
   }, [settings.compassMeta]);
 
+  // Spirit-level tilt (roll) — drives the on-screen level guide.
+  const [levelRoll, setLevelRoll] = useState(0);
+  const lastRoll = useRef(0);
+  useEffect(() => {
+    if (!settings.showLevelGuide) { setLevelRoll(0); lastRoll.current = 0; return; }
+    const pushRoll = (roll: number) => {
+      // Round to whole degrees and only re-render on a real change to avoid
+      // re-rendering the camera tree on every sensor tick.
+      const r = Math.round(roll);
+      if (r !== lastRoll.current) { lastRoll.current = r; setLevelRoll(r); }
+    };
+
+    if (Platform.OS === "web") {
+      // gamma is the left↔right tilt of the device in degrees (0 = level).
+      const handler = (e: any) => {
+        if (e?.gamma == null) return;
+        pushRoll(e.gamma);
+      };
+      window.addEventListener("deviceorientation", handler);
+      return () => window.removeEventListener("deviceorientation", handler);
+    }
+
+    let sub: { remove: () => void } | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const Accelerometer = await getAccelerometer();
+        if (!Accelerometer || cancelled) return;
+        const available = await Accelerometer.isAvailableAsync().catch(() => false);
+        if (!available || cancelled) return;
+        Accelerometer.setUpdateInterval(100);
+        const created = Accelerometer.addListener(({ x, y }) => {
+          // Roll around the screen-normal axis; 0° when held upright/level.
+          pushRoll(Math.atan2(x, y) * (180 / Math.PI));
+        });
+        if (cancelled) created.remove();
+        else sub = created;
+      } catch { /* sensor unavailable */ }
+    })();
+    return () => { cancelled = true; sub?.remove(); };
+  }, [settings.showLevelGuide]);
+
+  // Give a light haptic tick the moment the guide snaps to level.
+  const wasLevel = useRef(false);
+  useEffect(() => {
+    if (!settings.showLevelGuide) { wasLevel.current = false; return; }
+    const level = Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG;
+    if (level && !wasLevel.current && Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    }
+    wasLevel.current = level;
+  }, [levelRoll, settings.showLevelGuide]);
+
+  // Toggle the level guide. On iOS web, motion/orientation access must be
+  // requested from inside a user gesture (this tap) before events will fire.
+  const toggleLevelGuide = useCallback(async () => {
+    const next = !settings.showLevelGuide;
+    if (next && Platform.OS === "web") {
+      try {
+        const DOE: any = (globalThis as any).DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          await DOE.requestPermission();
+        }
+      } catch { /* denied or unsupported — guide just stays flat */ }
+    }
+    updateSetting("showLevelGuide", next);
+  }, [settings.showLevelGuide, updateSetting]);
+
   // Web volume keys / spacebar shutter — use a ref so we don't re-bind every render
   const handleCaptureRef = useRef<() => void>(() => {});
   useEffect(() => {
@@ -249,19 +351,39 @@ export default function CameraScreen() {
     return () => window.removeEventListener("keydown", onKey);
   }, [settings.volumeKeyShutter]);
 
+  // Mark the next scroll-settle as self-triggered so handleModeScrollEnd ignores
+  // it. Auto-clears so a later genuine drag is never wrongly suppressed.
+  const markProgrammaticScroll = useCallback(() => {
+    programmaticScroll.current = true;
+    if (programmaticClearTimer.current) clearTimeout(programmaticClearTimer.current);
+    programmaticClearTimer.current = setTimeout(() => { programmaticScroll.current = false; }, 400);
+  }, []);
+
   // Scroll strip to the currently active mode
   useEffect(() => {
     const idx = STRIP_MODES.findIndex(m => m.mode === extMode);
     if (idx >= 0) {
       const t = setTimeout(() => {
+        markProgrammaticScroll();
         modeScrollRef.current?.scrollTo({ x: idx * ITEM_W, animated: true });
       }, 60);
       return () => clearTimeout(t);
     }
+  }, [extMode, markProgrammaticScroll]);
+
+  // Briefly show the covert-mode controls hint when entering hidden mode,
+  // then fade to full black so the screen looks switched off.
+  useEffect(() => {
+    if (extMode === "hidden") {
+      setShowHiddenHint(true);
+      const t = setTimeout(() => setShowHiddenHint(false), 3500);
+      return () => clearTimeout(t);
+    }
+    setShowHiddenHint(false);
   }, [extMode]);
 
   const currentModeConfig = EXT_MODES.find(m => m.mode === extMode) ?? EXT_MODES[0]!;
-  const cameraViewMode: CameraMode = currentModeConfig.cameraMode;
+  const cameraViewMode: CameraMode = extMode === "hidden" ? hiddenCamMode : currentModeConfig.cameraMode;
 
   // Pinch to zoom
   const saveBaseZoom = useCallback(() => { baseZoom.current = zoom; }, [zoom]);
@@ -363,6 +485,26 @@ export default function CameraScreen() {
     });
   }, [settings.screenFlashSelfie, facing, screenFlashOpacity]);
 
+  // Bake a filter's colour-grade into the captured image (web canvas only).
+  // takePictureAsync returns the raw frame without the CSS preview filter, so we
+  // re-render it through a canvas with the same filter to match the preview.
+  const applyFilterWeb = useCallback(async (dataUri: string, css: string): Promise<string> => {
+    if (Platform.OS !== "web" || !css) return dataUri;
+    try {
+      const img: HTMLImageElement = await new Promise((res, rej) => {
+        const i = new (window as any).Image();
+        i.onload = () => res(i); i.onerror = rej; i.src = dataUri;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d")!;
+      ctx.filter = css;
+      ctx.drawImage(img, 0, 0);
+      const mime = settings.imageFormat === "png" ? "image/png" : settings.imageFormat === "webp" ? "image/webp" : "image/jpeg";
+      return canvas.toDataURL(mime, 0.92);
+    } catch { return dataUri; }
+  }, [settings.imageFormat]);
+
   // Stamp date / time / location onto an image (web canvas only — PWA target)
   const stampImageWeb = useCallback(async (dataUri: string): Promise<string> => {
     if (Platform.OS !== "web") return dataUri;
@@ -402,7 +544,8 @@ export default function CameraScreen() {
   // Single capture cycle (screen flash → snap → stamp/strip → upload).
   // The self-timer runs once at the start of a burst, not on every shot.
   const captureOne = useCallback(async (indexLabel?: string) => {
-    await doScreenFlash();
+    // Keep the screen dark in covert (hidden) mode — no white selfie flash.
+    if (extMode !== "hidden") await doScreenFlash();
     pulseCaptureBtn();
     if (Platform.OS !== "web") {
       try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); } catch { /* */ }
@@ -410,9 +553,16 @@ export default function CameraScreen() {
     const photo = await cameraRef.current?.takePictureAsync({
       quality: 0.9,
       exif: !settings.stripExif,
+      // Silent capture in covert (hidden) mode.
+      shutterSound: extMode !== "hidden",
     });
     if (!photo?.uri) return;
     let uri = photo.uri;
+    // Bake the selected filter's grade into the saved photo (web).
+    const filterCss = FILTERS[selectedFilter]?.css ?? null;
+    if (filterCss && Platform.OS === "web") {
+      uri = await applyFilterWeb(uri, filterCss);
+    }
     let toastMsg: string | null = null;
     if (settings.stampPhotos) {
       uri = await stampImageWeb(uri);
@@ -429,7 +579,7 @@ export default function CameraScreen() {
     const suffix = indexLabel ? `_${indexLabel}` : "";
     const fileName = `${prefix}_${Date.now()}${suffix}.${ext}`;
     await doUpload(uri, fileName, "image");
-  }, [settings.timerSeconds, settings.stripExif, settings.stampPhotos, settings.imageFormat, settings.saveLocation, runCountdown, doScreenFlash, stampImageWeb, extMode, doUpload, heading]);
+  }, [settings.timerSeconds, settings.stripExif, settings.stampPhotos, settings.imageFormat, settings.saveLocation, runCountdown, doScreenFlash, stampImageWeb, applyFilterWeb, selectedFilter, extMode, doUpload, heading]);
 
   const handlePhotoCapture = useCallback(async () => {
     if (isBusy) return;
@@ -479,6 +629,68 @@ export default function CameraScreen() {
       cameraRef.current?.stopRecording();
     }
   }, [isBusy, isRecording, settings.videoFormat, extMode, doUpload]);
+
+  // ── Covert "hidden" mode tap zones ─────────────────────────────────────────
+  // Left half → photo, right half → start/stop video. Because the camera must
+  // switch between picture/video capture, we flip the CameraView mode first and
+  // give it a beat to reconfigure before firing the capture.
+  const HIDDEN_MODE_SWITCH_MS = 350;
+
+  const handleHiddenPhoto = useCallback(() => {
+    if (isRecording) return; // don't interrupt an active recording
+    if (hiddenCamMode !== "picture") {
+      setHiddenCamMode("picture");
+      setTimeout(() => { handlePhotoCapture(); }, HIDDEN_MODE_SWITCH_MS);
+    } else {
+      handlePhotoCapture();
+    }
+  }, [isRecording, hiddenCamMode, handlePhotoCapture]);
+
+  const handleHiddenVideo = useCallback(() => {
+    if (isRecording) { handleVideoToggle(); return; } // stop in place
+    if (hiddenCamMode !== "video") {
+      setHiddenCamMode("video");
+      setTimeout(() => { handleVideoToggle(); }, HIDDEN_MODE_SWITCH_MS);
+    } else {
+      handleVideoToggle();
+    }
+  }, [isRecording, hiddenCamMode, handleVideoToggle]);
+
+  const exitHiddenMode = useCallback(() => {
+    if (isRecording) handleVideoToggle(); // stop & upload any active recording
+    setHiddenCamMode("picture");
+    setExtMode("photo");
+  }, [isRecording, handleVideoToggle]);
+
+  // Tap the top of the screen to switch (flip) cameras while staying covert.
+  const handleHiddenFlip = useCallback(() => {
+    const next = facing === "back" ? "front" : "back";
+    // Front camera starts at 0.5× (zoom 0); rear resumes at the 1× default
+    const z = next === "front" ? 0 : 0.25;
+    setFacing(next);
+    setZoom(z);
+    baseZoom.current = z;
+  }, [facing]);
+
+  // Triple-press the bottom of the screen to close the app completely.
+  const closeTapCount = useRef(0);
+  const closeTapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleHiddenClose = useCallback(() => {
+    if (closeTapTimer.current) clearTimeout(closeTapTimer.current);
+    closeTapCount.current += 1;
+    if (closeTapCount.current >= 3) {
+      closeTapCount.current = 0;
+      if (isRecording) handleVideoToggle(); // stop & upload any active recording first
+      if (Platform.OS === "web") {
+        window.close();
+      } else {
+        BackHandler.exitApp();
+      }
+      return;
+    }
+    // Reset the counter if the three taps aren't quick enough.
+    closeTapTimer.current = setTimeout(() => { closeTapCount.current = 0; }, 600);
+  }, [isRecording, handleVideoToggle]);
 
   const handleScan = useCallback(async () => {
     if (isBusy) return;
@@ -574,6 +786,7 @@ export default function CameraScreen() {
 
   const handleCapture = () => {
     const m = extMode;
+    if (m === "hidden") return; // capture happens via the full-screen tap zones
     if (m === "scan") return handleScan();
     if (m === "timelapse") return handleTimelapse();
     if (currentModeConfig.isVideo) return handleVideoToggle();
@@ -582,9 +795,10 @@ export default function CameraScreen() {
 
   const scrollToMode = useCallback((idx: number) => {
     try {
+      markProgrammaticScroll();
       modeScrollRef.current?.scrollTo({ x: idx * ITEM_W, animated: true });
     } catch { /* ignore */ }
-  }, []);
+  }, [markProgrammaticScroll]);
 
   const cycleFlash = () => {
     const cycle: FlashMode[] = ["auto", "on", "off"];
@@ -612,6 +826,19 @@ export default function CameraScreen() {
   const flashIcon = flash === "on" ? "flash" : flash === "off" ? "flash-off" : "flash-outline";
   const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
+  // Auto-hide the "Uploaded" success badge after the configured duration.
+  // Only the successful ("done") state is dismissed on a timer — failed/partial
+  // and in-progress states stay visible until the next upload.
+  const [doneBadgeHidden, setDoneBadgeHidden] = useState(false);
+  useEffect(() => {
+    if (lastUpload?.status === "done" && settings.uploadedBadgeSeconds > 0) {
+      setDoneBadgeHidden(false);
+      const t = setTimeout(() => setDoneBadgeHidden(true), settings.uploadedBadgeSeconds * 1000);
+      return () => clearTimeout(t);
+    }
+    setDoneBadgeHidden(false);
+  }, [lastUpload?.id, lastUpload?.status, settings.uploadedBadgeSeconds]);
+
   const uploadStatusColor = !lastUpload ? "transparent"
     : lastUpload.status === "done" ? "#22c55e"
     : lastUpload.status === "failed" ? "#ef4444"
@@ -630,7 +857,9 @@ export default function CameraScreen() {
     : lastUpload.status === "uploading" ? "Uploading…"
     : lastUpload.status === "queued" ? "Queued" : "";
 
-  const filterColor = FILTERS[selectedFilter]?.color ?? null;
+  const activeFilter = FILTERS[selectedFilter];
+  const filterOverlay = Platform.OS !== "web" ? (activeFilter?.overlay ?? null) : null;
+  const filterCssWeb = Platform.OS === "web" ? (activeFilter?.css ?? null) : null;
 
   if (!cameraPermission) return <View style={styles.container} />;
 
@@ -668,6 +897,7 @@ export default function CameraScreen() {
   const captureIsActive = isRecording || isTimelapsing;
 
   const handleModeScrollEnd = (e: any) => {
+    if (programmaticScroll.current) return; // ignore scrolls we triggered ourselves
     const x = e?.nativeEvent?.contentOffset?.x ?? 0;
     const idx = Math.round(x / ITEM_W);
     const clamped = Math.max(0, Math.min(idx, STRIP_MODES.length - 1));
@@ -698,18 +928,20 @@ export default function CameraScreen() {
           style={[
             StyleSheet.absoluteFill,
             settings.flipPreview ? { transform: [{ rotate: "180deg" }] } : null,
+            // Web: real GPU colour-grade on the live preview.
+            filterCssWeb ? ({ filter: filterCssWeb } as any) : null,
           ]}
           facing={facing}
           flash={flash}
           zoom={zoom}
           mode={cameraViewMode}
         >
-          {/* Colour filter overlay */}
-          {filterColor && (
+          {/* Native preview approximation (web uses the CSS grade above) */}
+          {filterOverlay && (
             <View
               style={[StyleSheet.absoluteFill, {
-                backgroundColor: filterColor,
-                opacity: FILTERS[selectedFilter]?.isBeauty ? 0.14 : 0.22,
+                backgroundColor: filterOverlay.color,
+                opacity: filterOverlay.opacity,
               }]}
               pointerEvents="none"
             />
@@ -718,8 +950,21 @@ export default function CameraScreen() {
           {/* Level guide */}
           {settings.showLevelGuide && (
             <View style={[StyleSheet.absoluteFill, styles.levelContainer]} pointerEvents="none">
-              <View style={styles.levelLine} />
-              <View style={styles.levelDot} />
+              {/* Fixed reference line — goes green too when level */}
+              <View style={[
+                styles.levelRefLine,
+                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelRefLineActive,
+              ]} />
+              {/* Tilt line — rotates with the device, snaps green when level */}
+              <View style={[
+                styles.levelLine,
+                { transform: [{ rotate: `${-levelRoll}deg` }] },
+                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelLineActive,
+              ]} />
+              <View style={[
+                styles.levelDot,
+                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelDotActive,
+              ]} />
             </View>
           )}
 
@@ -775,30 +1020,30 @@ export default function CameraScreen() {
         </CameraView>
 
         {/* ── Top Bar ─────────────────────────────────────────────────────── */}
-        <View style={[styles.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 44 : 8) }]}>
+        <View style={[styles.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 20 : 4) }]}>
           <TouchableOpacity style={styles.iconBtn} onPress={cycleFlash}>
-            <Ionicons name={flashIcon as any} size={24} color={flash === "on" ? "#FFD700" : "white"} />
+            <Ionicons name={flashIcon as any} size={21} color={flash === "on" ? "#FFD700" : "white"} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => updateSetting("showLevelGuide", !settings.showLevelGuide)}>
-            <MaterialCommunityIcons name="spirit-level" size={22} color={settings.showLevelGuide ? PRIMARY : "white"} />
+          <TouchableOpacity style={styles.iconBtn} onPress={toggleLevelGuide}>
+            <MaterialCommunityIcons name="spirit-level" size={19} color={settings.showLevelGuide ? PRIMARY : "white"} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconBtn} onPress={() => {
             const next = settings.gridType === "off" ? "thirds" : settings.gridType === "thirds" ? "golden" : settings.gridType === "golden" ? "square" : settings.gridType === "square" ? "diagonal" : "off";
             updateSetting("gridType", next);
           }}>
-            <Ionicons name="grid-outline" size={20} color={settings.gridType !== "off" ? PRIMARY : "white"} />
+            <Ionicons name="grid-outline" size={18} color={settings.gridType !== "off" ? PRIMARY : "white"} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconBtn} onPress={() => {
             const next = settings.timerSeconds === 0 ? 3 : settings.timerSeconds === 3 ? 10 : 0;
             updateSetting("timerSeconds", next);
           }}>
-            <Ionicons name="timer-outline" size={22} color={settings.timerSeconds > 0 ? PRIMARY : "white"} />
+            <Ionicons name="timer-outline" size={19} color={settings.timerSeconds > 0 ? PRIMARY : "white"} />
             {settings.timerSeconds > 0 && (
               <Text style={styles.timerBadge}>{settings.timerSeconds}s</Text>
             )}
           </TouchableOpacity>
           <TouchableOpacity style={styles.iconBtn} onPress={() => setShowFilters(v => !v)}>
-            <Feather name="sliders" size={20} color={showFilters ? PRIMARY : "white"} />
+            <Feather name="sliders" size={18} color={showFilters ? PRIMARY : "white"} />
           </TouchableOpacity>
           {(isRecording) && (
             <View style={styles.recordingBadge}>
@@ -807,12 +1052,12 @@ export default function CameraScreen() {
             </View>
           )}
           <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/settings")}>
-            <Ionicons name="settings-outline" size={24} color="white" />
+            <Ionicons name="settings-outline" size={21} color="white" />
           </TouchableOpacity>
         </View>
 
         {/* ── Upload status badge ─────────────────────────────────────────── */}
-        {lastUpload && uploadStatusLabel !== "" && settings.recordHistory && (
+        {lastUpload && uploadStatusLabel !== "" && settings.recordHistory && !(lastUpload.status === "done" && doneBadgeHidden) && (
           <TouchableOpacity
             style={[styles.uploadStatus, { top: insets.top + (Platform.OS === "web" ? 110 : 70) }]}
             onPress={() => router.push("/history")}
@@ -829,7 +1074,7 @@ export default function CameraScreen() {
               {FILTERS.map((f, i) => (
                 <TouchableOpacity key={f.name} style={styles.filterChip} onPress={() => setSelectedFilter(i)}>
                   <View style={[styles.filterThumb, {
-                    backgroundColor: f.color ?? "#2a2a2a",
+                    backgroundColor: f.swatch,
                     borderWidth: selectedFilter === i ? 2 : 0,
                     borderColor: PRIMARY,
                   }]}>
@@ -882,7 +1127,7 @@ export default function CameraScreen() {
               onScrollEndDrag={Platform.OS === "web" ? handleModeScrollEnd : undefined}
               contentContainerStyle={{ paddingHorizontal: (screenW - ITEM_W) / 2 }}
               style={{ flex: 1 }}
-              contentOffset={{ x: DEFAULT_STRIP_IDX * ITEM_W, y: 0 }}
+              contentOffset={stripContentOffset}
             >
               {STRIP_MODES.map((m, i) => {
                 const isActive = m.mode === extMode;
@@ -894,7 +1139,12 @@ export default function CameraScreen() {
                     onPress={() => { if (!captureIsActive) { setExtMode(m.mode); scrollToMode(i); } }}
                     activeOpacity={0.7}
                   >
-                    <Text style={[styles.stripLabel, isActive && styles.stripLabelActive]}>{lbl}</Text>
+                    <Text
+                      style={[styles.stripLabel, isActive && styles.stripLabelActive]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                    >{lbl}</Text>
                   </TouchableOpacity>
                 );
               })}
@@ -1029,6 +1279,54 @@ export default function CameraScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* ── Hidden (covert) mode overlay ─────────────────────────────────── */}
+        {extMode === "hidden" && (
+          <View style={styles.hiddenOverlay}>
+            <Pressable
+              style={styles.hiddenZone}
+              onPress={handleHiddenPhoto}
+              onLongPress={exitHiddenMode}
+              delayLongPress={650}
+              accessibilityLabel="Tap to take a photo, long-press to exit hidden mode"
+            />
+            <Pressable
+              style={styles.hiddenZone}
+              onPress={handleHiddenVideo}
+              onLongPress={exitHiddenMode}
+              delayLongPress={650}
+              accessibilityLabel="Tap to start or stop video, long-press to exit hidden mode"
+            />
+            {/* Top band — tap to switch (flip) cameras */}
+            <Pressable
+              style={styles.hiddenTopZone}
+              onPress={handleHiddenFlip}
+              onLongPress={exitHiddenMode}
+              delayLongPress={650}
+              accessibilityLabel="Tap to switch cameras, long-press to exit hidden mode"
+            />
+            {/* Bottom band — triple-press to close the app completely */}
+            <Pressable
+              style={styles.hiddenBottomZone}
+              onPress={handleHiddenClose}
+              onLongPress={exitHiddenMode}
+              delayLongPress={650}
+              accessibilityLabel="Triple-press to close the app, long-press to exit hidden mode"
+            />
+            {/* Dim recording indicator — subtle so the screen still reads as off */}
+            {isRecording && (
+              <View style={styles.hiddenRecDot} pointerEvents="none" />
+            )}
+            {/* Brief controls hint, fades out */}
+            {showHiddenHint && (
+              <View style={styles.hiddenHint} pointerEvents="none">
+                <Text style={styles.hiddenHintText}>Tap left · Photo      Tap right · Video</Text>
+                <Text style={styles.hiddenHintText}>Tap top · Switch camera</Text>
+                <Text style={styles.hiddenHintSub}>Triple-tap bottom · Close app   ·   Long-press to exit</Text>
+              </View>
+            )}
+          </View>
+        )}
       </View>
     </GestureDetector>
   );
@@ -1040,10 +1338,34 @@ const styles = StyleSheet.create({
   topBar: {
     position: "absolute", top: 0, left: 0, right: 0,
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    paddingHorizontal: 18, paddingBottom: 12,
-    backgroundColor: "rgba(0,0,0,0.38)",
+    paddingHorizontal: 14, paddingBottom: 6,
+    backgroundColor: "rgba(0,0,0,0.32)",
   },
-  iconBtn: { padding: 8, borderRadius: 20 },
+  iconBtn: { padding: 5, borderRadius: 18 },
+  hiddenOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000",
+    flexDirection: "row",
+    zIndex: 100,
+  },
+  hiddenZone: { flex: 1 },
+  hiddenTopZone: {
+    position: "absolute", top: 0, left: 0, right: 0, height: "22%",
+  },
+  hiddenBottomZone: {
+    position: "absolute", bottom: 0, left: 0, right: 0, height: "22%",
+  },
+  hiddenRecDot: {
+    position: "absolute", top: 10, left: 10,
+    width: 7, height: 7, borderRadius: 4,
+    backgroundColor: "rgba(239,68,68,0.55)",
+  },
+  hiddenHint: {
+    position: "absolute", left: 0, right: 0, top: "50%",
+    alignItems: "center", paddingHorizontal: 24,
+  },
+  hiddenHintText: { color: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "Inter_500Medium", textAlign: "center" },
+  hiddenHintSub: { color: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 6, textAlign: "center" },
   recordingBadge: {
     flexDirection: "row", alignItems: "center", gap: 6,
     backgroundColor: "rgba(0,0,0,0.55)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
@@ -1059,8 +1381,12 @@ const styles = StyleSheet.create({
   uploadStatusText: { fontSize: 11, fontFamily: "Inter_500Medium" },
   overlayCenter: { alignItems: "center", justifyContent: "center" },
   levelContainer: { alignItems: "center", justifyContent: "center" },
-  levelLine: { width: "60%", height: 1, backgroundColor: "rgba(177,152,112,0.6)", position: "absolute" },
+  levelRefLine: { width: "30%", height: 1, backgroundColor: "rgba(255,255,255,0.25)", position: "absolute" },
+  levelRefLineActive: { backgroundColor: "rgba(34,197,94,0.6)" },
+  levelLine: { width: "60%", height: 2, backgroundColor: "rgba(177,152,112,0.85)", position: "absolute" },
+  levelLineActive: { backgroundColor: "#22c55e" },
   levelDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: PRIMARY },
+  levelDotActive: { backgroundColor: "#22c55e" },
   compassBadge: {
     position: "absolute", top: 12, alignSelf: "center",
     flexDirection: "row", alignItems: "center", gap: 4,
@@ -1165,12 +1491,16 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     color: "rgba(255,255,255,0.4)",
     letterSpacing: 1.1,
+    // Keep the label inside the center pill (width ITEM_W - 10) so long labels
+    // like "TIME-LAPSE" never spill past the oval.
+    maxWidth: ITEM_W - 16,
+    textAlign: "center",
   },
   stripLabelActive: {
     color: "white",
     fontSize: 11,
     fontFamily: "Inter_700Bold",
-    letterSpacing: 1,
+    letterSpacing: 0.5,
   },
   captureRow: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",

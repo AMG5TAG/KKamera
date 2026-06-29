@@ -6,7 +6,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { hashPin } from "@/lib/appLock";
@@ -17,6 +16,13 @@ const BG = "#0d0b08";
 const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 const DANGER = "#ef4444";
+
+// Lazy-load expo-local-authentication so the module (and its native-only
+// dependency `invariant`) is never bundled/evaluated on web.
+async function getLocalAuth() {
+  const LocalAuthentication = await import("expo-local-authentication");
+  return LocalAuthentication;
+}
 
 export default function PrivacySecurityScreen() {
   const insets = useSafeAreaInsets();
@@ -29,9 +35,18 @@ export default function PrivacySecurityScreen() {
 
   useEffect(() => {
     if (Platform.OS === "web") return;
-    LocalAuthentication.hasHardwareAsync().then(has => {
-      if (has) LocalAuthentication.isEnrolledAsync().then(setBiometricAvailable);
-    });
+    void (async () => {
+      try {
+        const LocalAuthentication = await getLocalAuth();
+        const has = await LocalAuthentication.hasHardwareAsync();
+        if (has) {
+          const enrolled = await LocalAuthentication.isEnrolledAsync();
+          setBiometricAvailable(enrolled);
+        }
+      } catch {
+        // ignore
+      }
+    })();
   }, []);
 
   const handleToggleLock = (v: boolean) => {
