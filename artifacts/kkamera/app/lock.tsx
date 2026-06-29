@@ -5,13 +5,19 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import * as LocalAuthentication from "expo-local-authentication";
 import { useSettings } from "@/contexts/SettingsContext";
 import { verifyPin, hashPin } from "@/lib/appLock";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
+
+// Lazy-load expo-local-authentication so the module (and its native-only
+// dependency `invariant`) is never bundled/evaluated on web.
+async function getLocalAuth() {
+  const LocalAuthentication = await import("expo-local-authentication");
+  return LocalAuthentication;
+}
 
 interface LockScreenProps {
   onUnlock: () => void;
@@ -45,14 +51,24 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
 
   useEffect(() => {
     if (Platform.OS === "web") return;
-    LocalAuthentication.hasHardwareAsync().then(has => {
-      if (has) LocalAuthentication.isEnrolledAsync().then(setBiometricAvailable);
-    });
+    void (async () => {
+      try {
+        const LocalAuthentication = await getLocalAuth();
+        const has = await LocalAuthentication.hasHardwareAsync();
+        if (has) {
+          const enrolled = await LocalAuthentication.isEnrolledAsync();
+          setBiometricAvailable(enrolled);
+        }
+      } catch {
+        // ignore
+      }
+    })();
   }, []);
 
   const tryBiometric = useCallback(async () => {
     if (Platform.OS === "web") return;
     try {
+      const LocalAuthentication = await getLocalAuth();
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage: "Unlock KKamera",
         fallbackLabel: "Use PIN",

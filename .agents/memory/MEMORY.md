@@ -1,0 +1,1 @@
+- [Expo web module crashes](expo-web-module-crashes.md) — Top-level `import` of native-only Expo modules (e.g. `expo-local-authentication`, `expo-sensors`) can crash the web bundle because of missing transitive deps (e.g. `invariant`). Fix: `await import("module")` inside platform-guarded functions so Metro never bundles/evaluates the module on web.
