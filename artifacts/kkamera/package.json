@@ -66,6 +66,7 @@
     "expo-sensors": "^15.0.8",
     "expo-sharing": "^14.0.8",
     "expo-speech": "^14.0.8",
+    "react-native-document-scanner-plugin": "2.0.4",
     "react-native-purchases": "9.7.2",
     "react-native-view-shot": "^4.0.3"
   }

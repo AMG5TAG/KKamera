@@ -84,6 +84,14 @@ async function getAccelerometer() {
   return Accelerometer;
 }
 
+// Native-only document scanner (iOS VisionKit / Android ML Kit). The module
+// registers a TurboModule at import time and throws on web, so it must only be
+// imported lazily on native — never at the top level.
+async function getDocumentScanner() {
+  if (Platform.OS === "web") return null;
+  return await import("react-native-document-scanner-plugin");
+}
+
 // Tilt within this many degrees of horizontal counts as "level" → green guide.
 const LEVEL_TOLERANCE_DEG = 2;
 
@@ -273,6 +281,12 @@ export default function CameraScreen() {
   useEffect(() => {
     if (!settings.showLevelGuide) { setLevelRoll(0); lastRoll.current = 0; return; }
     const pushRoll = (roll: number) => {
+      // Fold to the deviation from upright so "level" reads ~0° regardless of
+      // which way the device's Y axis points. Held upright to shoot, gravity
+      // gives atan2(x,y) ≈ ±180° at level on some platforms — without this fold
+      // the guide would never reach 0° and never turn green.
+      if (roll > 90) roll -= 180;
+      else if (roll < -90) roll += 180;
       // Round to whole degrees and only re-render on a real change to avoid
       // re-rendering the camera tree on every sensor tick.
       const r = Math.round(roll);
@@ -698,19 +712,41 @@ export default function CameraScreen() {
     pulseCaptureBtn();
     setIsBusy(true);
     try {
+      if (Platform.OS !== "web") {
+        // Native: hand off to the OS document scanner (VisionKit / ML Kit) for
+        // live edge detection, corner adjustment, auto-crop, deskew & enhance.
+        // It presents its own full-screen capture UI.
+        const mod = await getDocumentScanner();
+        const DocumentScanner = mod?.default;
+        if (!DocumentScanner) throw new Error("Document scanner unavailable on this device.");
+        const { scannedImages, status } = await DocumentScanner.scanDocument({
+          maxNumDocuments: 1,
+          croppedImageQuality: 100,
+          responseType: mod!.ResponseType.ImageFilePath,
+        });
+        if (status === mod!.ScanDocumentResponseStatus.Cancel) return;
+        let uri = scannedImages?.[0];
+        if (!uri) return;
+        // Android can return a bare path; make sure it carries a file scheme.
+        if (!/^[a-z]+:\/\//i.test(uri)) uri = `file://${uri}`;
+        setScanUri(uri);
+        setScanCropped(true);
+        setScanFileName(`SCAN_${Date.now()}.jpg`);
+        setShowScanModal(true);
+        return;
+      }
+
+      // Web: capture from the in-app camera, then crop/deskew/enhance on-canvas.
       const photo = await cameraRef.current?.takePictureAsync({ quality: 0.95 });
       if (photo?.uri) {
-        // Auto-crop, deskew and enhance on web; native keeps the raw capture
         let uri = photo.uri;
         let cropped = false;
-        if (Platform.OS === "web") {
-          setIsProcessingScan(true);
-          try {
-            const result = await processDocumentScan(photo.uri);
-            uri = result.uri;
-            cropped = result.cropped;
-          } finally { setIsProcessingScan(false); }
-        }
+        setIsProcessingScan(true);
+        try {
+          const result = await processDocumentScan(photo.uri);
+          uri = result.uri;
+          cropped = result.cropped;
+        } finally { setIsProcessingScan(false); }
         const fileName = `SCAN_${Date.now()}.jpg`;
         setScanUri(uri);
         setScanCropped(cropped);

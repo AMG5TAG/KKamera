@@ -87,6 +87,12 @@
         {
           "locationAlwaysAndWhenInUsePermission": "KKamera can embed GPS location in your photos."
         }
+      ],
+      [
+        "react-native-document-scanner-plugin",
+        {
+          "cameraPermission": "KKamera uses the camera to scan documents."
+        }
       ]
     ],
     "experiments": {
