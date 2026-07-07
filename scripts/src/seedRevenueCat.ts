@@ -43,6 +43,24 @@ const PRODUCT_PRICES = [
 
 type TestStorePricesResponse = { object: string; prices: { amount_micros: number; currency: string }[] };
 
+// Loudly flag an existing RevenueCat store app whose identifier drifted from what
+// the app actually ships as (app.json). A mismatch means entitlements won't
+// resolve on device, so surface it rather than silently reusing the wrong app.
+let bundleMismatch = false;
+function warnBundleMismatch(label: string, kind: string, actual: string | undefined, expected: string): void {
+  if (actual && actual !== expected) {
+    bundleMismatch = true;
+    console.warn(
+      `\n⚠️  ${label} ${kind} MISMATCH: RevenueCat app has "${actual}" but the app ships as ` +
+      `"${expected}" (artifacts/kkamera/app.json). Entitlements will NOT resolve on device.\n` +
+      `    Fix the ${kind} in the RevenueCat dashboard (Project → Apps), or delete that app and ` +
+      `re-run this seed, so it matches app.json — then refresh the REVENUECAT_*_APP_ID / public keys.\n`
+    );
+  } else if (actual) {
+    console.log(`  ${label} ${kind} OK: ${actual}`);
+  }
+}
+
 async function seedRevenueCat() {
   const client = await getUncachableRevenueCatClient();
 
@@ -82,6 +100,7 @@ async function seedRevenueCat() {
     console.log("Created App Store app:", appStoreApp.id);
   } else {
     console.log("App Store app:", appStoreApp.id);
+    warnBundleMismatch("App Store", "bundle id", appStoreApp.app_store?.bundle_id, APP_STORE_BUNDLE_ID);
   }
 
   if (!playStoreApp) {
@@ -94,6 +113,7 @@ async function seedRevenueCat() {
     console.log("Created Play Store app:", playStoreApp.id);
   } else {
     console.log("Play Store app:", playStoreApp.id);
+    warnBundleMismatch("Play Store", "package name", playStoreApp.play_store?.package_name, PLAY_STORE_PACKAGE_NAME);
   }
 
   // Products
@@ -228,6 +248,13 @@ async function seedRevenueCat() {
   console.log("  EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=" + (androidKeys?.items.map((k) => k.key).join(", ") ?? "N/A"));
   console.log("====================");
   console.log("\nCopy the env vars above into Replit Secrets.");
+
+  if (bundleMismatch) {
+    console.warn(
+      "\n⚠️  ONE OR MORE STORE APP IDENTIFIERS DO NOT MATCH app.json — see the warning(s) above. " +
+      "Purchases will not attribute to the 'pro' entitlement on device until this is fixed."
+    );
+  }
 }
 
 seedRevenueCat().catch(console.error);
