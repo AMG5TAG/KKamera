@@ -98,16 +98,3 @@ index 10c51c45cf1e1bcb34476cd662031bff3d4352c8..b9d8e3caca2a4889c6e8ab610fc4afa7
      return (0, _stacktraceparser().parse)(stack).map((frame)=>{
          // frame.file will mostly look like `http://localhost:8081/index.bundle?platform=web&dev=true&hot=false`
          if (frame.file) {
-diff --git a/build/src/start/server/middleware/ManifestMiddleware.js b/build/src/start/server/middleware/ManifestMiddleware.js
-index f4be1b5b54c016f7f5f943eea1ddf4990d5f6469..f17e1212ac09ba42d17400cc9ff1e0f2fa268018 100644
---- a/build/src/start/server/middleware/ManifestMiddleware.js
-+++ b/build/src/start/server/middleware/ManifestMiddleware.js
-@@ -120,7 +120,7 @@ function getEntryWithServerRoot(projectRoot, props) {
-     if (!supportedPlatforms.includes(props.platform)) {
-         throw new _errors.CommandError(`Failed to resolve the project's entry file: The platform "${props.platform}" is not supported.`);
-     }
--    return (0, _metroOptions.convertPathToModuleSpecifier)(_path().default.relative((0, _paths().getMetroServerRoot)(projectRoot), (0, _paths().resolveEntryPoint)(projectRoot, props)));
-+    return (0, _metroOptions.convertPathToModuleSpecifier)(_path().default.relative(projectRoot, (0, _paths().resolveEntryPoint)(projectRoot, props)));
- }
- function resolveMainModuleName(projectRoot, props) {
-     const entryPoint = getEntryWithServerRoot(projectRoot, props);
