@@ -48,9 +48,11 @@ app.use(cors({
     if (ALLOWED_ORIGINS && ALLOWED_ORIGINS.some(o => origin === o || host === originHost(o) || host.endsWith(`.${originHost(o)}`))) {
       return callback(null, true);
     }
-    // Allow localhost in dev
-    if (process.env.NODE_ENV !== "production" && (host === "localhost" || host === "127.0.0.1")) {
-      return callback(null, true);
+    // Allow localhost and Replit dev domains in dev
+    if (process.env.NODE_ENV !== "production") {
+      if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".replit.dev")) {
+        return callback(null, true);
+      }
     }
     callback(new Error(`CORS: origin ${origin} not allowed`));
   },

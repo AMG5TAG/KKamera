@@ -4,7 +4,8 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
-    "dev": "rm -f /tmp/metro-file-map-* 2>/dev/null; EXPO_PACKAGER_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm exec expo start --clear --localhost --port $PORT",
+    "dev": "rm -f /tmp/metro-file-map-* 2>/dev/null; EXPO_PACKAGER_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm exec expo start --clear --localhost --port ${PORT:-8081}",
+    "dev:proxy": "rm -f /tmp/metro-file-map-* 2>/dev/null; EXPO_PACKAGER_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm exec expo start --clear --localhost --port ${PORT:-8081}",
     "build": "EXPO_PUBLIC_REPL_ID=$REPL_ID pnpm exec expo export --platform web",
     "serve": "npx serve dist --listen $PORT --no-clipboard",
     "typecheck": "tsc -p tsconfig.json --noEmit"
