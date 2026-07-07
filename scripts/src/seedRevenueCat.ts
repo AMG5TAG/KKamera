@@ -18,9 +18,12 @@ const PRODUCT_USER_FACING_TITLE = "KKamera — Annual";
 const PRODUCT_DURATION = "P1Y";
 
 const APP_STORE_APP_NAME = "KKamera iOS";
-const APP_STORE_BUNDLE_ID = "com.kkamera.app";
+// Must match the app's real identifier in artifacts/kkamera/app.json
+// (ios.bundleIdentifier / android.package) or RevenueCat entitlements won't
+// resolve on device.
+const APP_STORE_BUNDLE_ID = "app.kkamera";
 const PLAY_STORE_APP_NAME = "KKamera Android";
-const PLAY_STORE_PACKAGE_NAME = "com.kkamera.app";
+const PLAY_STORE_PACKAGE_NAME = "app.kkamera";
 
 const ENTITLEMENT_IDENTIFIER = "pro";
 const ENTITLEMENT_DISPLAY_NAME = "Pro Access";
