@@ -5,6 +5,8 @@
   "main": "expo-router/entry",
   "scripts": {
     "dev": "EXPO_PACKAGER_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN:8080 EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_DEV_DOMAIN pnpm exec expo start --localhost --port $PORT",
+    "build": "EXPO_PUBLIC_REPL_ID=$REPL_ID pnpm exec expo export --platform web",
+    "serve": "npx serve dist --listen $PORT --no-clipboard",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
@@ -50,6 +52,9 @@
     "zod": "catalog:",
     "zod-validation-error": "^3.4.0"
   },
+  "optionalDependencies": {
+    "serve": "^14.2.4"
+  },
   "dependencies": {
     "expo-camera": "^17.0.10",
     "expo-crypto": "^15.0.9",
@@ -60,8 +65,10 @@
     "expo-sensors": "^15.0.8",
     "expo-sharing": "^14.0.8",
     "expo-speech": "^14.0.8",
+    "react-dom": "catalog:",
     "react-native-document-scanner-plugin": "2.0.4",
     "react-native-purchases": "9.7.2",
-    "react-native-view-shot": "^4.0.3"
+    "react-native-view-shot": "^4.0.3",
+    "react-native-web": "0.21.0"
   }
 }
