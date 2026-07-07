@@ -1,10 +1,14 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
-import { subscriptionsTable, usersTable } from "@workspace/db";
+import { subscriptionsTable, usersTable, trialHistoryTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { getUncachableStripeClient, getStripePublishableKey } from "../stripeClient.js";
-import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { emailTrialHash } from "../lib/emailHash.js";
+
+// Billing is IAP-only (App Store / Play via RevenueCat). Purchases, renewals and
+// cancellations happen store-side and are mirrored into subscriptionsTable by the
+// RevenueCat webhook (routes/revenuecat.ts). These endpoints only read local
+// state and start the 14-day trial; there is no server-side checkout/cancel.
 
 const router = Router();
 
@@ -35,97 +39,27 @@ router.post("/subscriptions/trial", requireAuth, async (req, res) => {
       res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
       return;
     }
+    // Only grant a trial if this email has never had one (see trial_history).
+    const [u] = await db.select({ email: usersTable.email }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
+    const emailHash = u ? emailTrialHash(u.email) : null;
+    const prior = emailHash
+      ? await db.select({ id: trialHistoryTable.id }).from(trialHistoryTable).where(eq(trialHistoryTable.emailHash, emailHash)).limit(1)
+      : [];
+    if (prior.length > 0) {
+      const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "none" }).returning();
+      res.json({ id: sub?.id ?? 0, userId: req.userId!, status: "none", trialEnd: null, currentPeriodEnd: null, createdAt: (sub?.createdAt ?? new Date()).toISOString() });
+      return;
+    }
+
     const trialEnd = new Date();
     trialEnd.setDate(trialEnd.getDate() + 14);
     const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "trial", trialStart: new Date(), trialEnd }).returning();
     if (!sub) { res.status(500).json({ message: "Failed to start trial" }); return; }
+    if (emailHash) await db.insert(trialHistoryTable).values({ emailHash }).onConflictDoNothing();
     res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
   } catch (err) {
     req.log.error({ err }, "Start trial error");
     res.status(500).json({ message: "Failed to start trial" });
-  }
-});
-
-router.post("/subscriptions/checkout", requireAuth, async (req, res) => {
-  try {
-    const stripe = await getUncachableStripeClient();
-
-    const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-
-    let customerId = sub?.stripeCustomerId ?? undefined;
-    if (!customerId) {
-      const [user] = await db.select({ email: usersTable.email, name: usersTable.name })
-        .from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
-      const customer = await stripe.customers.create({
-        ...(user?.email ? { email: user.email } : {}),
-        ...(user?.name ? { name: user.name } : {}),
-        metadata: { userId: String(req.userId) },
-      });
-      customerId = customer.id;
-      if (sub) {
-        await db.update(subscriptionsTable).set({ stripeCustomerId: customerId }).where(eq(subscriptionsTable.userId, req.userId!));
-      } else {
-        await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "none", stripeCustomerId: customerId });
-      }
-    }
-
-    // The price is server-controlled ONLY. Never trust a client-supplied price
-    // ID — a user could otherwise check out against a cheaper/$0 price that
-    // exists in the Stripe account and still be marked "active" by the webhook.
-    const priceId: string = process.env["STRIPE_PRICE_ID"] || "";
-    if (!priceId) {
-      res.status(503).json({ message: "No Stripe price configured. Contact support." });
-      return;
-    }
-
-    // Redirect back to the canonical app origin (app.kkamera.app), not the Replit
-    // preview domain — so checkout always returns to the real app.
-    const origin = getPublicBaseUrl();
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: "subscription",
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${origin}/settings/subscription?success=true`,
-      cancel_url: `${origin}/settings/subscription?cancelled=true`,
-      metadata: { userId: String(req.userId) },
-    });
-
-    res.json({ url: session.url || "" });
-  } catch (err) {
-    req.log.error({ err }, "Checkout error");
-    res.status(500).json({ message: "Failed to create checkout" });
-  }
-});
-
-router.post("/subscriptions/cancel", requireAuth, async (req, res) => {
-  try {
-    const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-
-    // Cancel the live Stripe subscription at period end so the user keeps the
-    // access they've already paid for. The webhook flips local status to
-    // "expired" when it actually ends — we do NOT revoke access here.
-    if (sub?.stripeSubscriptionId) {
-      const stripe = await getUncachableStripeClient();
-      await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
-      res.json({ message: "Subscription will not renew. You keep access until the end of the current period." });
-      return;
-    }
-
-    // No active Stripe subscription (e.g. trial only) — nothing to bill, mark cancelled.
-    await db.update(subscriptionsTable).set({ status: "cancelled" }).where(eq(subscriptionsTable.userId, req.userId!));
-    res.json({ message: "Subscription cancelled" });
-  } catch (err) {
-    req.log.error({ err }, "Cancel subscription error");
-    res.status(500).json({ message: "Failed to cancel subscription" });
-  }
-});
-
-router.get("/subscriptions/publishable-key", async (_req, res) => {
-  try {
-    const key = await getStripePublishableKey();
-    res.json({ publishableKey: key });
-  } catch {
-    res.status(503).json({ message: "Stripe not configured" });
   }
 });
 

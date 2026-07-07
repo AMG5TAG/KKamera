@@ -1,16 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  Platform, Linking, Modal, ActivityIndicator,
+  Platform, Modal, ActivityIndicator, Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  useGetSubscription, useCancelSubscription, useCreateCheckout,
-  getGetSubscriptionQueryKey,
-} from "@workspace/api-client-react";
+import { router } from "expo-router";
+import { useGetSubscription } from "@workspace/api-client-react";
 import { useSubscription } from "@/lib/revenuecat";
 
 const PRIMARY = "#b19870";
@@ -28,30 +24,15 @@ const FEATURES = [
 
 export default function SubscriptionScreen() {
   const insets = useSafeAreaInsets();
-  const queryClient = useQueryClient();
-  const { success } = useLocalSearchParams<{ success?: string }>();
 
-  // Stripe checkout redirects back here with ?success=true —
-  // refresh the subscription and celebrate with the invite screen
-  useEffect(() => {
-    if (success === "true") {
-      queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
-      router.replace("/invite?celebrate=1");
-    }
-  }, [success, queryClient]);
-
-  const { data: sub, isLoading: subLoading } = useGetSubscription();
-  const cancelMutation = useCancelSubscription();
-  const checkoutMutation = useCreateCheckout();
+  const { data: sub } = useGetSubscription();
 
   const rcSub = useSubscription();
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [confirmPackage, setConfirmPackage] = useState<any>(null);
 
-  const isNative = Platform.OS !== "web";
-
-  // On native, RevenueCat is the source of truth for active subscription
-  const isRcSubscribed = isNative && rcSub.isSubscribed;
+  // RevenueCat is the source of truth for an active subscription.
+  const isRcSubscribed = rcSub.isSubscribed;
 
   const status = sub?.status ?? "none";
   const trialEnd = sub?.trialEnd ? new Date(sub.trialEnd) : null;
@@ -77,37 +58,34 @@ export default function SubscriptionScreen() {
       // Successful payment → invite co-workers
       router.push("/invite?celebrate=1");
     } catch (err: any) {
+      // User-cancelled isn't an error — stay silent. Anything else must be shown.
       if (!err?.userCancelled) {
-        // Purchase error surfaced via rcSub.purchaseError
+        const rcErr: any = rcSub.purchaseError ?? err;
+        const detail = typeof rcErr?.message === "string" && rcErr.message.length > 0 && rcErr.message.length < 160
+          ? rcErr.message
+          : "We couldn't complete your purchase. Please try again.";
+        Alert.alert("Purchase Failed", detail);
       }
-    }
-  };
-
-  const handleWebCheckout = async () => {
-    try {
-      const result = await checkoutMutation.mutateAsync();
-      if (result.url) Linking.openURL(result.url);
-    } catch {
-      /* handled below */
     }
   };
 
   const handleRestore = async () => {
     try {
-      await rcSub.restore();
-    } catch { /* ignore */ }
-  };
-
-  const handleCancel = () => {
-    if (Platform.OS === "web") {
-      if (!window.confirm("Cancel your subscription? You'll keep access until the end of the current period.")) return;
-      cancelMutation.mutateAsync().then(() => {
-        queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
-      });
+      const info = await rcSub.restore();
+      const hasActive = info?.entitlements?.active
+        ? Object.keys(info.entitlements.active).length > 0
+        : false;
+      if (hasActive) {
+        Alert.alert("Purchases Restored", "Your subscription is active again.");
+      } else {
+        Alert.alert("No Purchases Found", "We couldn't find an active subscription linked to your store account.");
+      }
+    } catch {
+      Alert.alert("Restore Failed", "We couldn't restore your purchases. Please check your connection and try again.");
     }
   };
 
-  const isPurchasing = rcSub.isPurchasing || checkoutMutation.isPending;
+  const isPurchasing = rcSub.isPurchasing;
 
   const renderStatusCard = () => {
     if (isRcSubscribed) {
@@ -156,7 +134,6 @@ export default function SubscriptionScreen() {
   };
 
   const showSubscribeButton = !isRcSubscribed && (status === "none" || status === "trial" || status === "cancelled" || status === "expired");
-  const showCancelButton = !isNative && status === "active";
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -178,7 +155,7 @@ export default function SubscriptionScreen() {
       ))}
 
       <View style={styles.priceCard}>
-        <Text style={styles.priceAmount}>{isNative ? priceString : "$25"}</Text>
+        <Text style={styles.priceAmount}>{priceString}</Text>
         <Text style={styles.pricePer}>per year</Text>
         <Text style={styles.priceSub}>Less than 7¢ per day · Cancel anytime</Text>
       </View>
@@ -186,45 +163,34 @@ export default function SubscriptionScreen() {
       {showSubscribeButton && (
         <TouchableOpacity
           style={[styles.subscribeBtn, isPurchasing && styles.btnDisabled]}
-          onPress={isNative ? handleNativePurchase : handleWebCheckout}
+          onPress={handleNativePurchase}
           disabled={isPurchasing}
         >
           {isPurchasing
             ? <ActivityIndicator color="white" />
             : <>
-                <Ionicons name={isNative ? "bag-outline" : "card-outline"} size={18} color="white" />
+                <Ionicons name="bag-outline" size={18} color="white" />
                 <Text style={styles.subscribeBtnText}>
-                  {isNative ? `Subscribe — ${priceString}/year` : "Subscribe Now — $25/year"}
+                  {`Subscribe — ${priceString}/year`}
                 </Text>
               </>
           }
         </TouchableOpacity>
       )}
 
-      {isNative && (
-        <TouchableOpacity
-          style={[styles.restoreBtn, rcSub.isRestoring && styles.btnDisabled]}
-          onPress={handleRestore}
-          disabled={rcSub.isRestoring}
-        >
-          {rcSub.isRestoring
-            ? <ActivityIndicator color={PRIMARY} size="small" />
-            : <Text style={styles.restoreBtnText}>Restore Purchases</Text>
-          }
-        </TouchableOpacity>
-      )}
-
-      {showCancelButton && (
-        <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel}>
-          <Text style={styles.cancelBtnText}>Cancel Subscription</Text>
-        </TouchableOpacity>
-      )}
+      <TouchableOpacity
+        style={[styles.restoreBtn, rcSub.isRestoring && styles.btnDisabled]}
+        onPress={handleRestore}
+        disabled={rcSub.isRestoring}
+      >
+        {rcSub.isRestoring
+          ? <ActivityIndicator color={PRIMARY} size="small" />
+          : <Text style={styles.restoreBtnText}>Restore Purchases</Text>
+        }
+      </TouchableOpacity>
 
       <Text style={styles.footnote}>
-        {isNative
-          ? "Subscriptions are billed annually and auto-renew. Manage in your device's App Store settings."
-          : "Payment processed securely by Stripe. Subscriptions auto-renew annually. Cancel anytime before renewal."
-        }
+        Subscriptions are billed annually and auto-renew. Manage in your device's App Store settings.
       </Text>
 
       {/* Native purchase confirmation modal */}

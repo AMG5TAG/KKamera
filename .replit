@@ -3,11 +3,10 @@ modules = ["nodejs-24"]
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
-# Build the workspace libs, bundle the API server (esbuild -> dist/index.mjs),
-# and produce the Expo web export to artifacts/kkamera/dist — which the API
-# server auto-serves same-origin alongside /api (the production shape).
-build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/kkamera run build:web && mkdir -p artifacts/api-server/dist/web && cp -r artifacts/kkamera/dist/. artifacts/api-server/dist/web/"]
-# Single start command: the API server serves both /api and the web build.
+# Build the workspace libs and bundle the API server (esbuild -> dist/index.mjs).
+# The API server is JSON-only; the iOS/Android apps are built and shipped via EAS.
+build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build"]
+# Start the API server.
 run = ["sh", "-c", "pnpm --filter @workspace/api-server run start"]
 
 [deployment.postBuild]
@@ -20,7 +19,7 @@ runButton = "Project"
 [agent]
 stack = "PNPM_WORKSPACE"
 expertMode = true
-integrations = ["stripe:1.0.0", "revenuecat:1.0.0"]
+integrations = ["revenuecat:1.0.0"]
 
 [postMerge]
 path = "scripts/post-merge.sh"
@@ -63,6 +62,3 @@ REVENUECAT_PROJECT_ID = "projd1214d5f"
 REVENUECAT_TEST_STORE_APP_ID = "app3bc1567943"
 REVENUECAT_APPLE_APP_STORE_APP_ID = "app2dcde5071a"
 REVENUECAT_GOOGLE_PLAY_STORE_APP_ID = "appc0295905b9"
-STRIPE_PRICE_ID = "price_1TWTGOGekgZzXXmJ35Xd9601"
-VAPID_PUBLIC_KEY = "BJh7zq_Jtk54aS7kSpN5hrHZM5xno55H7QKs_a88n2VtBns327JNq1PWcrWLZeXm5W-W-XDylDndEZFFw-wAWvY"
-VAPID_SUBJECT = "mailto:hello@kkamera.app"

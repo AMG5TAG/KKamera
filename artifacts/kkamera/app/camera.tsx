@@ -19,11 +19,11 @@ import { CameraView, CameraType, CameraMode, useCameraPermissions, useMicrophone
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import { useSettings, type GridType } from "@/contexts/SettingsContext";
+import { useSubscription } from "@/lib/revenuecat";
 import { useGetSubscription } from "@workspace/api-client-react";
 import Svg, { Line, Rect, G } from "react-native-svg";
+import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
-import { WebCamera } from "@/components/WebCamera";
-import { processDocumentScan } from "@/lib/documentScan";
 import { API_BASE_URL } from "@/lib/config";
 
 function GridOverlay({ type }: { type: GridType }) {
@@ -164,6 +164,19 @@ const STRIP_LABEL: Partial<Record<ExtMode, string>> = {
 const DEFAULT_STRIP_IDX = STRIP_MODES.findIndex(m => m.mode === "photo"); // 4
 const ITEM_W = 88;
 
+// Offscreen composition passed to react-native-view-shot for native photo
+// baking (stamp burn-in + filter tint). Sizes are pre-computed (capped) so the
+// same values drive both the rendered view and the captureRef output.
+interface BakeConfig {
+  uri: string;
+  renderW: number;
+  renderH: number;
+  pad: number;
+  fs: number;
+  stampLines: string[];
+  overlay: { color: string; opacity: number } | null;
+}
+
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
   const { width: screenW } = useWindowDimensions();
@@ -171,16 +184,19 @@ export default function CameraScreen() {
   const { lastUpload, executeUpload } = useUpload();
   const { settings, updateSetting } = useSettings();
   const { data: sub, isLoading: subLoading } = useGetSubscription();
-  const [showWebCamera, setShowWebCamera] = useState(false);
+  const rcSub = useSubscription();
 
   // Gate the camera UI on a real entitlement. While the subscription is still
   // loading we optimistically allow it (the server enforces /uploads/execute
   // regardless), but we do NOT grant access just because `sub` is missing —
-  // past_due is allowed to match the server's grace behaviour.
+  // past_due is allowed to match the server's grace behaviour. On native, a
+  // RevenueCat (App Store / Play) entitlement also grants access so IAP payers
+  // aren't paywalled before the RevenueCat webhook reconciles the server row.
   const hasAccess = subLoading
     || sub?.status === "active"
     || sub?.status === "past_due"
-    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date());
+    || (sub?.status === "trial" && sub?.trialEnd != null && new Date(sub.trialEnd) > new Date())
+    || (Platform.OS !== "web" && rcSub.isSubscribed);
 
   const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
     ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
@@ -245,6 +261,12 @@ export default function CameraScreen() {
   const captureScale = useRef(new Animated.Value(1)).current;
   const screenFlashOpacity = useRef(new Animated.Value(0)).current;
   const baseZoom = useRef(0.25);
+
+  // Native photo-baking (stamp burn-in + filter tint) via react-native-view-shot.
+  const [bakeConfig, setBakeConfig] = useState<BakeConfig | null>(null);
+  const bakeViewRef = useRef<View>(null);
+  const bakeResolver = useRef<((uri: string | null) => void) | null>(null);
+  const bakeCaptured = useRef(false);
 
   useEffect(() => {
     if (!cameraPermission?.granted) requestCameraPermission();
@@ -499,61 +521,75 @@ export default function CameraScreen() {
     });
   }, [settings.screenFlashSelfie, facing, screenFlashOpacity]);
 
-  // Bake a filter's colour-grade into the captured image (web canvas only).
-  // takePictureAsync returns the raw frame without the CSS preview filter, so we
-  // re-render it through a canvas with the same filter to match the preview.
-  const applyFilterWeb = useCallback(async (dataUri: string, css: string): Promise<string> => {
-    if (Platform.OS !== "web" || !css) return dataUri;
-    try {
-      const img: HTMLImageElement = await new Promise((res, rej) => {
-        const i = new (window as any).Image();
-        i.onload = () => res(i); i.onerror = rej; i.src = dataUri;
+  // Bake a stamp overlay and/or filter tint into the captured photo on native.
+  // takePictureAsync returns the raw frame (no preview overlays), so we compose
+  // an offscreen <View> — the image plus a tint overlay and/or the stamp text —
+  // and rasterise it to a new JPEG file with react-native-view-shot's captureRef.
+  // Resolves to the baked file uri, or null if the capture failed (caller then
+  // keeps the original uri and does NOT claim the stamp was applied).
+  const bakeImageNative = useCallback((opts: {
+    uri: string;
+    width: number;
+    height: number;
+    stampLines: string[];
+    overlay: { color: string; opacity: number } | null;
+  }): Promise<string | null> => {
+    // Cap the composition's long edge so the offscreen render stays within a
+    // sane memory/time budget. Tradeoff: very high-res photos are downscaled to
+    // ~2048px on their long edge when a stamp/filter is baked in.
+    const MAX_EDGE = 2048;
+    const w = opts.width > 0 ? opts.width : 1080;
+    const h = opts.height > 0 ? opts.height : 1440;
+    const long = Math.max(w, h);
+    const scale = long > MAX_EDGE ? MAX_EDGE / long : 1;
+    const renderW = Math.max(1, Math.round(w * scale));
+    const renderH = Math.max(1, Math.round(h * scale));
+    bakeCaptured.current = false;
+    return new Promise((resolve) => {
+      bakeResolver.current = resolve;
+      setBakeConfig({
+        uri: opts.uri,
+        renderW,
+        renderH,
+        pad: Math.round(renderW * 0.025),
+        fs: Math.round(renderW * 0.028),
+        stampLines: opts.stampLines,
+        overlay: opts.overlay,
       });
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d")!;
-      ctx.filter = css;
-      ctx.drawImage(img, 0, 0);
-      const mime = settings.imageFormat === "png" ? "image/png" : settings.imageFormat === "webp" ? "image/webp" : "image/jpeg";
-      return canvas.toDataURL(mime, 0.92);
-    } catch { return dataUri; }
-  }, [settings.imageFormat]);
+    });
+  }, []);
 
-  // Stamp date / time / location onto an image (web canvas only — PWA target)
-  const stampImageWeb = useCallback(async (dataUri: string): Promise<string> => {
-    if (Platform.OS !== "web") return dataUri;
+  // Rasterise the offscreen composition once its source image has painted.
+  const captureBakedView = useCallback(async () => {
+    if (!bakeConfig || bakeCaptured.current) return;
+    bakeCaptured.current = true;
+    let out: string | null = null;
     try {
-      const now = new Date();
-      const lines: string[] = [now.toLocaleString()];
-      if (settings.saveLocation) {
-        try {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          lines.push(`${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`);
-        } catch { /* no location */ }
-      }
-      if (heading != null) lines.push(`Bearing ${heading}°`);
-      const img: HTMLImageElement = await new Promise((res, rej) => {
-        const i = new (window as any).Image();
-        i.onload = () => res(i); i.onerror = rej; i.src = dataUri;
+      // Give the tint/text overlays a frame to paint over the loaded image.
+      await new Promise<void>(r => requestAnimationFrame(() => r()));
+      const result = await captureRef(bakeViewRef, {
+        format: "jpg",
+        quality: 0.92,
+        result: "tmpfile",
+        width: bakeConfig.renderW,
+        height: bakeConfig.renderH,
       });
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
-      const pad = Math.round(canvas.width * 0.025);
-      const fs = Math.round(canvas.width * 0.028);
-      ctx.font = `600 ${fs}px Inter, system-ui, sans-serif`;
-      ctx.textBaseline = "bottom";
-      ctx.shadowColor = "rgba(0,0,0,0.85)"; ctx.shadowBlur = 6;
-      ctx.fillStyle = "#b19870";
-      lines.forEach((ln, idx) => {
-        const y = canvas.height - pad - (lines.length - 1 - idx) * (fs * 1.25);
-        ctx.fillText(ln, pad, y);
-      });
-      const mime = settings.imageFormat === "png" ? "image/png" : settings.imageFormat === "webp" ? "image/webp" : "image/jpeg";
-      return canvas.toDataURL(mime, 0.92);
-    } catch { return dataUri; }
-  }, [settings.saveLocation, settings.imageFormat, heading]);
+      out = result.startsWith("file:") || result.startsWith("content:")
+        ? result
+        : result.startsWith("/") ? `file://${result}` : result;
+    } catch { out = null; }
+    const resolve = bakeResolver.current;
+    bakeResolver.current = null;
+    setBakeConfig(null);
+    resolve?.(out);
+  }, [bakeConfig]);
+
+  // Fallback in case the offscreen Image's onLoad never fires (e.g. cached).
+  useEffect(() => {
+    if (!bakeConfig) return;
+    const t = setTimeout(() => { captureBakedView(); }, 900);
+    return () => clearTimeout(t);
+  }, [bakeConfig, captureBakedView]);
 
   // Single capture cycle (screen flash → snap → stamp/strip → upload).
   // The self-timer runs once at the start of a burst, not on every shot.
@@ -572,28 +608,58 @@ export default function CameraScreen() {
     });
     if (!photo?.uri) return;
     let uri = photo.uri;
-    // Bake the selected filter's grade into the saved photo (web).
-    const filterCss = FILTERS[selectedFilter]?.css ?? null;
-    if (filterCss && Platform.OS === "web") {
-      uri = await applyFilterWeb(uri, filterCss);
+
+    // Decide what needs baking: the stamp burn-in and/or the selected filter's
+    // tint (native can only approximate a filter with a tint overlay — the same
+    // one shown in the live preview).
+    const wantStamp = settings.stampPhotos;
+    const filterOverlay = FILTERS[selectedFilter]?.overlay ?? null;
+
+    // Gather the stamp lines up front so the toast can honestly reflect what was
+    // actually burned in (matches the old web stamp: date/time, GPS, bearing).
+    const stampLines: string[] = [];
+    let stampedLocation = false;
+    if (wantStamp) {
+      stampLines.push(new Date().toLocaleString());
+      if (settings.saveLocation) {
+        try {
+          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          stampLines.push(`${pos.coords.latitude.toFixed(5)}, ${pos.coords.longitude.toFixed(5)}`);
+          stampedLocation = true;
+        } catch { /* no location — omit that line */ }
+      }
+      if (heading != null) stampLines.push(`Bearing ${heading}°`);
     }
-    let toastMsg: string | null = null;
-    if (settings.stampPhotos) {
-      uri = await stampImageWeb(uri);
-      toastMsg = Platform.OS === "web"
-        ? "Stamped: date · time" + (settings.saveLocation ? " · location" : "") + (heading != null ? " · bearing" : "")
-        : "Stamp metadata recorded";
+
+    let baked = false;
+    if (wantStamp || filterOverlay) {
+      const outUri = await bakeImageNative({
+        uri: photo.uri,
+        width: photo.width ?? 0,
+        height: photo.height ?? 0,
+        stampLines,
+        overlay: filterOverlay,
+      });
+      if (outUri) { uri = outUri; baked = true; }
     }
-    if (toastMsg) {
+
+    // Only claim the stamp was applied when the bake actually succeeded.
+    if (wantStamp) {
+      const toastMsg = baked
+        ? "Stamped: date · time" + (stampedLocation ? " · location" : "") + (heading != null ? " · bearing" : "")
+        : "Stamp failed — saved original";
       setStampToast(toastMsg);
       setTimeout(() => setStampToast(null), 1800);
     }
-    const ext = settings.imageFormat === "heic" ? "heic" : settings.imageFormat === "png" ? "png" : settings.imageFormat === "webp" ? "webp" : "jpg";
+    // When baked, the output is always JPEG regardless of the format preference,
+    // so the filename extension must match the actual bytes.
+    const ext = baked ? "jpg"
+      : settings.imageFormat === "heic" ? "heic" : settings.imageFormat === "png" ? "png" : settings.imageFormat === "webp" ? "webp" : "jpg";
     const prefix = extMode === "portrait" ? "PORT" : extMode === "pano" ? "PANO" : "IMG";
     const suffix = indexLabel ? `_${indexLabel}` : "";
     const fileName = `${prefix}_${Date.now()}${suffix}.${ext}`;
     await doUpload(uri, fileName, "image");
-  }, [settings.timerSeconds, settings.stripExif, settings.stampPhotos, settings.imageFormat, settings.saveLocation, runCountdown, doScreenFlash, stampImageWeb, applyFilterWeb, selectedFilter, extMode, doUpload, heading]);
+  }, [settings.timerSeconds, settings.stripExif, settings.stampPhotos, settings.imageFormat, settings.saveLocation, runCountdown, doScreenFlash, bakeImageNative, selectedFilter, extMode, doUpload, heading]);
 
   const handlePhotoCapture = useCallback(async () => {
     if (isBusy) return;
@@ -712,47 +778,26 @@ export default function CameraScreen() {
     pulseCaptureBtn();
     setIsBusy(true);
     try {
-      if (Platform.OS !== "web") {
-        // Native: hand off to the OS document scanner (VisionKit / ML Kit) for
-        // live edge detection, corner adjustment, auto-crop, deskew & enhance.
-        // It presents its own full-screen capture UI.
-        const mod = await getDocumentScanner();
-        const DocumentScanner = mod?.default;
-        if (!DocumentScanner) throw new Error("Document scanner unavailable on this device.");
-        const { scannedImages, status } = await DocumentScanner.scanDocument({
-          maxNumDocuments: 1,
-          croppedImageQuality: 100,
-          responseType: mod!.ResponseType.ImageFilePath,
-        });
-        if (status === mod!.ScanDocumentResponseStatus.Cancel) return;
-        let uri = scannedImages?.[0];
-        if (!uri) return;
-        // Android can return a bare path; make sure it carries a file scheme.
-        if (!/^[a-z]+:\/\//i.test(uri)) uri = `file://${uri}`;
-        setScanUri(uri);
-        setScanCropped(true);
-        setScanFileName(`SCAN_${Date.now()}.jpg`);
-        setShowScanModal(true);
-        return;
-      }
-
-      // Web: capture from the in-app camera, then crop/deskew/enhance on-canvas.
-      const photo = await cameraRef.current?.takePictureAsync({ quality: 0.95 });
-      if (photo?.uri) {
-        let uri = photo.uri;
-        let cropped = false;
-        setIsProcessingScan(true);
-        try {
-          const result = await processDocumentScan(photo.uri);
-          uri = result.uri;
-          cropped = result.cropped;
-        } finally { setIsProcessingScan(false); }
-        const fileName = `SCAN_${Date.now()}.jpg`;
-        setScanUri(uri);
-        setScanCropped(cropped);
-        setScanFileName(fileName);
-        setShowScanModal(true);
-      }
+      // Hand off to the OS document scanner (VisionKit / ML Kit) for live edge
+      // detection, corner adjustment, auto-crop, deskew & enhance. It presents
+      // its own full-screen capture UI.
+      const mod = await getDocumentScanner();
+      const DocumentScanner = mod?.default;
+      if (!DocumentScanner) throw new Error("Document scanner unavailable on this device.");
+      const { scannedImages, status } = await DocumentScanner.scanDocument({
+        maxNumDocuments: 1,
+        croppedImageQuality: 100,
+        responseType: mod!.ResponseType.ImageFilePath,
+      });
+      if (status === mod!.ScanDocumentResponseStatus.Cancel) return;
+      let uri = scannedImages?.[0];
+      if (!uri) return;
+      // Android can return a bare path; make sure it carries a file scheme.
+      if (!/^[a-z]+:\/\//i.test(uri)) uri = `file://${uri}`;
+      setScanUri(uri);
+      setScanCropped(true);
+      setScanFileName(`SCAN_${Date.now()}.jpg`);
+      setShowScanModal(true);
     } catch (err: any) {
       Alert.alert("Scan Failed", err?.message ?? "Could not capture document.");
     } finally { setIsBusy(false); }
@@ -939,19 +984,6 @@ export default function CameraScreen() {
     const clamped = Math.max(0, Math.min(idx, STRIP_MODES.length - 1));
     if (!captureIsActive) setExtMode(STRIP_MODES[clamped]!.mode);
   };
-
-  // Web camera overlay (PWA capture using getUserMedia)
-  if (Platform.OS === "web" && showWebCamera) {
-    return (
-      <WebCamera
-        onCapture={async (uri, fileName, type) => {
-          setShowWebCamera(false);
-          await doUpload(uri, fileName, type);
-        }}
-        onClose={() => setShowWebCamera(false)}
-      />
-    );
-  }
 
   return (
     <GestureDetector gesture={pinchGesture}>
@@ -1189,16 +1221,10 @@ export default function CameraScreen() {
 
           {/* Capture row */}
           <View style={styles.captureRow}>
-            {/* Gallery import / Web camera */}
-            {Platform.OS === "web" ? (
-              <TouchableOpacity style={styles.sideBtn} onPress={() => setShowWebCamera(true)} disabled={captureIsActive}>
-                <Ionicons name="videocam-outline" size={26} color={captureIsActive ? "#333" : PRIMARY} />
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={captureIsActive}>
-                <Ionicons name="images-outline" size={26} color={captureIsActive ? "#333" : "white"} />
-              </TouchableOpacity>
-            )}
+            {/* Gallery import */}
+            <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={captureIsActive}>
+              <Ionicons name="images-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+            </TouchableOpacity>
 
             {/* Capture button */}
             <Animated.View style={{ transform: [{ scale: captureScale }] }}>
@@ -1315,6 +1341,50 @@ export default function CameraScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* ── Offscreen bake composition (react-native-view-shot target) ───── */}
+        {bakeConfig && (
+          <View
+            ref={bakeViewRef}
+            collapsable={false}
+            pointerEvents="none"
+            style={{ position: "absolute", left: -100000, top: 0, width: bakeConfig.renderW, height: bakeConfig.renderH }}
+          >
+            <Image
+              source={{ uri: bakeConfig.uri }}
+              style={{ width: bakeConfig.renderW, height: bakeConfig.renderH }}
+              resizeMode="cover"
+              onLoad={captureBakedView}
+              onError={captureBakedView}
+              fadeDuration={0}
+            />
+            {bakeConfig.overlay && (
+              <View
+                style={[StyleSheet.absoluteFill, {
+                  backgroundColor: bakeConfig.overlay.color,
+                  opacity: bakeConfig.overlay.opacity,
+                }]}
+              />
+            )}
+            {bakeConfig.stampLines.length > 0 && (
+              <View style={{ position: "absolute", left: bakeConfig.pad, bottom: bakeConfig.pad }}>
+                {bakeConfig.stampLines.map((ln, i) => (
+                  <Text
+                    key={i}
+                    style={{
+                      color: PRIMARY,
+                      fontSize: bakeConfig.fs,
+                      fontFamily: "Inter_600SemiBold",
+                      lineHeight: Math.round(bakeConfig.fs * 1.25),
+                      textShadowColor: "rgba(0,0,0,0.85)",
+                      textShadowRadius: 6,
+                    }}
+                  >{ln}</Text>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
 
         {/* ── Hidden (covert) mode overlay ─────────────────────────────────── */}
         {extMode === "hidden" && (

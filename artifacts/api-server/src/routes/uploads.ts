@@ -8,7 +8,6 @@ import { eq, and, inArray, desc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
-import { sendPushToUser } from "../lib/pushNotifications.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { normalizeConnectionIds } from "../lib/connectionIds.js";
 
@@ -157,15 +156,6 @@ router.post(
         }).where(eq(uploadsTable.id, uploadRecord.id));
       }
 
-      if (uploadRecord?.userId) {
-        const destination = connections[0]?.name ?? connections[0]?.type ?? "cloud";
-        if (finalStatus === "done" || finalStatus === "partial") {
-          sendPushToUser(uploadRecord.userId, { type: "upload_done", fileName, destination }).catch(() => {});
-        } else if (finalStatus === "failed") {
-          sendPushToUser(uploadRecord.userId, { type: "upload_failed", fileName }).catch(() => {});
-        }
-      }
-
       res.json({ uploadId: uploadRecord?.id, status: finalStatus, results });
     } catch (err) {
       req.log.error({ err }, "Execute upload error");
@@ -248,11 +238,15 @@ router.post("/uploads/witness-notify", requireAuth, witnessLimiter, async (req, 
     const userName = user?.name ?? "A KKamera user";
     const safeUserName = escapeHtml(userName);
     const safeFileName = escapeHtml(fileName);
+    // Email headers are line-delimited — strip CR/LF (and collapse whitespace) from
+    // any user-derived value used in the Subject so a crafted name can't inject
+    // additional headers.
+    const subjectName = userName.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100) || "A KKamera user";
     const timestamp = new Date().toLocaleString("en-AU", { timeZone: "UTC", dateStyle: "short", timeStyle: "medium" });
 
     await sendEmail({
       to: witnessEmail,
-      subject: `Witness notification: ${userName} captured a file`,
+      subject: `Witness notification: ${subjectName} captured a file`,
       html: `<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0d0b08;color:#ccc;padding:40px">
         <div style="max-width:480px;margin:0 auto;background:#1a1710;border-radius:16px;padding:28px;border:1px solid rgba(177,152,112,0.2)">
           <p style="color:#b19870;font-size:20px;font-weight:700;margin:0 0 20px">KKamera — Witness Notification</p>

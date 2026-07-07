@@ -4,11 +4,10 @@ import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
   cloudConnectionsTable, uploadsTable, feedbackTable,
-  pushSubscriptionsTable, passwordResetTokensTable,
+  passwordResetTokensTable,
 } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { getUncachableStripeClient } from "../stripeClient.js";
 
 const router = Router();
 
@@ -93,23 +92,14 @@ router.delete("/users/me", requireAuth, async (req, res) => {
   try {
     const userId = req.userId!;
 
-    // Cancel any live Stripe subscription immediately so a deleted account is
-    // not billed again. Best-effort — never block account deletion on Stripe.
-    try {
-      const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
-      if (sub?.stripeSubscriptionId) {
-        const stripe = await getUncachableStripeClient();
-        await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
-      }
-    } catch (err) {
-      req.log.error({ err }, "Failed to cancel Stripe subscription during account deletion");
-    }
+    // Billing is IAP-only; the user cancels the subscription store-side (App Store
+    // / Play). Deleting the account here just removes our data — RevenueCat stops
+    // mirroring once the store subscription lapses.
 
     // Delete all PII atomically — a partial delete must not leave orphaned rows
     // (e.g. encrypted cloud credentials) behind if one statement fails.
     await db.transaction(async (tx) => {
       await tx.delete(passwordResetTokensTable).where(eq(passwordResetTokensTable.userId, userId));
-      await tx.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
       await tx.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
       await tx.delete(uploadsTable).where(eq(uploadsTable.userId, userId));
       await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));

@@ -52,7 +52,7 @@ export function evaluateAccess(
 
     case SUBSCRIPTION_STATUS.ACTIVE:
       // An active row with no period end is untrusted (e.g. an activation that
-      // raced the Stripe fetch) — deny rather than grant perpetual free access.
+      // raced the store sync) — deny rather than grant perpetual free access.
       if (!sub.currentPeriodEnd || sub.currentPeriodEnd < now) {
         return { allow: false, message: "Your subscription has expired. Renew to continue uploading." };
       }
@@ -66,7 +66,7 @@ export function evaluateAccess(
     }
 
     case SUBSCRIPTION_STATUS.PAST_DUE:
-      // Allow while Stripe retries collection, but bound it: a permanently-failing
+      // Allow while the store retries collection, but bound it: a permanently-failing
       // payment loses access a grace period after the last paid period end.
       if (sub.currentPeriodEnd && now.getTime() <= sub.currentPeriodEnd.getTime() + graceMs) {
         return { allow: true };

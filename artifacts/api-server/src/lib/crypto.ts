@@ -22,6 +22,20 @@ export function encrypt(text: string): string {
   return `gcm:${iv.toString("hex")}:${cipher.getAuthTag().toString("hex")}:${data.toString("hex")}`;
 }
 
+/**
+ * Decrypt a stored credential, treating a decryption FAILURE as an error rather
+ * than silently yielding "". Returns "" only when there is genuinely no stored
+ * value (null/empty). Use this for credentials that get sent to third parties
+ * (FTP/WebDAV passwords, OAuth tokens) so a corrupt value fails loudly instead of
+ * connecting with an empty secret.
+ */
+export function decryptCredential(enc: string | null | undefined): string {
+  if (!enc) return "";
+  const out = decrypt(enc);
+  if (out === "") throw new Error("Stored credential could not be decrypted");
+  return out;
+}
+
 function decryptGcm(key: Buffer, ivHex: string, tagHex: string, dataHex: string): string {
   const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivHex, "hex"));
   decipher.setAuthTag(Buffer.from(tagHex, "hex"));
@@ -30,23 +44,21 @@ function decryptGcm(key: Buffer, ivHex: string, tagHex: string, dataHex: string)
 
 export function decrypt(enc: string): string {
   try {
-    if (enc.startsWith("gcm:")) {
-      const [, ivHex, tagHex, dataHex] = enc.split(":");
-      if (!ivHex || !tagHex || !dataHex) return "";
-      // New values use the HKDF key; values written before the migration use the
-      // legacy key. GCM auth fails cleanly on the wrong key, so try the new key
-      // first and fall back to the legacy one.
-      try {
-        return decryptGcm(ENC_KEY, ivHex, tagHex, dataHex);
-      } catch {
-        return decryptGcm(LEGACY_KEY, ivHex, tagHex, dataHex);
-      }
+    // Only authenticated AES-256-GCM is accepted. The old unauthenticated
+    // AES-256-CBC path was removed — CBC ciphertext is malleable, and nothing in
+    // production predates GCM. Anything not in gcm: form is treated as a failure
+    // (returns "" — callers must treat "" from a non-empty ciphertext as an error).
+    if (!enc.startsWith("gcm:")) return "";
+    const [, ivHex, tagHex, dataHex] = enc.split(":");
+    if (!ivHex || !tagHex || !dataHex) return "";
+    // New values use the HKDF key; values written before the migration use the
+    // legacy key. GCM auth fails cleanly on the wrong key, so try the new key
+    // first and fall back to the legacy one.
+    try {
+      return decryptGcm(ENC_KEY, ivHex, tagHex, dataHex);
+    } catch {
+      return decryptGcm(LEGACY_KEY, ivHex, tagHex, dataHex);
     }
-    // Legacy AES-256-CBC format: "<iv>:<ciphertext>" — always used the legacy key.
-    const [ivHex, dataHex] = enc.split(":");
-    if (!ivHex || !dataHex) return "";
-    const decipher = createDecipheriv("aes-256-cbc", LEGACY_KEY, Buffer.from(ivHex, "hex"));
-    return Buffer.concat([decipher.update(Buffer.from(dataHex, "hex")), decipher.final()]).toString();
   } catch {
     return "";
   }

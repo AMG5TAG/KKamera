@@ -116,7 +116,7 @@ export default function LoginScreen() {
         ) : (
           <View style={styles.field}>
             <Text style={styles.label}>Two-Factor Code</Text>
-            <Text style={styles.twoFAHint}>? Open your authenticator app and enter the 6-digit code.</Text>
+            <Text style={styles.twoFAHint}>🔐 Open your authenticator app and enter the 6-digit code.</Text>
             <TextInput
               style={[styles.input, styles.totpInput]}
               placeholder="000000"

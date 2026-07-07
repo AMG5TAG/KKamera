@@ -19,7 +19,6 @@ import type {
 import type {
   AffiliateStats,
   AuthResponse,
-  CheckoutSession,
   CloudConnection,
   CloudConnectionInput,
   CloudConnectionUpdate,
@@ -29,10 +28,15 @@ import type {
   InviteCoworkersInput,
   LoginInput,
   MessageResponse,
+  OAuthInitiateInput,
+  OAuthInitiateResult,
+  OAuthNotConfigured,
+  OAuthStatus,
   Referral,
   RegisterInput,
   ResetPasswordInput,
   Subscription,
+  SuccessResponse,
   TestResult,
   TwoFASetup,
   TwoFAVerifyInput,
@@ -40,7 +44,9 @@ import type {
   UploadItem,
   UploadUpdate,
   User,
+  UserDataExport,
   UserUpdate,
+  WitnessNotifyInput,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -1034,156 +1040,6 @@ export const useStartTrial = <
   return useMutation(getStartTrialMutationOptions(options));
 };
 
-export const getCreateCheckoutUrl = () => {
-  return `/api/subscriptions/checkout`;
-};
-
-export const createCheckout = async (
-  options?: RequestInit,
-): Promise<CheckoutSession> => {
-  return customFetch<CheckoutSession>(getCreateCheckoutUrl(), {
-    ...options,
-    method: "POST",
-  });
-};
-
-export const getCreateCheckoutMutationOptions = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof createCheckout>>,
-    TError,
-    void,
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationOptions<
-  Awaited<ReturnType<typeof createCheckout>>,
-  TError,
-  void,
-  TContext
-> => {
-  const mutationKey = ["createCheckout"];
-  const { mutation: mutationOptions, request: requestOptions } = options
-    ? options.mutation &&
-      "mutationKey" in options.mutation &&
-      options.mutation.mutationKey
-      ? options
-      : { ...options, mutation: { ...options.mutation, mutationKey } }
-    : { mutation: { mutationKey }, request: undefined };
-
-  const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof createCheckout>>,
-    void
-  > = () => {
-    return createCheckout(requestOptions);
-  };
-
-  return { mutationFn, ...mutationOptions };
-};
-
-export type CreateCheckoutMutationResult = NonNullable<
-  Awaited<ReturnType<typeof createCheckout>>
->;
-
-export type CreateCheckoutMutationError = ErrorType<unknown>;
-
-export const useCreateCheckout = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof createCheckout>>,
-    TError,
-    void,
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationResult<
-  Awaited<ReturnType<typeof createCheckout>>,
-  TError,
-  void,
-  TContext
-> => {
-  return useMutation(getCreateCheckoutMutationOptions(options));
-};
-
-export const getCancelSubscriptionUrl = () => {
-  return `/api/subscriptions/cancel`;
-};
-
-export const cancelSubscription = async (
-  options?: RequestInit,
-): Promise<MessageResponse> => {
-  return customFetch<MessageResponse>(getCancelSubscriptionUrl(), {
-    ...options,
-    method: "POST",
-  });
-};
-
-export const getCancelSubscriptionMutationOptions = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof cancelSubscription>>,
-    TError,
-    void,
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationOptions<
-  Awaited<ReturnType<typeof cancelSubscription>>,
-  TError,
-  void,
-  TContext
-> => {
-  const mutationKey = ["cancelSubscription"];
-  const { mutation: mutationOptions, request: requestOptions } = options
-    ? options.mutation &&
-      "mutationKey" in options.mutation &&
-      options.mutation.mutationKey
-      ? options
-      : { ...options, mutation: { ...options.mutation, mutationKey } }
-    : { mutation: { mutationKey }, request: undefined };
-
-  const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof cancelSubscription>>,
-    void
-  > = () => {
-    return cancelSubscription(requestOptions);
-  };
-
-  return { mutationFn, ...mutationOptions };
-};
-
-export type CancelSubscriptionMutationResult = NonNullable<
-  Awaited<ReturnType<typeof cancelSubscription>>
->;
-
-export type CancelSubscriptionMutationError = ErrorType<unknown>;
-
-export const useCancelSubscription = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof cancelSubscription>>,
-    TError,
-    void,
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationResult<
-  Awaited<ReturnType<typeof cancelSubscription>>,
-  TError,
-  void,
-  TContext
-> => {
-  return useMutation(getCancelSubscriptionMutationOptions(options));
-};
-
 export const getGetAffiliateStatsUrl = () => {
   return `/api/affiliates/me`;
 };
@@ -1546,6 +1402,87 @@ export const useCreateCloudConnection = <
   TContext
 > => {
   return useMutation(getCreateCloudConnectionMutationOptions(options));
+};
+
+/**
+ * @summary Delete all of the current user's cloud connections (panic wipe)
+ */
+export const getDeleteAllCloudConnectionsUrl = () => {
+  return `/api/cloud-connections`;
+};
+
+export const deleteAllCloudConnections = async (
+  options?: RequestInit,
+): Promise<MessageResponse> => {
+  return customFetch<MessageResponse>(getDeleteAllCloudConnectionsUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteAllCloudConnectionsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteAllCloudConnections>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteAllCloudConnections>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["deleteAllCloudConnections"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteAllCloudConnections>>,
+    void
+  > = () => {
+    return deleteAllCloudConnections(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteAllCloudConnectionsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteAllCloudConnections>>
+>;
+
+export type DeleteAllCloudConnectionsMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Delete all of the current user's cloud connections (panic wipe)
+ */
+export const useDeleteAllCloudConnections = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteAllCloudConnections>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteAllCloudConnections>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getDeleteAllCloudConnectionsMutationOptions(options));
 };
 
 export const getUpdateCloudConnectionUrl = (id: number) => {
@@ -2245,4 +2182,529 @@ export const useSubmitFeedback = <
   TContext
 > => {
   return useMutation(getSubmitFeedbackMutationOptions(options));
+};
+
+/**
+ * @summary Begin an OAuth authorization flow for a cloud provider
+ */
+export const getInitiateOAuthUrl = (
+  provider: "googledrive" | "onedrive" | "dropbox",
+) => {
+  return `/api/oauth/${provider}/initiate`;
+};
+
+export const initiateOAuth = async (
+  provider: "googledrive" | "onedrive" | "dropbox",
+  oAuthInitiateInput?: OAuthInitiateInput,
+  options?: RequestInit,
+): Promise<OAuthInitiateResult> => {
+  return customFetch<OAuthInitiateResult>(getInitiateOAuthUrl(provider), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(oAuthInitiateInput),
+  });
+};
+
+export const getInitiateOAuthMutationOptions = <
+  TError = ErrorType<MessageResponse | OAuthNotConfigured>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof initiateOAuth>>,
+    TError,
+    {
+      provider: "googledrive" | "onedrive" | "dropbox";
+      data: BodyType<OAuthInitiateInput>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof initiateOAuth>>,
+  TError,
+  {
+    provider: "googledrive" | "onedrive" | "dropbox";
+    data: BodyType<OAuthInitiateInput>;
+  },
+  TContext
+> => {
+  const mutationKey = ["initiateOAuth"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof initiateOAuth>>,
+    {
+      provider: "googledrive" | "onedrive" | "dropbox";
+      data: BodyType<OAuthInitiateInput>;
+    }
+  > = (props) => {
+    const { provider, data } = props ?? {};
+
+    return initiateOAuth(provider, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type InitiateOAuthMutationResult = NonNullable<
+  Awaited<ReturnType<typeof initiateOAuth>>
+>;
+export type InitiateOAuthMutationBody = BodyType<OAuthInitiateInput>;
+export type InitiateOAuthMutationError = ErrorType<
+  MessageResponse | OAuthNotConfigured
+>;
+
+/**
+ * @summary Begin an OAuth authorization flow for a cloud provider
+ */
+export const useInitiateOAuth = <
+  TError = ErrorType<MessageResponse | OAuthNotConfigured>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof initiateOAuth>>,
+    TError,
+    {
+      provider: "googledrive" | "onedrive" | "dropbox";
+      data: BodyType<OAuthInitiateInput>;
+    },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof initiateOAuth>>,
+  TError,
+  {
+    provider: "googledrive" | "onedrive" | "dropbox";
+    data: BodyType<OAuthInitiateInput>;
+  },
+  TContext
+> => {
+  return useMutation(getInitiateOAuthMutationOptions(options));
+};
+
+/**
+ * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the connection, and 302-redirects to the app.
+ * @summary OAuth provider redirect target; exchanges the code and stores the connection
+ */
+export const getOauthCallbackUrl = (
+  provider: "googledrive" | "onedrive" | "dropbox",
+) => {
+  return `/api/oauth/${provider}/callback`;
+};
+
+export const oauthCallback = async (
+  provider: "googledrive" | "onedrive" | "dropbox",
+  options?: RequestInit,
+): Promise<unknown> => {
+  return customFetch<unknown>(getOauthCallbackUrl(provider), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getOauthCallbackQueryKey = (
+  provider: "googledrive" | "onedrive" | "dropbox",
+) => {
+  return [`/api/oauth/${provider}/callback`] as const;
+};
+
+export const getOauthCallbackQueryOptions = <
+  TData = Awaited<ReturnType<typeof oauthCallback>>,
+  TError = ErrorType<void>,
+>(
+  provider: "googledrive" | "onedrive" | "dropbox",
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof oauthCallback>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getOauthCallbackQueryKey(provider);
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof oauthCallback>>> = ({
+    signal,
+  }) => oauthCallback(provider, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!provider,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof oauthCallback>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type OauthCallbackQueryResult = NonNullable<
+  Awaited<ReturnType<typeof oauthCallback>>
+>;
+export type OauthCallbackQueryError = ErrorType<void>;
+
+/**
+ * @summary OAuth provider redirect target; exchanges the code and stores the connection
+ */
+
+export function useOauthCallback<
+  TData = Awaited<ReturnType<typeof oauthCallback>>,
+  TError = ErrorType<void>,
+>(
+  provider: "googledrive" | "onedrive" | "dropbox",
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof oauthCallback>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getOauthCallbackQueryOptions(provider, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Report which OAuth providers are configured on the server
+ */
+export const getGetOAuthStatusUrl = () => {
+  return `/api/oauth/status`;
+};
+
+export const getOAuthStatus = async (
+  options?: RequestInit,
+): Promise<OAuthStatus> => {
+  return customFetch<OAuthStatus>(getGetOAuthStatusUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetOAuthStatusQueryKey = () => {
+  return [`/api/oauth/status`] as const;
+};
+
+export const getGetOAuthStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getOAuthStatus>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getOAuthStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetOAuthStatusQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getOAuthStatus>>> = ({
+    signal,
+  }) => getOAuthStatus({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getOAuthStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetOAuthStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getOAuthStatus>>
+>;
+export type GetOAuthStatusQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Report which OAuth providers are configured on the server
+ */
+
+export function useGetOAuthStatus<
+  TData = Awaited<ReturnType<typeof getOAuthStatus>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getOAuthStatus>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetOAuthStatusQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Refresh an expired access token for a stored cloud connection
+ */
+export const getRefreshOAuthTokenUrl = (
+  provider: "googledrive" | "onedrive" | "dropbox",
+  connectionId: number,
+) => {
+  return `/api/oauth/${provider}/refresh/${connectionId}`;
+};
+
+export const refreshOAuthToken = async (
+  provider: "googledrive" | "onedrive" | "dropbox",
+  connectionId: number,
+  options?: RequestInit,
+): Promise<SuccessResponse> => {
+  return customFetch<SuccessResponse>(
+    getRefreshOAuthTokenUrl(provider, connectionId),
+    {
+      ...options,
+      method: "POST",
+    },
+  );
+};
+
+export const getRefreshOAuthTokenMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof refreshOAuthToken>>,
+    TError,
+    { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof refreshOAuthToken>>,
+  TError,
+  { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
+  TContext
+> => {
+  const mutationKey = ["refreshOAuthToken"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof refreshOAuthToken>>,
+    { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number }
+  > = (props) => {
+    const { provider, connectionId } = props ?? {};
+
+    return refreshOAuthToken(provider, connectionId, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type RefreshOAuthTokenMutationResult = NonNullable<
+  Awaited<ReturnType<typeof refreshOAuthToken>>
+>;
+
+export type RefreshOAuthTokenMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Refresh an expired access token for a stored cloud connection
+ */
+export const useRefreshOAuthToken = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof refreshOAuthToken>>,
+    TError,
+    { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof refreshOAuthToken>>,
+  TError,
+  { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
+  TContext
+> => {
+  return useMutation(getRefreshOAuthTokenMutationOptions(options));
+};
+
+/**
+ * @summary Export all personal data for the current user (GDPR)
+ */
+export const getExportMyDataUrl = () => {
+  return `/api/users/me/export`;
+};
+
+export const exportMyData = async (
+  options?: RequestInit,
+): Promise<UserDataExport> => {
+  return customFetch<UserDataExport>(getExportMyDataUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getExportMyDataQueryKey = () => {
+  return [`/api/users/me/export`] as const;
+};
+
+export const getExportMyDataQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportMyData>>,
+  TError = ErrorType<MessageResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof exportMyData>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getExportMyDataQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof exportMyData>>> = ({
+    signal,
+  }) => exportMyData({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportMyData>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ExportMyDataQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportMyData>>
+>;
+export type ExportMyDataQueryError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Export all personal data for the current user (GDPR)
+ */
+
+export function useExportMyData<
+  TData = Awaited<ReturnType<typeof exportMyData>>,
+  TError = ErrorType<MessageResponse>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof exportMyData>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getExportMyDataQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Email a witness that a file was captured and uploaded
+ */
+export const getNotifyWitnessUrl = () => {
+  return `/api/uploads/witness-notify`;
+};
+
+export const notifyWitness = async (
+  witnessNotifyInput: WitnessNotifyInput,
+  options?: RequestInit,
+): Promise<MessageResponse> => {
+  return customFetch<MessageResponse>(getNotifyWitnessUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(witnessNotifyInput),
+  });
+};
+
+export const getNotifyWitnessMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof notifyWitness>>,
+    TError,
+    { data: BodyType<WitnessNotifyInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof notifyWitness>>,
+  TError,
+  { data: BodyType<WitnessNotifyInput> },
+  TContext
+> => {
+  const mutationKey = ["notifyWitness"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof notifyWitness>>,
+    { data: BodyType<WitnessNotifyInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return notifyWitness(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type NotifyWitnessMutationResult = NonNullable<
+  Awaited<ReturnType<typeof notifyWitness>>
+>;
+export type NotifyWitnessMutationBody = BodyType<WitnessNotifyInput>;
+export type NotifyWitnessMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Email a witness that a file was captured and uploaded
+ */
+export const useNotifyWitness = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof notifyWitness>>,
+    TError,
+    { data: BodyType<WitnessNotifyInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof notifyWitness>>,
+  TError,
+  { data: BodyType<WitnessNotifyInput> },
+  TContext
+> => {
+  return useMutation(getNotifyWitnessMutationOptions(options));
 };

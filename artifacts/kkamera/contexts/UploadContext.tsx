@@ -4,6 +4,7 @@ import React, {
 } from "react";
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "./AuthContext";
 import { API_BASE_URL } from "@/lib/config";
 
@@ -52,8 +53,30 @@ interface QueuedItem {
 const offlineQueue: QueuedItem[] = [];
 const MAX_RETRIES = 5;
 
+// Persist the offline queue so captures survive an app kill/restart. The
+// onDeleteLocal callback can't be serialised, so it's dropped on persist; a
+// rehydrated item falls back to the default deleteLocalFile(uri) after upload.
+const OFFLINE_QUEUE_KEY = "@kkamera/offline-upload-queue";
+
+async function persistQueue() {
+  try {
+    const serialisable = offlineQueue.map(({ onDeleteLocal, ...rest }) => rest);
+    await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(serialisable));
+  } catch { /* best-effort persistence */ }
+}
+
 function backoffMs(retries: number): number {
   return Math.min(30_000, 1_000 * Math.pow(2, retries));
+}
+
+/** Best-effort MIME type from the file extension, falling back by media kind. */
+function guessMimeType(fileName: string, fileType: "image" | "video"): string {
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", heic: "image/heic", webp: "image/webp",
+    mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm", m4v: "video/x-m4v",
+  };
+  return map[ext] ?? (fileType === "video" ? "video/mp4" : "image/jpeg");
 }
 
 const BASE_URL = API_BASE_URL;
@@ -68,18 +91,15 @@ function xhrUpload(
 ): Promise<{ status: string; results: any[] }> {
   return new Promise(async (resolve, reject) => {
     try {
-      let blob: Blob;
-      if (Platform.OS === "web") {
-        const r = await fetch(uri);
-        blob = await r.blob();
-      } else {
-        const r = await fetch(uri);
-        blob = await r.blob();
-      }
-
-      const mimeType = fileType === "video" ? "video/mp4" : "image/jpeg";
+      // Derive the MIME type from the actual file extension so the bytes aren't
+      // mislabelled (e.g. a web-recorded .webm previously sent as video/mp4).
+      const mimeType = guessMimeType(fileName, fileType);
       const form = new FormData();
-      form.append("file", blob, fileName);
+
+      // React Native's FormData takes a { uri, name, type } file descriptor and
+      // streams the file itself. Fetching a file:// URI into a Blob is unreliable
+      // on Android and for large videos.
+      form.append("file", { uri, name: fileName, type: mimeType } as any);
       form.append("fileName", fileName);
       form.append("mimeType", mimeType);
       if (connectionIds?.length) {
@@ -125,15 +145,20 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const [uploads, setUploads] = useState<UploadEntry[]>([]);
   const tokenRef = useRef<string | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { isAuthenticated } = useAuth();
+  const didHydrate = useRef(false);
+  const { isAuthenticated, token } = useAuth();
 
-  // On logout/account switch, drop the cached token and abandon the in-memory
-  // retry queue so a background retry can't upload the previous user's file
-  // with the previous user's token.
+  // Keep the latest token available to background retries.
+  useEffect(() => { if (token) tokenRef.current = token; }, [token]);
+
+  // On logout/account switch, drop the cached token and abandon the retry queue
+  // (in-memory AND persisted) so a background retry can't upload the previous
+  // user's file with the previous user's token.
   useEffect(() => {
     if (!isAuthenticated) {
       tokenRef.current = null;
       offlineQueue.length = 0;
+      persistQueue();
       if (retryTimerRef.current) {
         clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
@@ -171,11 +196,21 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       return;
     }
     const items = offlineQueue.splice(0, offlineQueue.length);
+    const dispatch: QueuedItem[] = [];
     for (const item of items) {
-      if (item.nextRetryAt > Date.now()) {
-        offlineQueue.push(item); // not ready yet, put back
-        continue;
-      }
+      if (item.nextRetryAt > Date.now()) offlineQueue.push(item); // not ready yet, put back
+      else dispatch.push(item);
+    }
+    persistQueue();
+    // Always re-arm a timer for the soonest not-yet-ready item so re-queued
+    // items don't hang waiting for an external trigger. (Failed dispatches
+    // re-queue asynchronously and re-schedule themselves.)
+    if (offlineQueue.length > 0) {
+      const soonest = Math.min(...offlineQueue.map(i => i.nextRetryAt));
+      const delay = Math.max(1000, soonest - Date.now());
+      retryTimerRef.current = setTimeout(() => scheduleRetry(token), delay);
+    }
+    for (const item of dispatch) {
       executeUploadInner(item.uri, item.fileName, item.fileType, token, item.connectionIds, item.id, item.retries, item.onDeleteLocal);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -215,6 +250,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           id: existingId, uri, fileName, fileType, connectionIds,
           retries: retries + 1, nextRetryAt: Date.now() + delay, onDeleteLocal,
         });
+        persistQueue();
         updateUpload(existingId, {
           status: "queued",
           error: `Retrying in ${Math.round(delay / 1000)}s (attempt ${retries + 1}/${MAX_RETRIES})`,
@@ -238,21 +274,13 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     if (token) tokenRef.current = token;
     const effectiveToken = token ?? tokenRef.current;
 
-    const isOnline = Platform.OS !== "web" ? true : navigator.onLine;
-
-    if (!effectiveToken || !isOnline) {
+    if (!effectiveToken) {
       offlineQueue.push({
         id, uri, fileName, fileType, connectionIds,
         retries: 0, nextRetryAt: Date.now(), onDeleteLocal,
       });
+      persistQueue();
       updateUpload(id, { status: "queued", error: "Queued — will upload when online" });
-
-      if (Platform.OS === "web" && "serviceWorker" in navigator) {
-        const sw = await navigator.serviceWorker.ready.catch(() => null);
-        if (sw && "sync" in sw) {
-          (sw as any).sync.register("kkamera-upload-sync").catch(() => {});
-        }
-      }
       return;
     }
 
@@ -265,25 +293,32 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     scheduleRetry(effectiveToken);
   }, [scheduleRetry]);
 
-  // Service worker retry messages
+  // Rehydrate the persisted offline queue on mount so captures survive an app
+  // kill, then resume uploads whenever a session token is available.
   useEffect(() => {
-    if (Platform.OS !== "web" || !("serviceWorker" in navigator)) return;
-    const handler = (event: MessageEvent) => {
-      if (event.data?.type === "RETRY_UPLOADS" || event.data?.type === "PERIODIC_SYNC") {
-        retryQueued(tokenRef.current);
+    let cancelled = false;
+    (async () => {
+      if (!didHydrate.current) {
+        didHydrate.current = true;
+        try {
+          const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
+          if (raw) {
+            const saved = JSON.parse(raw);
+            if (Array.isArray(saved)) {
+              const existing = new Set(offlineQueue.map(i => i.id));
+              for (const item of saved as QueuedItem[]) {
+                if (item?.uri && item?.id && !existing.has(item.id)) offlineQueue.push(item);
+              }
+            }
+          }
+        } catch { /* ignore malformed persisted queue */ }
       }
-    };
-    navigator.serviceWorker.addEventListener("message", handler);
-    return () => navigator.serviceWorker.removeEventListener("message", handler);
-  }, [retryQueued]);
-
-  // Retry when coming back online
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const handler = () => retryQueued(tokenRef.current);
-    window.addEventListener("online", handler);
-    return () => window.removeEventListener("online", handler);
-  }, [retryQueued]);
+      if (cancelled) return;
+      const effectiveToken = token ?? tokenRef.current;
+      if (effectiveToken && offlineQueue.length > 0) scheduleRetry(effectiveToken);
+    })();
+    return () => { cancelled = true; };
+  }, [token, scheduleRetry]);
 
   const lastUpload = uploads[0] ?? null;
 

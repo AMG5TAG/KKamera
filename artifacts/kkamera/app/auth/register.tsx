@@ -94,7 +94,7 @@ export default function RegisterScreen() {
             </TouchableOpacity>
           </View>
         </Field>
-        <Field label="Referral Code (optional)" hint="? Enter a friend's code to help them earn a free year">
+        <Field label="Referral Code (optional)" hint="🎁 Enter a friend's code to help them earn a free year">
           <TextInput style={[styles.input, { textTransform: "uppercase" }]} placeholder="e.g. JOHN42K" placeholderTextColor="#555" autoCapitalize="characters" value={referralCode} onChangeText={setReferralCode} />
         </Field>
 

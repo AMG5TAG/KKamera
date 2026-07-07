@@ -7,10 +7,11 @@ import { authenticator } from "@otplib/preset-default";
 import QRCode from "qrcode";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
-import { usersTable, subscriptionsTable, referralsTable } from "@workspace/db";
+import { usersTable, subscriptionsTable, referralsTable, trialHistoryTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { sendEmail, welcomeEmail } from "../lib/email.js";
+import { emailTrialHash } from "../lib/emailHash.js";
 
 const router = Router();
 
@@ -32,11 +33,24 @@ const registerLimiter = rateLimit({
   message: { message: "Too many registration attempts. Please try again in an hour." },
 });
 
+// TOTP codes and backup codes are low-entropy enough to brute-force without a
+// limiter (a backup code is 32 bits). These routes are authenticated, so bound
+// per authenticated session/IP.
+const twoFactorLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many 2FA attempts. Please try again in 15 minutes." },
+});
+
 // ─── Validation schemas ────────────────────────────────────────────────────────
 
 const registerSchema = z.object({
   email: z.string().email("Invalid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  // Cap length: bcrypt silently truncates at 72 bytes, so without a max two long
+  // passwords sharing a 72-byte prefix would collide (and it bounds hashing cost).
+  password: z.string().min(8, "Password must be at least 8 characters").max(72, "Password must be at most 72 characters"),
   name: z.string().min(1, "Name is required").max(100),
   referralCode: z.string().nullish(),
 });
@@ -121,11 +135,23 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
 
     if (!user) { res.status(500).json({ message: "Registration failed" }); return; }
 
-    const trialEnd = new Date();
-    trialEnd.setDate(trialEnd.getDate() + 14);
-    await db.insert(subscriptionsTable).values({
-      userId: user.id, status: "trial", trialStart: new Date(), trialEnd,
-    });
+    // Grant the 14-day trial only if this email has never had one. The
+    // trial_history row (keyed by an HMAC of the email) outlives account deletion,
+    // so deleting and re-registering the same address can't farm fresh trials.
+    const emailHash = emailTrialHash(email);
+    const [priorTrial] = await db.select({ id: trialHistoryTable.id })
+      .from(trialHistoryTable).where(eq(trialHistoryTable.emailHash, emailHash)).limit(1);
+
+    if (priorTrial) {
+      await db.insert(subscriptionsTable).values({ userId: user.id, status: "none" });
+    } else {
+      const trialEnd = new Date();
+      trialEnd.setDate(trialEnd.getDate() + 14);
+      await db.insert(subscriptionsTable).values({
+        userId: user.id, status: "trial", trialStart: new Date(), trialEnd,
+      });
+      await db.insert(trialHistoryTable).values({ emailHash }).onConflictDoNothing();
+    }
 
     if (referrerId) {
       // Referral is "pending" until the referred user subscribes (completed via webhook)
@@ -253,7 +279,7 @@ router.post("/auth/2fa/setup", requireAuth, async (req, res) => {
 
 // ─── 2FA Verify (enable) ──────────────────────────────────────────────────────
 
-router.post("/auth/2fa/verify", requireAuth, async (req, res) => {
+router.post("/auth/2fa/verify", twoFactorLimiter, requireAuth, async (req, res) => {
   try {
     const parsed = twoFACodeSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -274,7 +300,7 @@ router.post("/auth/2fa/verify", requireAuth, async (req, res) => {
 
 // ─── 2FA Disable ──────────────────────────────────────────────────────────────
 
-router.post("/auth/2fa/disable", requireAuth, async (req, res) => {
+router.post("/auth/2fa/disable", twoFactorLimiter, requireAuth, async (req, res) => {
   try {
     const parsed = twoFAOrBackupSchema.safeParse(req.body);
     if (!parsed.success) {

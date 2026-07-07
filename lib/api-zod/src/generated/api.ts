@@ -138,14 +138,6 @@ export const StartTrialResponse = zod.object({
   createdAt: zod.string(),
 });
 
-export const CreateCheckoutResponse = zod.object({
-  url: zod.string(),
-});
-
-export const CancelSubscriptionResponse = zod.object({
-  message: zod.string(),
-});
-
 export const GetAffiliateStatsResponse = zod.object({
   referralCode: zod.string(),
   totalReferrals: zod.number(),
@@ -197,6 +189,13 @@ export const CreateCloudConnectionBody = zod.object({
   password: zod.string().nullish(),
   uploadPath: zod.string().nullish(),
   oauthCode: zod.string().nullish(),
+});
+
+/**
+ * @summary Delete all of the current user's cloud connections (panic wipe)
+ */
+export const DeleteAllCloudConnectionsResponse = zod.object({
+  message: zod.string(),
 });
 
 export const UpdateCloudConnectionParams = zod.object({
@@ -308,5 +307,140 @@ export const DeleteUploadResponse = zod.object({
 
 export const SubmitFeedbackBody = zod.object({
   type: zod.enum(["bug", "feature", "other"]),
+  message: zod.string(),
+});
+
+/**
+ * @summary Begin an OAuth authorization flow for a cloud provider
+ */
+export const InitiateOAuthParams = zod.object({
+  provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
+});
+
+export const InitiateOAuthBody = zod.object({
+  name: zod.string().optional(),
+  platform: zod.enum(["web", "native"]).optional(),
+  uploadPath: zod.string().optional(),
+});
+
+export const InitiateOAuthResponse = zod.object({
+  authorizeUrl: zod.string(),
+  state: zod.string(),
+});
+
+/**
+ * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the connection, and 302-redirects to the app.
+ * @summary OAuth provider redirect target; exchanges the code and stores the connection
+ */
+export const OauthCallbackParams = zod.object({
+  provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
+});
+
+/**
+ * @summary Report which OAuth providers are configured on the server
+ */
+export const GetOAuthStatusResponse = zod
+  .record(
+    zod.string(),
+    zod.object({
+      label: zod.string(),
+      configured: zod.boolean(),
+    }),
+  )
+  .describe("Map keyed by provider id (googledrive, onedrive, dropbox)");
+
+/**
+ * @summary Refresh an expired access token for a stored cloud connection
+ */
+export const RefreshOAuthTokenParams = zod.object({
+  provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
+  connectionId: zod.coerce.number(),
+});
+
+export const RefreshOAuthTokenResponse = zod.object({
+  success: zod.boolean(),
+});
+
+/**
+ * @summary Export all personal data for the current user (GDPR)
+ */
+export const ExportMyDataResponse = zod.object({
+  exportedAt: zod.string(),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    createdAt: zod.string(),
+  }),
+  subscription: zod
+    .union([
+      zod.object({
+        id: zod.number(),
+        userId: zod.number(),
+        status: zod.enum([
+          "trial",
+          "active",
+          "cancelled",
+          "expired",
+          "past_due",
+          "none",
+        ]),
+        trialEnd: zod.string().nullish(),
+        currentPeriodEnd: zod.string().nullish(),
+        createdAt: zod.string(),
+      }),
+      zod.null(),
+    ])
+    .optional(),
+  referrals: zod.array(
+    zod.object({
+      id: zod.number(),
+      referredName: zod.string(),
+      status: zod.enum(["pending", "completed"]),
+      createdAt: zod.string(),
+    }),
+  ),
+  uploads: zod.array(
+    zod.object({
+      id: zod.number(),
+      userId: zod.number(),
+      fileName: zod.string(),
+      fileType: zod.string(),
+      status: zod.enum([
+        "pending",
+        "queued",
+        "uploading",
+        "done",
+        "failed",
+        "partial",
+      ]),
+      connectionIds: zod.string().nullish(),
+      error: zod.string().nullish(),
+      createdAt: zod.string(),
+    }),
+  ),
+  feedback: zod.array(
+    zod.object({
+      id: zod.number(),
+      type: zod.enum(["bug", "feature", "other"]),
+      message: zod.string(),
+      createdAt: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Email a witness that a file was captured and uploaded
+ */
+export const notifyWitnessBodyFileNameMax = 500;
+
+export const NotifyWitnessBody = zod.object({
+  witnessEmail: zod.string().email(),
+  fileName: zod.string().min(1).max(notifyWitnessBodyFileNameMax),
+});
+
+export const NotifyWitnessResponse = zod.object({
   message: zod.string(),
 });

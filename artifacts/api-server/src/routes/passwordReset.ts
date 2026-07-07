@@ -2,6 +2,7 @@ import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
 import bcryptjs from "bcryptjs";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
 import { eq, and, gt, isNull } from "drizzle-orm";
@@ -10,37 +11,62 @@ import { getPublicBaseUrl } from "../lib/appUrl.js";
 
 const router = Router();
 
+// Unauthenticated + email-sending / token-guessing endpoints — rate limit per IP
+// so they can't be used to email-bomb a victim, burn Resend quota, or brute-force
+// reset tokens.
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many password reset requests. Please try again in an hour." },
+});
+
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+});
+
+const GENERIC_FORGOT_RESPONSE = "If an account with that email exists, a reset link has been sent.";
+
 const forgotSchema = z.object({
   email: z.string().email("Invalid email address"),
 });
 
 const resetSchema = z.object({
   token: z.string().min(1, "Token is required"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  password: z.string().min(8, "Password must be at least 8 characters").max(72, "Password must be at most 72 characters"),
 });
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-router.post("/auth/forgot-password", async (req, res) => {
-  // Always respond 200 to avoid email enumeration
+router.post("/auth/forgot-password", forgotPasswordLimiter, (req, res) => {
   const parsed = forgotSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.json({ message: "If an account with that email exists, a reset link has been sent." });
-    return;
-  }
 
+  // Respond identically and BEFORE any account-dependent work. Doing the lookup /
+  // token write / email send after the response (fire-and-forget) means the
+  // response latency is the same whether or not the email is registered — closing
+  // the timing side-channel that would otherwise reveal account existence despite
+  // the constant response body.
+  res.json({ message: GENERIC_FORGOT_RESPONSE });
+
+  if (!parsed.success) return;
   const { email } = parsed.data;
 
-  try {
-    const [user] = await db
-      .select({ id: usersTable.id, name: usersTable.name })
-      .from(usersTable)
-      .where(eq(usersTable.email, email))
-      .limit(1);
+  void (async () => {
+    try {
+      const [user] = await db
+        .select({ id: usersTable.id, name: usersTable.name })
+        .from(usersTable)
+        .where(eq(usersTable.email, email))
+        .limit(1);
+      if (!user) return;
 
-    if (user) {
       const token = randomBytes(32).toString("hex");
       const tokenHash = hashToken(token);
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
@@ -55,11 +81,7 @@ router.post("/auth/forgot-password", async (req, res) => {
           )
         );
 
-      await db.insert(passwordResetTokensTable).values({
-        userId: user.id,
-        tokenHash,
-        expiresAt,
-      });
+      await db.insert(passwordResetTokensTable).values({ userId: user.id, tokenHash, expiresAt });
 
       const resetUrl = `${getPublicBaseUrl()}/auth/reset-password?token=${token}`;
       await sendEmail({
@@ -67,16 +89,13 @@ router.post("/auth/forgot-password", async (req, res) => {
         subject: "Reset your KKamera password",
         html: passwordResetEmail(user.name, resetUrl).html,
       }).catch(() => {});
+    } catch (err: any) {
+      req.log.error({ err }, "Forgot password background error");
     }
-
-    res.json({ message: "If an account with that email exists, a reset link has been sent." });
-  } catch (err: any) {
-    req.log.error({ err }, "Forgot password error");
-    res.json({ message: "If an account with that email exists, a reset link has been sent." });
-  }
+  })();
 });
 
-router.post("/auth/reset-password", async (req, res) => {
+router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
   const parsed = resetSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });

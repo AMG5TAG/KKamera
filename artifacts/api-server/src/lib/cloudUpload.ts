@@ -9,7 +9,7 @@ import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger.js";
-import { encrypt, decrypt } from "./crypto.js";
+import { encrypt, decrypt, decryptCredential } from "./crypto.js";
 import { isPrivateIp } from "./ssrf.js";
 import { sanitizeFileName } from "./fileNames.js";
 
@@ -122,7 +122,7 @@ async function refreshAndPersistToken(conn: CloudConn): Promise<string> {
   if (!cfg) throw new Error(`No refresh config for provider: ${conn.type}`);
   if (!conn.refreshToken) throw new Error(`No refresh token stored for connection ${conn.id} — re-connect the account.`);
 
-  const refreshTok = decrypt(conn.refreshToken);
+  const refreshTok = decryptCredential(conn.refreshToken);
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshTok,
@@ -165,7 +165,7 @@ async function refreshAndPersistToken(conn: CloudConn): Promise<string> {
  * token is absent, already expired, or expiring within the next 5 minutes.
  */
 async function getAccessToken(conn: CloudConn): Promise<string> {
-  const raw = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
+  const raw = decryptCredential(conn.accessTokenEncrypted);
   const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
   const expiringSoon = conn.tokenExpiry != null && conn.tokenExpiry < fiveMinFromNow;
 
@@ -195,16 +195,29 @@ async function ftpConnect(client: FtpClient, conn: CloudConn): Promise<void> {
     host: pinnedIp ?? conn.host!,
     port: conn.port ?? 21,
     user: conn.username ?? "anonymous",
-    password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
+    password: decryptCredential(conn.passwordEncrypted),
   };
+  // Prefer a fully certificate-validated TLS connection. Fall back to accepting a
+  // self-signed cert (common on self-hosted FTPS — encrypted but unauthenticated)
+  // and only as a last resort to PLAINTEXT — and even then only when an operator
+  // has explicitly opted in via ALLOW_INSECURE_FTP. Silently downgrading to
+  // cleartext (the previous behaviour) shipped the user's cloud password and their
+  // photos/videos in the clear on any TLS error, which is unacceptable for a
+  // privacy-first app; it now fails closed with a clear error instead.
   try {
-    // Explicit FTPS. Many self-hosted FTP servers use self-signed certs, so we
-    // don't hard-fail on cert validation — encrypted-but-unpinned still beats
-    // sending credentials and photos in cleartext.
-    await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: false } });
+    await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: true } });
   } catch {
-    await client.access({ ...base, secure: false });
-    logger.warn({ connectionId: conn.id }, "FTP server does not support TLS — connection is unencrypted");
+    try {
+      await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: false } });
+      logger.warn({ connectionId: conn.id }, "FTPS certificate not validated (self-signed) — encrypted but unauthenticated");
+    } catch {
+      if (process.env["ALLOW_INSECURE_FTP"] === "true") {
+        await client.access({ ...base, secure: false });
+        logger.warn({ connectionId: conn.id }, "FTP connection is UNENCRYPTED (ALLOW_INSECURE_FTP opt-in)");
+      } else {
+        throw new Error("FTP server does not support TLS. Refusing to send credentials over an unencrypted connection.");
+      }
+    }
   }
   // Backstop: confirm the socket's actual peer is public.
   const remote = client.ftp.socket?.remoteAddress;
@@ -232,7 +245,10 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
     await client.list("/");
     return { success: true, message: "FTP connection successful" };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    // Don't surface raw internal errors (resolver text, private-IP guard messages,
+    // remote hostnames) to the client — log them, return actionable guidance.
+    logger.warn({ err, connectionId: conn.id }, "FTP connection test failed");
+    return { success: false, message: "Could not connect. Check the host, port, credentials, and that the server supports TLS." };
   } finally {
     client.close();
   }
@@ -242,7 +258,7 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
 
 async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
   await assertPublicHost(conn.host!);
-  const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
+  const pass = decryptCredential(conn.passwordEncrypted);
   const client = createWebdavClient(conn.host!, {
     username: conn.username ?? undefined,
     password: pass || undefined,
@@ -261,7 +277,7 @@ async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Pro
 async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message: string }> {
   try {
     await assertPublicHost(conn.host!);
-    const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
+    const pass = decryptCredential(conn.passwordEncrypted);
     const client = createWebdavClient(conn.host!, {
       username: conn.username ?? undefined,
       password: pass || undefined,
@@ -276,7 +292,8 @@ async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message:
         : "WebDAV connected — upload folder will be created on first upload",
     };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id }, "WebDAV connection test failed");
+    return { success: false, message: "Could not connect. Check the URL, credentials, and upload path." };
   }
 }
 
@@ -335,7 +352,8 @@ async function testGoogleDrive(conn: CloudConn): Promise<{ success: boolean; mes
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.user?.displayName ?? "Google user"}` };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
+    return { success: false, message: "Could not verify the connection. Please re-connect the account." };
   }
 }
 
@@ -364,7 +382,8 @@ async function testOneDrive(conn: CloudConn): Promise<{ success: boolean; messag
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.owner?.user?.displayName ?? "Microsoft user"}` };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
+    return { success: false, message: "Could not verify the connection. Please re-connect the account." };
   }
 }
 
@@ -396,7 +415,8 @@ async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.name?.display_name ?? "Dropbox user"}` };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
+    return { success: false, message: "Could not verify the connection. Please re-connect the account." };
   }
 }
 

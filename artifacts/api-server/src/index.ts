@@ -1,10 +1,7 @@
 import path from "path";
-import { runMigrations as runStripeMigrations } from "stripe-replit-sync";
-import { getStripeSync } from "./stripeClient.js";
 import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
 import app from "./app.js";
 import { logger } from "./lib/logger.js";
-import { getPublicBaseUrl } from "./lib/appUrl.js";
 
 const rawPort = process.env["PORT"];
 if (!rawPort) throw new Error("PORT environment variable is required but was not provided.");
@@ -36,33 +33,7 @@ async function runAppMigrations() {
   logger.info("Database migrations applied");
 }
 
-async function initStripe() {
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) {
-    logger.warn("DATABASE_URL not set — skipping Stripe initialisation");
-    return;
-  }
-  try {
-    logger.info("Initialising Stripe schema...");
-    await runStripeMigrations({ databaseUrl });
-    logger.info("Stripe schema ready");
-
-    const stripeSync = await getStripeSync();
-
-    await stripeSync.findOrCreateManagedWebhook(`${getPublicBaseUrl()}/api/stripe/webhook`);
-    logger.info("Stripe webhook configured");
-
-    // Backfill in background — don't block server startup
-    stripeSync.syncBackfill()
-      .then(() => logger.info("Stripe backfill complete"))
-      .catch((err) => logger.error({ err }, "Stripe backfill error"));
-  } catch (err) {
-    logger.error({ err }, "Stripe init failed — continuing without Stripe");
-  }
-}
-
 await runAppMigrations();
-await initStripe();
 
 app.listen(port, (err?: Error) => {
   if (err) {

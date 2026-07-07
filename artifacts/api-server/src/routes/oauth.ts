@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
+import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
@@ -94,7 +95,7 @@ function signState(s: OAuthState): string {
 
 function verifyState(state: string): OAuthState | null {
   try {
-    const d = jwt.verify(state, JWT_SECRET) as Record<string, string>;
+    const d = jwt.verify(state, JWT_SECRET, { algorithms: ["HS256"] }) as Record<string, string>;
     return {
       userId: Number(d["sub"]),
       provider: d["p"] ?? "",
@@ -191,9 +192,17 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
       return;
     }
 
-    const { name = cfg.label, platform = "web", uploadPath = "/KKamera" } = req.body as {
-      name?: string; platform?: "web" | "native"; uploadPath?: string;
-    };
+    // Validate + bound the client-supplied fields — they flow into the stored
+    // connection name and upload path.
+    const parsedBody = z.object({
+      name: z.string().trim().min(1).max(100).optional(),
+      platform: z.enum(["web", "native"]).optional(),
+      uploadPath: z.string().trim().max(500).optional(),
+    }).safeParse(req.body ?? {});
+    if (!parsedBody.success) { res.status(400).json({ message: "Invalid request" }); return; }
+    const name = parsedBody.data.name ?? cfg.label;
+    const platform = parsedBody.data.platform ?? "native";
+    const uploadPath = parsedBody.data.uploadPath ?? "/KKamera";
 
     const verifier = generateVerifier();
     const challenge = generateChallenge(verifier);
