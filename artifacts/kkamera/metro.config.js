@@ -3,25 +3,24 @@ const path = require("path");
 
 const config = getDefaultConfig(__dirname);
 
-// PERMANENT FIX: expo/metro-config auto-detects the workspace root and sets
-// server.unstable_serverRoot to the workspace root. This causes bundle URLs
-// and HMR entry points to be relative to the workspace root, which embeds the
-// full pnpm hash (e.g. node_modules/.pnpm/expo-router@6.0.24_@types+react-dom@19.2.3_.../entry).
-// When dependencies change, the hash changes but browser/Metro caches still
-// hold the OLD hash path, causing "UnableToResolveError".
+// pnpm hoists dependencies to the workspace-root store
+// (../../node_modules/.pnpm/...). Metro's serverRoot MUST be an ancestor of
+// every file it serves, so it has to stay at the workspace root — which is
+// what expo/metro-config auto-detects by default.
 //
-// Fix layers:
-// 1. Force projectRoot and serverRoot to the actual project directory so
-//    paths are stable: node_modules/expo-router/entry (via pnpm symlink).
-// 2. Add a custom resolver that intercepts stale pnpm-hashed paths from
-//    browser HMR reconnections and rewrites them to stable symlink paths.
-// 3. Add workspace root to watchFolders for SHA-1 computation.
-
-config.projectRoot = __dirname;
-
-config.server = config.server || {};
-config.server.unstable_serverRoot = __dirname;
-
+// Do NOT force serverRoot/projectRoot to __dirname: the actual dependency
+// files live two directories ABOVE this package, so a __dirname serverRoot
+// makes Metro emit bundle URLs that climb out with `../../` (e.g.
+// https://<host>/../../node_modules/.pnpm/expo-router@.../entry.bundle).
+// That path traversal is illegal in a URL — the client/proxy normalizes it
+// past the domain root, the request misses Metro's bundle endpoint, and
+// React Native reports "Could not connect to development server".
+//
+// The pnpm-hash churn this file used to fight (stale cached hash paths →
+// "UnableToResolveError") is handled below by the stale-hash resolver
+// interceptor plus cache-busting, not by breaking serverRoot.
+//
+// Add workspace root to watchFolders for SHA-1 computation.
 config.watchFolders = [
   ...(config.watchFolders || []),
   path.resolve(__dirname, "../.."),
