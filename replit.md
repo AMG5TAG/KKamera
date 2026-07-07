@@ -77,6 +77,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Google Fonts (via `@expo-google-fonts/inter`) may not load in Replit sandbox. Do not block rendering on font load.
 - `Platform.OS` can be used at module level safely in Expo Metro bundles.
 - API server uses path `/api` — all routes must start with `/api`.
+- **Pnpm + Metro stale hash**: `metro.config.js` patches `server.unstable_serverRoot` to the project root (not workspace root) and includes a resolver interceptor that rewrites stale pnpm-hashed paths to stable symlinks. The dev script also clears `/tmp/metro-file-map-*` on each start. Do not remove these guards.
 
 ## Pointers
 
