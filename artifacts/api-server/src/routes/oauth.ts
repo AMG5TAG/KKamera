@@ -324,7 +324,9 @@ router.get("/oauth/:provider/callback", async (req, res) => {
     }
   } catch (err: any) {
     req.log.error({ err }, "OAuth callback error");
-    errorRedirect(String(err?.message ?? "Token exchange failed"));
+    // Don't reflect the raw provider/internal error into the redirect URL (it
+    // lands in browser history/Referer); the detail is in the logs above.
+    errorRedirect("Could not complete the connection. Please try again.");
   }
 });
 

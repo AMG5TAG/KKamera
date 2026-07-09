@@ -290,6 +290,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         scheduleRetry(token);
       } else {
         updateUpload(existingId, { status: "failed", error: err.message });
+        // Terminal failure — drop the durable queue copy so it doesn't accumulate.
+        if (isQueueUri(uri)) await deleteLocalFile(uri);
       }
     }
   }, [updateUpload, scheduleRetry]);

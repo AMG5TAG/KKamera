@@ -25,6 +25,7 @@ import Svg, { Line, Rect, G } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
 import { API_BASE_URL } from "@/lib/config";
+import { resolveUploadTarget, type ResolvedTarget } from "@/lib/uploadTarget";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -185,18 +186,19 @@ export default function CameraScreen() {
   const { settings, updateSetting } = useSettings();
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const rcSub = useSubscription();
-  const { data: uploadTarget } = useGetUploadTarget();
+  const { data: uploadTarget, refetch: refetchUploadTarget } = useGetUploadTarget();
 
-  // Resolve the user's default upload destination for a capture.
-  //  - "none"     → skip upload entirely (capture only)
-  //  - "selected" → upload to the chosen connection ids
-  //  - "all"      → undefined ids (server uploads to every active connection)
-  const resolveUploadTarget = useCallback((): { skip: boolean; ids: number[] | undefined } => {
-    const mode = uploadTarget?.mode ?? "all";
-    if (mode === "none") return { skip: true, ids: undefined };
-    if (mode === "selected") return { skip: false, ids: uploadTarget?.connectionIds ?? [] };
-    return { skip: false, ids: undefined };
-  }, [uploadTarget]);
+  // Resolve the user's default upload destination for a capture. If the target
+  // hasn't loaded yet (e.g. a capture in the first moments after a cold start),
+  // fetch it first so we never fall back to "all" for a user who chose "none" or
+  // a specific subset of accounts.
+  const getUploadTarget = useCallback(async (): Promise<ResolvedTarget> => {
+    let t = uploadTarget;
+    if (!t) {
+      try { t = (await refetchUploadTarget()).data; } catch { /* offline — resolver falls back */ }
+    }
+    return resolveUploadTarget(t);
+  }, [uploadTarget, refetchUploadTarget]);
 
   // Gate the camera UI on a real entitlement. While the subscription is still
   // loading we optimistically allow it (the server enforces /uploads/execute
@@ -473,7 +475,7 @@ export default function CameraScreen() {
   }, [settings.witnessOnSuccess, settings.witnessEmail, token]);
 
   const doUpload = useCallback(async (uri: string, fileName: string, type: "image" | "video") => {
-    const target = resolveUploadTarget();
+    const target = await getUploadTarget();
     if (target.skip) {
       // "Don't upload" mode — the capture is kept locally; skip the cloud upload,
       // WiFi check and witness notification entirely.
@@ -501,7 +503,7 @@ export default function CameraScreen() {
       await executeUpload(uri, fileName, type, token, target.ids, onDeleteLocal);
       notifyWitness(fileName);
     }
-  }, [resolveUploadTarget, checkWifi, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, executeUpload, token, notifyWitness]);
+  }, [getUploadTarget, checkWifi, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, executeUpload, token, notifyWitness]);
 
   const pulseCaptureBtn = () => {
     Animated.sequence([
@@ -872,7 +874,7 @@ export default function CameraScreen() {
       tlPhotos.current = [];
       setTlCount(0);
       if (photos.length === 0) return;
-      const target = resolveUploadTarget();
+      const target = await getUploadTarget();
       if (target.skip) {
         setStampToast(`${photos.length} frames captured — cloud upload off`);
         setTimeout(() => setStampToast(null), 1800);
@@ -885,13 +887,17 @@ export default function CameraScreen() {
         {
           text: `Upload ${photos.length} frames`, onPress: async () => {
             for (let i = 0; i < photos.length; i++) {
-              await executeUpload(photos[i]!, `TL_${Date.now()}_${i}.jpg`, "image", token, target.ids);
+              const frameUri = photos[i]!;
+              const onDeleteLocal = settings.deleteLocalAfterUpload && Platform.OS !== "web"
+                ? async () => { await FileSystem.deleteAsync(frameUri, { idempotent: true }); }
+                : undefined;
+              await executeUpload(frameUri, `TL_${Date.now()}_${i}.jpg`, "image", token, target.ids, onDeleteLocal);
             }
           },
         },
       ]);
     }
-  }, [isTimelapsing, resolveUploadTarget, checkWifi, executeUpload, token]);
+  }, [isTimelapsing, getUploadTarget, checkWifi, executeUpload, token, settings.deleteLocalAfterUpload]);
 
   const handleGalleryImport = useCallback(async () => {
     if (isRecording || isTimelapsing) return;

@@ -160,7 +160,18 @@ router.post(
             and(eq(cloudConnectionsTable.userId, req.userId!), eq(cloudConnectionsTable.active, true))
           );
 
-      if (connections.length === 0) {
+      // Collapse duplicate active rows that point at the same cloud account
+      // (possible if an identity lookup failed on a prior reconnect) so a single
+      // capture is never uploaded twice to the same account.
+      const seenAccounts = new Set<string>();
+      const targets = connections.filter(c => {
+        const key = c.accountId ? `${c.type}:${c.accountId}` : `id:${c.id}`;
+        if (seenAccounts.has(key)) return false;
+        seenAccounts.add(key);
+        return true;
+      });
+
+      if (targets.length === 0) {
         const [item] = await db.insert(uploadsTable).values({
           userId: req.userId!, fileName, fileType, status: "queued",
           error: "No active cloud connections configured",
@@ -171,7 +182,7 @@ router.post(
 
       const [uploadRecord] = await db.insert(uploadsTable).values({
         userId: req.userId!, fileName, fileType, status: "uploading",
-        connectionIds: connections.map(c => c.id).join(","),
+        connectionIds: targets.map(c => c.id).join(","),
       }).returning();
 
       // Read the file into memory (for uploadToCloud) only while holding a slot,
@@ -181,7 +192,7 @@ router.post(
       try {
         const buf = await fs.promises.readFile(file.path);
         results = await Promise.all(
-          connections.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
+          targets.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
         );
       } finally {
         releaseUploadSlot();

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { feedbackTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth.js";
@@ -11,7 +12,16 @@ const feedbackSchema = z.object({
   message: z.string().min(1).max(5000),
 });
 
-router.post("/feedback", requireAuth, async (req, res) => {
+// Cap feedback writes so an authenticated client can't flood the table.
+const feedbackLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many feedback submissions. Please try again later." },
+});
+
+router.post("/feedback", requireAuth, feedbackLimiter, async (req, res) => {
   try {
     const parsed = feedbackSchema.safeParse(req.body);
     if (!parsed.success) {

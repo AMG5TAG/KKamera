@@ -12,6 +12,8 @@ import { captureRef } from "react-native-view-shot";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import { useSettings } from "@/contexts/SettingsContext";
+import { useGetUploadTarget } from "@workspace/api-client-react";
+import { resolveUploadTarget } from "@/lib/uploadTarget";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -31,6 +33,7 @@ export default function MarkupScreen() {
   const { token } = useAuth();
   const { executeUpload } = useUpload();
   const { settings } = useSettings();
+  const { data: uploadTarget, refetch: refetchUploadTarget } = useGetUploadTarget();
 
   const [paths, setPaths] = useState<DrawnPath[]>([]);
   const [currentPoints, setCurrentPoints] = useState<string>("");
@@ -88,18 +91,26 @@ export default function MarkupScreen() {
     if (!uri || !fileName) return;
     setIsUploading(true);
     try {
+      // Honour the user's upload-destination default (same as the camera), so a
+      // marked-up photo doesn't fan out to accounts they excluded.
+      let t = uploadTarget;
+      if (!t) { try { t = (await refetchUploadTarget()).data; } catch { /* offline */ } }
+      const target = resolveUploadTarget(t);
+      if (target.skip) { router.back(); return; }
+      const ids = target.ids;
+
       if (mode === "original" || mode === "both") {
-        await executeUpload(uri, fileName, "image", token);
+        await executeUpload(uri, fileName, "image", token, ids);
       }
       if (mode === "marked" || mode === "both") {
         const markedUri = await captureMarked();
         if (markedUri) {
           const markedName = fileName.replace(/(\.[^.]+)$/, "_marked$1");
-          await executeUpload(markedUri, markedName, "image", token);
+          await executeUpload(markedUri, markedName, "image", token, ids);
         } else {
           Alert.alert("Markup Export Failed", "Could not capture the marked-up image. Uploading original instead.");
           if (mode === "marked") {
-            await executeUpload(uri, fileName, "image", token);
+            await executeUpload(uri, fileName, "image", token, ids);
           }
         }
       }
@@ -109,7 +120,7 @@ export default function MarkupScreen() {
     } finally {
       setIsUploading(false);
     }
-  }, [uri, fileName, token, executeUpload]);
+  }, [uri, fileName, token, executeUpload, uploadTarget, refetchUploadTarget]);
 
   const defaultMode = settings.markupUploadMode;
 
