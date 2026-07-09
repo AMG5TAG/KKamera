@@ -119,6 +119,13 @@ export default function SettingsScreen() {
             hint="Cloud connections, Wi-Fi, queue"
             onPress={() => router.push("/settings/upload")}
           />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="git-branch-outline"
+            label="Upload destinations"
+            hint="Choose which accounts captures upload to"
+            onPress={() => router.push("/settings/upload-destinations")}
+          />
         </View>
 
         <View style={styles.section}>

@@ -200,6 +200,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/User"
 
+  /users/upload-target:
+    get:
+      operationId: getUploadTarget
+      tags: [users]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current upload-target default
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTarget"
+    put:
+      operationId: setUploadTarget
+      tags: [users]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadTargetInput"
+      responses:
+        "200":
+          description: Updated upload-target default
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTarget"
+
   /subscriptions/me:
     get:
       operationId: getSubscription
@@ -864,6 +896,30 @@ components:
         user:
           $ref: "#/components/schemas/User"
 
+    UploadTarget:
+      type: object
+      required: [mode, connectionIds]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected, none]
+        connectionIds:
+          type: array
+          items:
+            type: integer
+
+    UploadTargetInput:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected, none]
+        connectionIds:
+          type: array
+          items:
+            type: integer
+
     User:
       type: object
       required: [id, email, name, referralCode, twoFAEnabled, createdAt]
@@ -968,6 +1024,8 @@ components:
         active:
           type: boolean
         uploadPath:
+          type: ["string", "null"]
+        accountLabel:
           type: ["string", "null"]
         hasCredentials:
           type: boolean

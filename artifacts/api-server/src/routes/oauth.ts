@@ -8,6 +8,7 @@ import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { fetchAccountIdentity } from "../lib/cloudIdentity.js";
 
 const router = Router();
 
@@ -255,16 +256,61 @@ router.get("/oauth/:provider/callback", async (req, res) => {
       ? new Date(Date.now() + tokens.expires_in * 1000)
       : null;
 
-    const [conn] = await db.insert(cloudConnectionsTable).values({
-      userId: entry.userId,
-      type: provider,
-      name: entry.name,
-      uploadPath: entry.uploadPath,
-      accessTokenEncrypted: encrypt(tokens.access_token),
-      refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
-      tokenExpiry: expiry,
-      active: true,
-    }).returning();
+    // Identify the account so a personal and a business account of the same
+    // provider can coexist as separate connections (best-effort; may be null).
+    const identity = await fetchAccountIdentity(provider, tokens.access_token);
+
+    let conn: typeof cloudConnectionsTable.$inferSelect | undefined;
+
+    // Reconnecting the SAME account refreshes that connection in place (keeps its
+    // id, so any saved upload-target selection stays valid) rather than stacking
+    // a duplicate. A different account of the same provider falls through to a
+    // fresh insert below.
+    if (identity.accountId) {
+      const [existing] = await db.select().from(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.userId, entry.userId),
+        eq(cloudConnectionsTable.type, provider),
+        eq(cloudConnectionsTable.accountId, identity.accountId),
+      )).limit(1);
+      if (existing) {
+        [conn] = await db.update(cloudConnectionsTable).set({
+          name: entry.name,
+          uploadPath: entry.uploadPath,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          // Keep the prior refresh token if the provider didn't return a new one.
+          refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : existing.refreshToken,
+          tokenExpiry: expiry,
+          accountLabel: identity.accountLabel,
+          active: true,
+        }).where(eq(cloudConnectionsTable.id, existing.id)).returning();
+      }
+    } else {
+      // Identity unknown — fall back to name-based dedup so repeated reconnects
+      // of the same (unidentifiable) account don't pile up duplicate rows.
+      await db.update(cloudConnectionsTable)
+        .set({ active: false })
+        .where(and(
+          eq(cloudConnectionsTable.userId, entry.userId),
+          eq(cloudConnectionsTable.type, provider),
+          eq(cloudConnectionsTable.name, entry.name),
+          eq(cloudConnectionsTable.active, true),
+        ));
+    }
+
+    if (!conn) {
+      [conn] = await db.insert(cloudConnectionsTable).values({
+        userId: entry.userId,
+        type: provider,
+        name: entry.name,
+        uploadPath: entry.uploadPath,
+        accountId: identity.accountId,
+        accountLabel: identity.accountLabel,
+        accessTokenEncrypted: encrypt(tokens.access_token),
+        refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+        tokenExpiry: expiry,
+        active: true,
+      }).returning();
+    }
 
     if (!conn) { errorRedirect("Failed to save connection"); return; }
 

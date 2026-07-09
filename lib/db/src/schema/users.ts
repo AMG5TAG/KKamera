@@ -14,6 +14,13 @@ export const usersTable = pgTable("users", {
   twoFABackupCodes: text("two_fa_backup_codes"),
   // Bumped whenever the password changes; tokens issued before this are rejected.
   passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+  // Default upload destination when multiple cloud accounts are connected:
+  //  - "all"      → every active connection (the historical behaviour)
+  //  - "selected" → only the connection ids listed in uploadTargetIds
+  //  - "none"     → capture only, don't upload (personal use)
+  uploadTargetMode: text("upload_target_mode").notNull().default("all"),
+  // CSV of cloud_connections.id used when uploadTargetMode = "selected".
+  uploadTargetIds: text("upload_target_ids"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

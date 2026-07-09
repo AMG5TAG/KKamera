@@ -42,6 +42,8 @@ import type {
   TwoFAVerifyInput,
   UploadInput,
   UploadItem,
+  UploadTarget,
+  UploadTargetInput,
   UploadUpdate,
   User,
   UserDataExport,
@@ -895,6 +897,154 @@ export const useUpdateMe = <
   TContext
 > => {
   return useMutation(getUpdateMeMutationOptions(options));
+};
+
+export const getGetUploadTargetUrl = () => {
+  return `/api/users/upload-target`;
+};
+
+export const getUploadTarget = async (
+  options?: RequestInit,
+): Promise<UploadTarget> => {
+  return customFetch<UploadTarget>(getGetUploadTargetUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetUploadTargetQueryKey = () => {
+  return [`/api/users/upload-target`] as const;
+};
+
+export const getGetUploadTargetQueryOptions = <
+  TData = Awaited<ReturnType<typeof getUploadTarget>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getUploadTarget>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetUploadTargetQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof getUploadTarget>>> = ({
+    signal,
+  }) => getUploadTarget({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getUploadTarget>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetUploadTargetQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getUploadTarget>>
+>;
+export type GetUploadTargetQueryError = ErrorType<unknown>;
+
+export function useGetUploadTarget<
+  TData = Awaited<ReturnType<typeof getUploadTarget>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getUploadTarget>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetUploadTargetQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+export const getSetUploadTargetUrl = () => {
+  return `/api/users/upload-target`;
+};
+
+export const setUploadTarget = async (
+  uploadTargetInput: UploadTargetInput,
+  options?: RequestInit,
+): Promise<UploadTarget> => {
+  return customFetch<UploadTarget>(getSetUploadTargetUrl(), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(uploadTargetInput),
+  });
+};
+
+export const getSetUploadTargetMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setUploadTarget>>,
+    TError,
+    { data: BodyType<UploadTargetInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof setUploadTarget>>,
+  TError,
+  { data: BodyType<UploadTargetInput> },
+  TContext
+> => {
+  const mutationKey = ["setUploadTarget"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof setUploadTarget>>,
+    { data: BodyType<UploadTargetInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return setUploadTarget(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SetUploadTargetMutationResult = NonNullable<
+  Awaited<ReturnType<typeof setUploadTarget>>
+>;
+export type SetUploadTargetMutationBody = BodyType<UploadTargetInput>;
+export type SetUploadTargetMutationError = ErrorType<unknown>;
+
+export const useSetUploadTarget = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setUploadTarget>>,
+    TError,
+    { data: BodyType<UploadTargetInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof setUploadTarget>>,
+  TError,
+  { data: BodyType<UploadTargetInput> },
+  TContext
+> => {
+  return useMutation(getSetUploadTargetMutationOptions(options));
 };
 
 export const getGetSubscriptionUrl = () => {

@@ -38,6 +38,7 @@ function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
   return {
     id: c.id, userId: c.userId, type: c.type, name: c.name,
     active: c.active, uploadPath: c.uploadPath ?? null,
+    accountLabel: c.accountLabel ?? null,
     hasCredentials: !!(c.passwordEncrypted || c.accessTokenEncrypted),
     createdAt: c.createdAt.toISOString(),
   };

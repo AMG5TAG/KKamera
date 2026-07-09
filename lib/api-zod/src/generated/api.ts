@@ -106,6 +106,21 @@ export const UpdateMeResponse = zod.object({
   createdAt: zod.string(),
 });
 
+export const GetUploadTargetResponse = zod.object({
+  mode: zod.enum(["all", "selected", "none"]),
+  connectionIds: zod.array(zod.number()),
+});
+
+export const SetUploadTargetBody = zod.object({
+  mode: zod.enum(["all", "selected", "none"]),
+  connectionIds: zod.array(zod.number()).optional(),
+});
+
+export const SetUploadTargetResponse = zod.object({
+  mode: zod.enum(["all", "selected", "none"]),
+  connectionIds: zod.array(zod.number()),
+});
+
 export const GetSubscriptionResponse = zod.object({
   id: zod.number(),
   userId: zod.number(),
@@ -173,6 +188,7 @@ export const ListCloudConnectionsResponseItem = zod.object({
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),
 });
@@ -220,6 +236,7 @@ export const UpdateCloudConnectionResponse = zod.object({
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),
 });

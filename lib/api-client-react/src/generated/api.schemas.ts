@@ -197,6 +197,34 @@ export interface AuthResponse {
   user: User;
 }
 
+export type UploadTargetMode =
+  (typeof UploadTargetMode)[keyof typeof UploadTargetMode];
+
+export const UploadTargetMode = {
+  all: "all",
+  selected: "selected",
+  none: "none",
+} as const;
+
+export interface UploadTarget {
+  mode: UploadTargetMode;
+  connectionIds: number[];
+}
+
+export type UploadTargetInputMode =
+  (typeof UploadTargetInputMode)[keyof typeof UploadTargetInputMode];
+
+export const UploadTargetInputMode = {
+  all: "all",
+  selected: "selected",
+  none: "none",
+} as const;
+
+export interface UploadTargetInput {
+  mode: UploadTargetInputMode;
+  connectionIds?: number[];
+}
+
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
@@ -238,6 +266,8 @@ export interface CloudConnection {
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  /** @nullable */
+  accountLabel?: string | null;
   hasCredentials: boolean;
   createdAt: string;
 }

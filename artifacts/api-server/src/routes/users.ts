@@ -6,7 +6,7 @@ import {
   cloudConnectionsTable, uploadsTable, feedbackTable,
   passwordResetTokensTable,
 } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -14,6 +14,19 @@ const router = Router();
 const updateMeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
 }).strict();
+
+const uploadTargetSchema = z.object({
+  mode: z.enum(["all", "selected", "none"]),
+  connectionIds: z.array(z.number().int().positive()).max(50).optional(),
+}).strict();
+
+/** Parse the stored CSV of connection ids into a positive-int array. */
+function parseTargetIds(csv: string | null): number[] {
+  if (!csv) return [];
+  return csv.split(",")
+    .map(s => parseInt(s.trim(), 10))
+    .filter(n => Number.isInteger(n) && n > 0);
+}
 
 router.get("/users/me", requireAuth, async (req, res) => {
   try {
@@ -49,6 +62,58 @@ router.patch("/users/me", requireAuth, async (req, res) => {
   } catch (err) {
     req.log.error({ err }, "Update me error");
     res.status(500).json({ message: "Failed to update user" });
+  }
+});
+
+// ─── Upload target default ────────────────────────────────────────────────────
+// Which connected cloud accounts a capture uploads to by default when the user
+// has more than one: "all" active, a "selected" subset, or "none" (capture only).
+
+router.get("/users/upload-target", requireAuth, async (req, res) => {
+  try {
+    const [user] = await db.select({
+      mode: usersTable.uploadTargetMode, ids: usersTable.uploadTargetIds,
+    }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
+    if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    res.json({ mode: user.mode, connectionIds: parseTargetIds(user.ids) });
+  } catch (err) {
+    req.log.error({ err }, "Get upload target error");
+    res.status(500).json({ message: "Failed to get upload target" });
+  }
+});
+
+router.put("/users/upload-target", requireAuth, async (req, res) => {
+  try {
+    const parsed = uploadTargetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { mode, connectionIds } = parsed.data;
+
+    // Only persist ids that actually belong to this user, so a stale/foreign id
+    // can never be stored or later uploaded to.
+    let ownedIds: number[] = [];
+    if (connectionIds?.length) {
+      const owned = await db.select({ id: cloudConnectionsTable.id })
+        .from(cloudConnectionsTable)
+        .where(and(
+          eq(cloudConnectionsTable.userId, req.userId!),
+          inArray(cloudConnectionsTable.id, connectionIds),
+        ));
+      const ownedSet = new Set(owned.map(c => c.id));
+      ownedIds = connectionIds.filter(id => ownedSet.has(id));
+    }
+
+    await db.update(usersTable).set({
+      uploadTargetMode: mode,
+      uploadTargetIds: ownedIds.length ? ownedIds.join(",") : null,
+    }).where(eq(usersTable.id, req.userId!));
+
+    res.json({ mode, connectionIds: ownedIds });
+  } catch (err) {
+    req.log.error({ err }, "Set upload target error");
+    res.status(500).json({ message: "Failed to set upload target" });
   }
 });
 
