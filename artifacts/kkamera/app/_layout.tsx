@@ -32,7 +32,7 @@ initializeRevenueCat();
 // App lock gate
 // ---------------------------------------------------------------------------
 function AppLockGate({ children }: { children: React.ReactNode }) {
-  const { settings } = useSettings();
+  const { settings, isLoading: settingsLoading } = useSettings();
   const { isAuthenticated, logout } = useAuth();
   const [locked, setLocked] = useState(settings.appLockEnabled && isAuthenticated);
 
@@ -60,6 +60,13 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
     });
     return () => sub.remove();
   }, [settings.appLockEnabled, isAuthenticated]);
+
+  // Hold rendering until settings hydrate from storage. Otherwise `locked` is
+  // computed from defaults (appLockEnabled=false) for the first frame and a
+  // locked account briefly flashes the camera/home before the lock applies.
+  if (settingsLoading && isAuthenticated) {
+    return null;
+  }
 
   if (locked) {
     return (
@@ -91,6 +98,7 @@ function RootLayoutNav() {
       <Stack.Screen name="auth/register" options={{ headerShown: false }} />
       <Stack.Screen name="settings/index" options={{ title: "Settings" }} />
       <Stack.Screen name="settings/cloud" options={{ title: "Cloud Storage" }} />
+      <Stack.Screen name="settings/upload-destinations" options={{ headerShown: false }} />
       <Stack.Screen name="settings/add-cloud" options={{ title: "Add Connection" }} />
       <Stack.Screen name="settings/subscription" options={{ title: "Subscription" }} />
       <Stack.Screen name="settings/affiliate" options={{ title: "Refer & Earn" }} />

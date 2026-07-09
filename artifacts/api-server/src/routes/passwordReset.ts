@@ -33,7 +33,9 @@ const resetPasswordLimiter = rateLimit({
 const GENERIC_FORGOT_RESPONSE = "If an account with that email exists, a reset link has been sent.";
 
 const forgotSchema = z.object({
-  email: z.string().email("Invalid email address"),
+  // Match the normalisation applied at register/login so a reset lookup finds
+  // the account regardless of the case/whitespace the user types.
+  email: z.string().email("Invalid email address").transform(e => e.trim().toLowerCase()),
 });
 
 const resetSchema = z.object({

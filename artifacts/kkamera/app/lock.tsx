@@ -31,6 +31,7 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
   const checkingRef = useRef(false);
   const [error, setError] = useState("");
   const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricChecked, setBiometricChecked] = useState(Platform.OS === "web");
   const [attempts, setAttempts] = useState(0);
   const [lockedUntil, setLockedUntil] = useState(0);
   const [, setNowTick] = useState(0);
@@ -61,9 +62,26 @@ export default function LockScreen({ onUnlock, onLogout }: LockScreenProps) {
         }
       } catch {
         // ignore
+      } finally {
+        setBiometricChecked(true);
       }
     })();
   }, []);
+
+  // Fail-safe against a permanent lockout: if biometric-only lock is selected but
+  // biometrics are no longer available (e.g. Face ID was un-enrolled in OS
+  // settings) and no PIN was ever set, there is no credential to satisfy — auto
+  // unlock rather than trap the user on a screen whose only other exit loops back
+  // through re-login into the same lock.
+  useEffect(() => {
+    if (
+      settings.appLockType === "biometric" &&
+      biometricChecked && !biometricAvailable &&
+      !settings.appPin
+    ) {
+      onUnlock();
+    }
+  }, [settings.appLockType, biometricChecked, biometricAvailable, settings.appPin, onUnlock]);
 
   const tryBiometric = useCallback(async () => {
     if (Platform.OS === "web") return;

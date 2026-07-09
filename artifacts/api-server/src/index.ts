@@ -3,6 +3,18 @@ import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
 import app from "./app.js";
 import { logger } from "./lib/logger.js";
 
+// Last-resort guards so a stray async throw or rejected promise is logged
+// rather than crashing the whole instance (Node crashes on an unhandled
+// rejection by default). Routes are individually try/caught, so reaching these
+// is unexpected — log loudly and keep serving; a stateless API is safer up than
+// crash-looping.
+process.on("unhandledRejection", (reason) => {
+  logger.error({ err: reason }, "Unhandled promise rejection");
+});
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception");
+});
+
 const rawPort = process.env["PORT"];
 if (!rawPort) throw new Error("PORT environment variable is required but was not provided.");
 const port = Number(rawPort);

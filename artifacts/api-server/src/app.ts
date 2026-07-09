@@ -1,4 +1,4 @@
-import express, { type Express } from "express";
+import express, { type Express, type ErrorRequestHandler } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
@@ -74,9 +74,30 @@ app.use(
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// JSON/urlencoded bodies are small (auth, settings, etc.) — cap them so a huge
+// payload can't exhaust memory. File uploads go through multer (multipart), not
+// these parsers, so this limit doesn't affect them.
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 app.use("/api", router);
+
+// Central error handler — catches CORS rejections, multer errors (e.g. a file
+// over the size cap), and any uncaught async throw. Never leak internal details
+// or stack traces to the client; the full error is logged server-side.
+const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  if (res.headersSent) { next(err); return; }
+  req.log?.error({ err }, "Unhandled request error");
+  if (err?.code === "LIMIT_FILE_SIZE") {
+    res.status(413).json({ message: "File is too large." });
+    return;
+  }
+  if (typeof err?.message === "string" && err.message.startsWith("CORS:")) {
+    res.status(403).json({ message: "Origin not allowed." });
+    return;
+  }
+  res.status(500).json({ message: "Internal server error" });
+};
+app.use(errorHandler);
 
 export default app;

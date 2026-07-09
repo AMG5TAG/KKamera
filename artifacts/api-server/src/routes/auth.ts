@@ -47,7 +47,9 @@ const twoFactorLimiter = rateLimit({
 // ─── Validation schemas ────────────────────────────────────────────────────────
 
 const registerSchema = z.object({
-  email: z.string().email("Invalid email address"),
+  // Normalise so case/whitespace variants map to one account (email is stored
+  // and compared case-sensitively, and the DB uniqueness constraint is too).
+  email: z.string().email("Invalid email address").transform(e => e.trim().toLowerCase()),
   // Cap length: bcrypt silently truncates at 72 bytes, so without a max two long
   // passwords sharing a 72-byte prefix would collide (and it bounds hashing cost).
   password: z.string().min(8, "Password must be at least 8 characters").max(72, "Password must be at most 72 characters"),
@@ -56,7 +58,9 @@ const registerSchema = z.object({
 });
 
 const loginSchema = z.object({
-  email: z.string().email("Invalid email address"),
+  // Normalise so case/whitespace variants map to one account (email is stored
+  // and compared case-sensitively, and the DB uniqueness constraint is too).
+  email: z.string().email("Invalid email address").transform(e => e.trim().toLowerCase()),
   password: z.string().min(1, "Password is required"),
   totpCode: z.string().nullish(),
 });

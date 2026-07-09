@@ -20,7 +20,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import { useSettings, type GridType } from "@/contexts/SettingsContext";
 import { useSubscription } from "@/lib/revenuecat";
-import { useGetSubscription } from "@workspace/api-client-react";
+import { useGetSubscription, useGetUploadTarget } from "@workspace/api-client-react";
 import Svg, { Line, Rect, G } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
@@ -185,6 +185,18 @@ export default function CameraScreen() {
   const { settings, updateSetting } = useSettings();
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const rcSub = useSubscription();
+  const { data: uploadTarget } = useGetUploadTarget();
+
+  // Resolve the user's default upload destination for a capture.
+  //  - "none"     → skip upload entirely (capture only)
+  //  - "selected" → upload to the chosen connection ids
+  //  - "all"      → undefined ids (server uploads to every active connection)
+  const resolveUploadTarget = useCallback((): { skip: boolean; ids: number[] | undefined } => {
+    const mode = uploadTarget?.mode ?? "all";
+    if (mode === "none") return { skip: true, ids: undefined };
+    if (mode === "selected") return { skip: false, ids: uploadTarget?.connectionIds ?? [] };
+    return { skip: false, ids: undefined };
+  }, [uploadTarget]);
 
   // Gate the camera UI on a real entitlement. While the subscription is still
   // loading we optimistically allow it (the server enforces /uploads/execute
@@ -461,6 +473,15 @@ export default function CameraScreen() {
   }, [settings.witnessOnSuccess, settings.witnessEmail, token]);
 
   const doUpload = useCallback(async (uri: string, fileName: string, type: "image" | "video") => {
+    const target = resolveUploadTarget();
+    if (target.skip) {
+      // "Don't upload" mode — the capture is kept locally; skip the cloud upload,
+      // WiFi check and witness notification entirely.
+      setStampToast("Saved — cloud upload off");
+      setTimeout(() => setStampToast(null), 1800);
+      return;
+    }
+
     const onWifi = await checkWifi();
     if (!onWifi) { Alert.alert("WiFi Only", "File captured but not uploaded — connect to WiFi."); return; }
     const confirmed = await confirmUpload();
@@ -472,11 +493,15 @@ export default function CameraScreen() {
 
     if (type === "image" && settings.photoMarkup) {
       router.push({ pathname: "/markup", params: { uri, fileName } });
+      // The markup screen performs the actual upload; still notify the witness
+      // here (fire-and-forget, same as the direct path) so marked-up captures
+      // aren't silently exempt from witness notifications.
+      notifyWitness(fileName);
     } else {
-      await executeUpload(uri, fileName, type, token, undefined, onDeleteLocal);
+      await executeUpload(uri, fileName, type, token, target.ids, onDeleteLocal);
       notifyWitness(fileName);
     }
-  }, [checkWifi, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, executeUpload, token, notifyWitness]);
+  }, [resolveUploadTarget, checkWifi, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, executeUpload, token, notifyWitness]);
 
   const pulseCaptureBtn = () => {
     Animated.sequence([
@@ -772,6 +797,21 @@ export default function CameraScreen() {
     closeTapTimer.current = setTimeout(() => { closeTapCount.current = 0; }, 600);
   }, [isRecording, handleVideoToggle]);
 
+  // Clear every timer and stop any in-flight capture when the camera screen
+  // unmounts (e.g. navigating home mid-recording or mid-time-lapse). Without
+  // this, a time-lapse setInterval keeps firing takePictureAsync on a torn-down
+  // camera forever, and its buffered frames are silently discarded.
+  useEffect(() => {
+    return () => {
+      if (tlTimer.current) clearInterval(tlTimer.current);
+      if (recordTimer.current) clearInterval(recordTimer.current);
+      if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
+      if (closeTapTimer.current) clearTimeout(closeTapTimer.current);
+      if (programmaticClearTimer.current) clearTimeout(programmaticClearTimer.current);
+      try { cameraRef.current?.stopRecording(); } catch { /* already stopped */ }
+    };
+  }, []);
+
   const handleScan = useCallback(async () => {
     if (isBusy) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -832,6 +872,12 @@ export default function CameraScreen() {
       tlPhotos.current = [];
       setTlCount(0);
       if (photos.length === 0) return;
+      const target = resolveUploadTarget();
+      if (target.skip) {
+        setStampToast(`${photos.length} frames captured — cloud upload off`);
+        setTimeout(() => setStampToast(null), 1800);
+        return;
+      }
       const onWifi = await checkWifi();
       if (!onWifi) { Alert.alert("WiFi Only", `${photos.length} frames captured but not uploaded.`); return; }
       Alert.alert("Upload Time-lapse?", `Upload ${photos.length} frames?`, [
@@ -839,13 +885,13 @@ export default function CameraScreen() {
         {
           text: `Upload ${photos.length} frames`, onPress: async () => {
             for (let i = 0; i < photos.length; i++) {
-              await executeUpload(photos[i]!, `TL_${Date.now()}_${i}.jpg`, "image", token);
+              await executeUpload(photos[i]!, `TL_${Date.now()}_${i}.jpg`, "image", token, target.ids);
             }
           },
         },
       ]);
     }
-  }, [isTimelapsing, checkWifi, executeUpload, token]);
+  }, [isTimelapsing, resolveUploadTarget, checkWifi, executeUpload, token]);
 
   const handleGalleryImport = useCallback(async () => {
     if (isRecording || isTimelapsing) return;

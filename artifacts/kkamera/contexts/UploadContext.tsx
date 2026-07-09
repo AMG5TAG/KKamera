@@ -4,6 +4,7 @@ import React, {
 } from "react";
 import { Platform } from "react-native";
 import * as FileSystem from "expo-file-system";
+import { File, Directory, Paths } from "expo-file-system";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "./AuthContext";
 import { API_BASE_URL } from "@/lib/config";
@@ -141,6 +142,31 @@ async function deleteLocalFile(uri: string) {
   } catch { /* best-effort */ }
 }
 
+// Captures are written to the OS cache directory, which the system can purge
+// while an upload waits in the offline queue (especially across an app kill).
+// Copy queued files into the durable document directory so a rehydrated retry
+// still has its bytes; without this, an evicted cache file means silent loss.
+const QUEUE_DIR = Platform.OS === "web" ? null : new Directory(Paths.document, "upload-queue");
+
+function persistForQueue(uri: string, id: string): string {
+  if (!QUEUE_DIR) return uri;
+  try {
+    if (!QUEUE_DIR.exists) QUEUE_DIR.create({ intermediates: true });
+    const base = uri.split("?")[0] ?? uri;
+    const ext = base.includes(".") ? base.split(".").pop() : undefined;
+    const dest = new File(QUEUE_DIR, ext ? `${id}.${ext}` : id);
+    if (dest.exists) dest.delete();
+    new File(uri).copy(dest);
+    return dest.uri;
+  } catch {
+    return uri; // couldn't copy — fall back to the original URI (no regression)
+  }
+}
+
+function isQueueUri(uri: string): boolean {
+  return QUEUE_DIR != null && uri.startsWith(QUEUE_DIR.uri);
+}
+
 export function UploadProvider({ children }: { children: ReactNode }) {
   const [uploads, setUploads] = useState<UploadEntry[]>([]);
   const tokenRef = useRef<string | null>(null);
@@ -241,13 +267,19 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         } else {
           await deleteLocalFile(uri);
         }
+        // If this ran from a durable queue copy, remove that too (onDeleteLocal
+        // only knows about the original capture).
+        if (isQueueUri(uri)) await deleteLocalFile(uri);
       }
     } catch (err: any) {
       const isNetwork = err.message?.includes("Network") || err.message?.includes("network") || err.message?.includes("timed out");
       if (isNetwork && retries < MAX_RETRIES) {
         const delay = backoffMs(retries);
+        // Copy to durable storage on first queueing so a later retry (possibly
+        // after an app kill) still has the file even if the cache was purged.
+        const queueUri = isQueueUri(uri) ? uri : persistForQueue(uri, existingId);
         offlineQueue.push({
-          id: existingId, uri, fileName, fileType, connectionIds,
+          id: existingId, uri: queueUri, fileName, fileType, connectionIds,
           retries: retries + 1, nextRetryAt: Date.now() + delay, onDeleteLocal,
         });
         persistQueue();
@@ -275,8 +307,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     const effectiveToken = token ?? tokenRef.current;
 
     if (!effectiveToken) {
+      const queueUri = persistForQueue(uri, id);
       offlineQueue.push({
-        id, uri, fileName, fileType, connectionIds,
+        id, uri: queueUri, fileName, fileType, connectionIds,
         retries: 0, nextRetryAt: Date.now(), onDeleteLocal,
       });
       persistQueue();
@@ -306,8 +339,27 @@ export function UploadProvider({ children }: { children: ReactNode }) {
             const saved = JSON.parse(raw);
             if (Array.isArray(saved)) {
               const existing = new Set(offlineQueue.map(i => i.id));
+              const restored: QueuedItem[] = [];
               for (const item of saved as QueuedItem[]) {
-                if (item?.uri && item?.id && !existing.has(item.id)) offlineQueue.push(item);
+                if (item?.uri && item?.id && !existing.has(item.id)) {
+                  offlineQueue.push(item);
+                  restored.push(item);
+                }
+              }
+              // Surface restored captures in the history/status UI so a queued
+              // upload isn't silently retrying with no visible entry or badge.
+              if (restored.length > 0 && !cancelled) {
+                setUploads(prev => {
+                  const have = new Set(prev.map(u => u.id));
+                  const entries: UploadEntry[] = restored
+                    .filter(i => !have.has(i.id))
+                    .map(i => ({
+                      id: i.id, fileName: i.fileName, fileType: i.fileType,
+                      status: "queued" as UploadStatus, progress: 0,
+                      error: "Queued — will upload when online", timestamp: Date.now(),
+                    }));
+                  return [...entries, ...prev].slice(0, 50);
+                });
               }
             }
           }

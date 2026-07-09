@@ -1,3 +1,5 @@
+import fs from "fs";
+import os from "os";
 import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
@@ -13,10 +15,41 @@ import { normalizeConnectionIds } from "../lib/connectionIds.js";
 
 const router = Router();
 
+// Stream uploads to a temp file on disk rather than buffering the whole body in
+// RAM. memoryStorage held the entire file (up to the cap) in memory for every
+// concurrent request, so a handful of large videos could OOM-kill the shared
+// instance and drop all users. Disk storage bounds receive-time memory; the
+// semaphore below then bounds how many files are read into a Buffer at once for
+// the actual cloud upload.
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 500 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, _file, cb) => cb(null, `kkamera-upload-${Date.now()}-${Math.round(Math.random() * 1e9)}`),
+  }),
+  limits: { fileSize: 200 * 1024 * 1024, files: 1 },
 });
+
+// Cap concurrent in-flight cloud uploads so peak memory (one Buffer per active
+// upload) stays bounded regardless of how many clients upload at once. Excess
+// requests wait for a slot rather than being rejected, so no capture is lost.
+const MAX_CONCURRENT_UPLOADS = 3;
+let activeUploads = 0;
+const uploadWaiters: Array<() => void> = [];
+
+function acquireUploadSlot(): Promise<void> {
+  if (activeUploads < MAX_CONCURRENT_UPLOADS) {
+    activeUploads += 1;
+    return Promise.resolve();
+  }
+  // Inherit the releaser's slot (activeUploads stays at the cap) when resumed.
+  return new Promise<void>(resolve => uploadWaiters.push(resolve));
+}
+
+function releaseUploadSlot(): void {
+  const next = uploadWaiters.shift();
+  if (next) next(); // hand our slot straight to the next waiter
+  else activeUploads -= 1;
+}
 
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -96,6 +129,7 @@ router.post(
   requireSubscription,
   upload.single("file"),
   async (req, res) => {
+    const tmpPath = req.file?.path;
     try {
       const file = req.file;
       if (!file) { res.status(400).json({ message: "No file provided" }); return; }
@@ -140,9 +174,18 @@ router.post(
         connectionIds: connections.map(c => c.id).join(","),
       }).returning();
 
-      const results = await Promise.all(
-        connections.map(conn => uploadToCloud(conn, file.buffer, fileName, mimeType))
-      );
+      // Read the file into memory (for uploadToCloud) only while holding a slot,
+      // then release it before the DB write so we don't pin memory needlessly.
+      await acquireUploadSlot();
+      let results;
+      try {
+        const buf = await fs.promises.readFile(file.path);
+        results = await Promise.all(
+          connections.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
+        );
+      } finally {
+        releaseUploadSlot();
+      }
 
       const allOk = results.every(r => r.success);
       const anyOk = results.some(r => r.success);
@@ -161,6 +204,9 @@ router.post(
       req.log.error({ err }, "Execute upload error");
       // Don't leak internal error details to the client; they're in the logs.
       res.status(500).json({ message: "Upload failed" });
+    } finally {
+      // Always remove the temp file, on every path (early return, success, error).
+      if (tmpPath) fs.promises.unlink(tmpPath).catch(() => {});
     }
   }
 );

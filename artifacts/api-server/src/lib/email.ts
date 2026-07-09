@@ -120,8 +120,11 @@ export function coworkerInviteEmail(inviterName: string, referralCode: string): 
   const link = `https://app.kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
   const safeName = escapeHtml(inviterName);
   const safeCode = escapeHtml(referralCode);
+  // Strip CR/LF/tab from any user-derived value used in a header line, matching
+  // the witness-notify subject handling.
+  const subjectName = inviterName.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100) || "Someone";
   return {
-    subject: `${inviterName} invited you to KKamera 📷`,
+    subject: `${subjectName} invited you to KKamera 📷`,
     html: wrap(`${safeName} thinks you'd love KKamera`, `
       <p><strong style="color:#b19870">${safeName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
       <p>Sign up with their invite and you'll get a <strong style="color:#b19870">14-day free trial</strong> — no credit card required.</p>
