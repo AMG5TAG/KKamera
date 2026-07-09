@@ -21,6 +21,11 @@ export const usersTable = pgTable("users", {
   uploadTargetMode: text("upload_target_mode").notNull().default("all"),
   // CSV of cloud_connections.id used when uploadTargetMode = "selected".
   uploadTargetIds: text("upload_target_ids"),
+  // Rolling per-user cap on referral-invite emails (spam/phishing-relay guard),
+  // enforced under a row lock so it holds across autoscale instances where an
+  // in-memory / per-IP limiter can be bypassed by rotating IPs.
+  inviteWindowStart: timestamp("invite_window_start", { withTimezone: true }),
+  inviteCount: integer("invite_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
