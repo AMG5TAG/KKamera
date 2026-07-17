@@ -20,10 +20,29 @@ const config = getDefaultConfig(__dirname);
 // "UnableToResolveError") is handled below by the stale-hash resolver
 // interceptor plus cache-busting, not by breaking serverRoot.
 //
-// Add workspace root to watchFolders for SHA-1 computation.
+// watchFolders: only stable directories. Do NOT add the full workspace root
+// because Metro's FallbackWatcher recursively walks everything and crashes
+// with ENOENT when temporary agent directories (e.g. .local/skills/.tmp-*)
+// are deleted while it is setting up watches.
 config.watchFolders = [
   ...(config.watchFolders || []),
-  path.resolve(__dirname, "../.."),
+  path.resolve(__dirname, "../../node_modules"),
+  path.resolve(__dirname, "../../lib"),
+];
+
+// Ensure .ts / .tsx files can be resolved when imported from workspace
+// packages that use "exports": { ".": "./src/index.ts" }.
+config.resolver.sourceExts = [
+  ...(config.resolver.sourceExts || []),
+  "ts",
+  "tsx",
+];
+
+// Block system directories from being traversed by the resolver.
+config.resolver.blockList = [
+  /\/\.local\//,
+  /\/\.git\//,
+  /\/\.cache\//,
 ];
 
 // ---- RESOLVER INTERCEPTOR: rewrite stale pnpm hash paths ----

@@ -132,14 +132,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const hasCompletedWizard = !!user?.onboardingCompleted || localWizardDone;
-
   const value = useMemo<AuthContextValue>(() => ({
     user, token, isLoading,
     isAuthenticated: !!token && !!user,
-    hasCompletedWizard,
+    hasCompletedWizard: !!user?.onboardingCompleted || localWizardDone,
     login, logout, updateUser, completeWizard,
-  }), [user, token, isLoading, hasCompletedWizard]);
+  }), [user, token, isLoading, localWizardDone]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
