@@ -5,13 +5,9 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { mockupPreviewPlugin } from "./mockupPreviewPlugin";
 
-const rawPort = process.env.PORT;
-
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
+// Default to 8082 so this dev-only preview sandbox never collides with the app's
+// Metro/Expo dev server on 8081 (which .replit maps to the public port 80).
+const rawPort = process.env.PORT ?? "8082";
 
 const port = Number(rawPort);
 
