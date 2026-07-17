@@ -119,8 +119,12 @@ export default function AddCloudScreen() {
         // Native: open in-app browser, intercept kkamera:// deep link
         const result = await WebBrowser.openAuthSessionAsync(authorizeUrl, "kkamera://");
         if (result.type === "success" && result.url) {
+          // The server deep-links back to kkamera://oauth-success (with a
+          // connectionId) on success, or kkamera://oauth-error (with an error) on
+          // failure — both close the auth browser, so inspect which one we got.
           const url = new URL(result.url);
           const connectionId = url.searchParams.get("connectionId");
+          const errParam = url.searchParams.get("error");
           const connName = url.searchParams.get("name");
           if (connectionId) {
             queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
@@ -129,6 +133,10 @@ export default function AddCloudScreen() {
               `"${decodeURIComponent(connName ?? selected?.label ?? "Connection")}" added successfully.`,
               [{ text: "Done", onPress: () => router.back() }]
             );
+          } else if (errParam) {
+            Alert.alert("Connection Failed", decodeURIComponent(errParam));
+          } else {
+            Alert.alert("Connection Failed", "The connection did not complete. Please try again.");
           }
         } else if (result.type === "cancel") {
           // User cancelled — do nothing

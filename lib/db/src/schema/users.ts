@@ -12,6 +12,10 @@ export const usersTable = pgTable("users", {
   twoFASecret: text("two_fa_secret"),
   twoFAEnabled: boolean("two_fa_enabled").notNull().default(false),
   twoFABackupCodes: text("two_fa_backup_codes"),
+  // Set once the user finishes (or skips) the first-run setup wizard. Tracked on
+  // the account — not device-local storage — so onboarding shows exactly once per
+  // user, regardless of which device or browser they sign in from.
+  onboardingCompleted: boolean("onboarding_completed").notNull().default(false),
   // Bumped whenever the password changes; tokens issued before this are rejected.
   passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
   // Default upload destination when multiple cloud accounts are connected:

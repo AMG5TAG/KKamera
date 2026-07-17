@@ -65,7 +65,7 @@ export default function RegisterScreen() {
 
         <View style={styles.trialBadge}>
           <Ionicons name="gift-outline" size={18} color={PRIMARY} />
-          <Text style={styles.trialText}>14-day free trial · Then $25/year</Text>
+          <Text style={styles.trialText}>14-day free trial · Then $30/year</Text>
         </View>
 
         {error ? (

@@ -1020,7 +1020,7 @@ export default function CameraScreen() {
         <Text style={styles.paywallBody}>Your free trial has ended.{"\n"}Subscribe to keep using KKamera.</Text>
         <TouchableOpacity style={styles.paywallBtn} onPress={() => router.push("/settings/subscription")}>
           <Ionicons name="card-outline" size={18} color="white" />
-          <Text style={styles.paywallBtnText}>View Subscription — $25/year</Text>
+          <Text style={styles.paywallBtnText}>View Subscription — $30/year</Text>
         </TouchableOpacity>
       </View>
     );

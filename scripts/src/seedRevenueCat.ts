@@ -34,9 +34,9 @@ const OFFERING_DISPLAY_NAME = "Default Offering";
 const PACKAGE_IDENTIFIER = "$rc_annual";
 const PACKAGE_DISPLAY_NAME = "Annual Subscription";
 
-// $25/year = 25_000_000 micros
+// $30/year = 30_000_000 micros
 const PRODUCT_PRICES = [
-  { amount_micros: 25_000_000, currency: "USD" },
+  { amount_micros: 30_000_000, currency: "USD" },
   { amount_micros: 22_990_000, currency: "EUR" },
   { amount_micros: 19_990_000, currency: "GBP" },
 ];
@@ -156,7 +156,7 @@ async function seedRevenueCat() {
       throw new Error("Failed to set test store prices");
     }
   } else {
-    console.log("Test store prices set: $25 USD / €22.99 EUR / £19.99 GBP");
+    console.log("Test store prices set: $30 USD / €22.99 EUR / £19.99 GBP");
   }
 
   // Entitlement

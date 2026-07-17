@@ -43,6 +43,13 @@
       "when": 1783586882375,
       "tag": "0005_good_prowler",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784260621618,
+      "tag": "0006_worried_ender_wiggin",
+      "breakpoints": true
     }
   ]
 }

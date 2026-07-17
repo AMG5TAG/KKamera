@@ -64,6 +64,7 @@ export interface User {
   name: string;
   referralCode: string;
   twoFAEnabled: boolean;
+  onboardingCompleted: boolean;
   createdAt: string;
 }
 
@@ -228,6 +229,7 @@ export interface UploadTargetInput {
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
+  onboardingCompleted?: boolean;
 }
 
 export interface TwoFASetup {

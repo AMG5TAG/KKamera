@@ -90,7 +90,7 @@ export default function CloudScreen() {
             {(connections?.length ?? 0) > 0 && (
               <TouchableOpacity style={styles.destBtn} onPress={() => router.push("/settings/upload-destinations")}>
                 <Ionicons name="git-branch-outline" size={18} color={PRIMARY} />
-                <Text style={styles.destText}>Upload destinations</Text>
+                <Text style={styles.destText}>Upload Destination</Text>
                 <Ionicons name="chevron-forward" size={15} color="#555" style={{ marginLeft: "auto" }} />
               </TouchableOpacity>
             )}

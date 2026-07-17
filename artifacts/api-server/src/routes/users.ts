@@ -13,6 +13,7 @@ const router = Router();
 
 const updateMeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
+  onboardingCompleted: z.boolean().optional(),
 }).strict();
 
 const uploadTargetSchema = z.object({
@@ -35,6 +36,7 @@ router.get("/users/me", requireAuth, async (req, res) => {
     res.json({
       id: user.id, email: user.email, name: user.name,
       referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled,
+      onboardingCompleted: user.onboardingCompleted,
       createdAt: user.createdAt.toISOString(),
     });
   } catch (err) {
@@ -50,13 +52,15 @@ router.patch("/users/me", requireAuth, async (req, res) => {
       res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
       return;
     }
-    const updates: Partial<{ name: string }> = {};
+    const updates: Partial<{ name: string; onboardingCompleted: boolean }> = {};
     if (parsed.data.name) updates.name = parsed.data.name;
+    if (parsed.data.onboardingCompleted !== undefined) updates.onboardingCompleted = parsed.data.onboardingCompleted;
     const [user] = await db.update(usersTable).set(updates).where(eq(usersTable.id, req.userId!)).returning();
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
     res.json({
       id: user.id, email: user.email, name: user.name,
       referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled,
+      onboardingCompleted: user.onboardingCompleted,
       createdAt: user.createdAt.toISOString(),
     });
   } catch (err) {

@@ -202,7 +202,7 @@ export default function WizardScreen() {
               Your 14-day free trial has already started. Enjoy full access to all KKamera features — no credit card required right now.
             </Text>
             <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during your trial." />
-            <InfoCard icon="calendar-outline" text="After 14 days: just $25/year to continue — less than 7¢ per day." />
+            <InfoCard icon="calendar-outline" text="After 14 days: just $30/year to continue — less than 9¢ per day." />
             <InfoCard icon="notifications-outline" text="We'll remind you 3 days before your trial ends." />
             <InfoCard icon="close-circle-outline" text="Cancel anytime. No hidden fees, ever." />
           </View>

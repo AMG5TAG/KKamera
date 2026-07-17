@@ -85,8 +85,8 @@ export function trialEndingEmail(name: string, daysLeft: number): { subject: str
     html: wrap("Your trial is almost over", `
       <p>Hi ${escapeHtml(name)},</p>
       <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.</p>
-      <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$25/year</strong>, less than 7¢ a day.</p>
-      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $25/year</a>
+      <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$30/year</strong>, less than 9¢ a day.</p>
+      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $30/year</a>
       <p>Don't lose access to your camera uploads. Your existing cloud connections and settings will be preserved.</p>
     `),
   };

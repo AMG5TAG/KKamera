@@ -102,6 +102,7 @@ function formatUser(user: typeof usersTable.$inferSelect) {
     name: user.name,
     referralCode: user.referralCode,
     twoFAEnabled: user.twoFAEnabled,
+    onboardingCompleted: user.onboardingCompleted,
     createdAt: user.createdAt.toISOString(),
   };
 }

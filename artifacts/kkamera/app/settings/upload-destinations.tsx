@@ -86,7 +86,7 @@ export default function UploadDestinationsScreen() {
       </TouchableOpacity>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 100 }} showsVerticalScrollIndicator={false}>
-        <Text style={styles.pageTitle}>Upload destinations</Text>
+        <Text style={styles.pageTitle}>Upload Destination</Text>
         <Text style={styles.pageSubtitle}>Choose where captures upload by default. This is saved to your account.</Text>
 
         <View style={styles.card}>

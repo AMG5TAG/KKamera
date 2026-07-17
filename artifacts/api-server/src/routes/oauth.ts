@@ -175,6 +175,18 @@ async function exchangeCode(
   return res.json() as any;
 }
 
+// Extract a safe, human-readable reason from a callback failure. Providers put a
+// descriptive `error_description` (e.g. "AADSTS7000215: Invalid client secret") in
+// their FAILED token responses — never a token — so echoing a bounded copy back to
+// the user is safe and far more actionable than a generic message.
+function oauthErrorReason(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const m = raw.match(/"error_description"\s*:\s*"([^"]{0,300})"/);
+  if (m?.[1]) return m[1].replace(/\s+/g, " ").trim();
+  if (/Token exchange failed/i.test(raw)) return "The storage provider rejected the sign-in. Please try again.";
+  return "Could not complete the connection. Please try again.";
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // POST /api/oauth/:provider/initiate  — authenticated, returns authorizeUrl
@@ -232,14 +244,21 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   const provider = String(req.params["provider"] ?? "");
   const { code, state, error } = req.query as Record<string, string>;
 
+  // Recover the platform from the signed state up front so failures return to the
+  // right surface: the native app via the kkamera:// deep link, or the web app's
+  // /oauth-error page. Previously EVERY error redirected to the web page, which on
+  // the native app got stuck inside the in-app auth browser (the kkamera:// return
+  // scheme never matched) instead of handing control back with a reason.
+  const entry = state ? verifyState(state) : null;
+
   const errorRedirect = (msg: string) => {
-    res.redirect(`/oauth-error?error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`);
+    const qs = `error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`;
+    res.redirect(entry?.platform === "native" ? `kkamera://oauth-error?${qs}` : `/oauth-error?${qs}`);
   };
 
   if (error) { errorRedirect(error); return; }
   if (!code || !state) { errorRedirect("Missing code or state"); return; }
 
-  const entry = verifyState(state);
   if (!entry || entry.provider !== provider) {
     errorRedirect("Invalid or expired OAuth state — please try again");
     return;
@@ -324,9 +343,11 @@ router.get("/oauth/:provider/callback", async (req, res) => {
     }
   } catch (err: any) {
     req.log.error({ err }, "OAuth callback error");
-    // Don't reflect the raw provider/internal error into the redirect URL (it
-    // lands in browser history/Referer); the detail is in the logs above.
-    errorRedirect("Could not complete the connection. Please try again.");
+    // Surface the provider's own failure reason (e.g. an AADSTS code) when we can
+    // extract it. It appears only in FAILED token responses, which carry no access
+    // tokens, so it's safe to show — and gives the user (and support) an actionable
+    // message instead of a dead-end "try again".
+    errorRedirect(oauthErrorReason(err));
   }
 });
 

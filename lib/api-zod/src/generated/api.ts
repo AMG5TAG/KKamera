@@ -35,6 +35,7 @@ export const LoginResponse = zod.object({
     name: zod.string(),
     referralCode: zod.string(),
     twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
     createdAt: zod.string(),
   }),
 });
@@ -90,11 +91,13 @@ export const GetMeResponse = zod.object({
   name: zod.string(),
   referralCode: zod.string(),
   twoFAEnabled: zod.boolean(),
+  onboardingCompleted: zod.boolean(),
   createdAt: zod.string(),
 });
 
 export const UpdateMeBody = zod.object({
   name: zod.string().nullish(),
+  onboardingCompleted: zod.boolean().optional(),
 });
 
 export const UpdateMeResponse = zod.object({
@@ -103,6 +106,7 @@ export const UpdateMeResponse = zod.object({
   name: zod.string(),
   referralCode: zod.string(),
   twoFAEnabled: zod.boolean(),
+  onboardingCompleted: zod.boolean(),
   createdAt: zod.string(),
 });
 
@@ -389,6 +393,7 @@ export const ExportMyDataResponse = zod.object({
     name: zod.string(),
     referralCode: zod.string(),
     twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
     createdAt: zod.string(),
   }),
   subscription: zod

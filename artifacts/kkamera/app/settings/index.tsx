@@ -52,7 +52,7 @@ export default function SettingsScreen() {
   const subStatus = sub?.status ?? "none";
   const subLabel =
     subStatus === "trial" ? "14-Day Trial" :
-    subStatus === "active" ? "Active · $25/yr" :
+    subStatus === "active" ? "Active · $30/yr" :
     subStatus === "cancelled" ? "Cancelled" : "Subscribe";
   const subBadge =
     subStatus === "trial" ? "TRIAL" :
@@ -115,16 +115,23 @@ export default function SettingsScreen() {
           <View style={styles.divider} />
           <MenuRow
             icon="cloud-upload-outline"
-            label="Upload"
-            hint="Cloud connections, Wi-Fi, queue"
-            onPress={() => router.push("/settings/upload")}
+            label="Cloud Connections"
+            hint="FTP, WebDAV, Google Drive, OneDrive, Dropbox"
+            onPress={() => router.push("/settings/cloud")}
           />
           <View style={styles.divider} />
           <MenuRow
             icon="git-branch-outline"
-            label="Upload destinations"
+            label="Upload Destination"
             hint="Choose which accounts captures upload to"
             onPress={() => router.push("/settings/upload-destinations")}
+          />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="settings-outline"
+            label="Upload"
+            hint="Wi-Fi, history, queue"
+            onPress={() => router.push("/settings/upload")}
           />
         </View>
 

@@ -42,7 +42,7 @@ export default function SubscriptionScreen() {
   const annualPackage = currentOffering?.availablePackages.find(
     (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual"
   ) ?? currentOffering?.availablePackages[0];
-  const priceString = annualPackage?.product.priceString ?? "$25.00";
+  const priceString = annualPackage?.product.priceString ?? "$30.00";
 
   const handleNativePurchase = () => {
     if (!annualPackage) return;
@@ -106,7 +106,7 @@ export default function SubscriptionScreen() {
           <View style={[styles.statusBadge, { backgroundColor: "rgba(34,197,94,0.2)" }]}>
             <Text style={[styles.statusBadgeText, { color: "#22c55e" }]}>ACTIVE</Text>
           </View>
-          <Text style={styles.statusTitle}>$25 / year</Text>
+          <Text style={styles.statusTitle}>$30 / year</Text>
           <Text style={styles.statusSub}>Renews {sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd).toLocaleDateString() : "—"}</Text>
         </View>
       );
@@ -157,7 +157,7 @@ export default function SubscriptionScreen() {
       <View style={styles.priceCard}>
         <Text style={styles.priceAmount}>{priceString}</Text>
         <Text style={styles.pricePer}>per year</Text>
-        <Text style={styles.priceSub}>Less than 7¢ per day · Cancel anytime</Text>
+        <Text style={styles.priceSub}>Less than 9¢ per day · Cancel anytime</Text>
       </View>
 
       {showSubscribeButton && (

@@ -29,7 +29,7 @@ export default function TermsScreen() {
 
       <Section title="3. Subscription and Pricing">
         <Bold>Free Trial:</Bold> New accounts receive a 14-day free trial with full access to all features. No credit card is required during the trial.{"\n\n"}
-        <Bold>Paid Subscription:</Bold> After the trial period, continued use requires a subscription at $25 USD per year (or local equivalent). Subscriptions auto-renew annually.{"\n\n"}
+        <Bold>Paid Subscription:</Bold> After the trial period, continued use requires a subscription at $30 USD per year (or local equivalent). Subscriptions auto-renew annually.{"\n\n"}
         <Bold>Cancellation:</Bold> You may cancel at any time. Cancellation takes effect at the end of the current billing period. No refunds are provided for partial periods.{"\n\n"}
         <Bold>Price Changes:</Bold> We will notify you at least 30 days before any price change.
       </Section>
