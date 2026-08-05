@@ -47,12 +47,23 @@ async function runAppMigrations() {
   logger.info("Database migrations applied");
 }
 
-await runAppMigrations();
-
+// Listen FIRST so the health-check probe succeeds immediately — do NOT await
+// migrations before binding. In production (autoscale / Cloud Run), the
+// deployer only gives the container ~60 s to open its port; if the database
+// connection is slow on cold-start the old ordering caused the process to be
+// killed before it ever called listen(). Migrations are idempotent and guarded
+// by a Postgres advisory lock, so running them concurrently with the first
+// requests is safe: DB-touching routes will get a brief connection error during
+// migration (rare) rather than the whole deployment failing every time.
 app.listen(port, (err?: Error) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
   logger.info({ port }, "Server listening");
+});
+
+// Run migrations in the background after the port is open.
+runAppMigrations().catch((err) => {
+  logger.error({ err }, "Database migration failed — server is running but schema may be out of date");
 });
