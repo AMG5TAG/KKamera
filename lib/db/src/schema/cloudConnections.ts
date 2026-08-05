@@ -6,6 +6,10 @@ export const cloudConnectionsTable = pgTable("cloud_connections", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull(),
   type: text("type").notNull(),
+  // Optional UI hint for a sub-flavour of `type` — e.g. "synology" for a NAS
+  // connected over WebDAV. Purely presentational (icon/label in the list); the
+  // upload logic always switches on `type`. Null for plain connections.
+  provider: text("provider"),
   name: text("name").notNull(),
   // Stable provider account identifier (Google permissionId/email, Microsoft
   // drive/owner id, Dropbox account_id). Lets a personal and a business account

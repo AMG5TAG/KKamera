@@ -20,7 +20,25 @@ const CARD = "#1a1710";
 
 const BASE_URL = API_BASE_URL;
 
-const CLOUD_TYPES = [
+// `type` is the card's identity in this screen. `backendType` (when set) is what
+// the server actually stores — e.g. Synology reuses the WebDAV upload path.
+type CloudType = {
+  type: string;
+  backendType?: string;
+  provider?: string;
+  label: string;
+  icon: string;
+  color: string;
+  set: "mci" | "ion";
+  oAuth: boolean;
+  desc: string;
+  hostHint?: string;
+  portHint?: string;
+  defaultPort?: string;
+  note?: string;
+};
+
+const CLOUD_TYPES: CloudType[] = [
   {
     type: "googledrive", label: "Google Drive", icon: "google-drive", color: "#4285F4", set: "mci", oAuth: true,
     desc: "Connect via your Google account — no tokens to copy.",
@@ -34,12 +52,27 @@ const CLOUD_TYPES = [
     desc: "Connect via your Dropbox account — secure OAuth 2 flow.",
   },
   {
+    type: "synology", backendType: "webdav", provider: "synology", label: "Synology NAS", icon: "nas", color: "#b19870", set: "mci", oAuth: false,
+    desc: "Upload to a Synology DiskStation over WebDAV.",
+    hostHint: "e.g. https://yourname.quickconnect.to or your DDNS/IP",
+    portHint: "Default: 5006 (WebDAV over HTTPS)", defaultPort: "5006",
+    note:
+      "Enable the “WebDAV Server” package in DSM (Package Center) and turn on HTTPS on port 5006. " +
+      "Then use your DSM username and password below.\n\n" +
+      "Note: Synology BeeStation appliances are not supported directly — they don’t offer WebDAV, FTP, or an upload API. " +
+      "For a BeeStation, connect Google Drive / Dropbox / OneDrive instead and set the BeeStation to pull from that folder.",
+  },
+  {
     type: "webdav", label: "WebDAV Server", icon: "server-outline", color: "#6B7280", set: "ion", oAuth: false,
     desc: "Connect to any WebDAV server (Nextcloud, ownCloud, etc.).",
+    hostHint: "e.g. https://cloud.example.com/dav",
+    portHint: "Default: 443", defaultPort: "",
   },
   {
     type: "ftp", label: "FTP / SFTP", icon: "folder-outline", color: "#8B5CF6", set: "ion", oAuth: false,
     desc: "Connect to an FTP server to upload photos and videos.",
+    hostHint: "e.g. ftp.example.com",
+    portHint: "Default: 21", defaultPort: "",
   },
 ];
 
@@ -163,7 +196,8 @@ export default function AddCloudScreen() {
     try {
       await createMutation.mutateAsync({
         data: {
-          type: selectedType as any,
+          type: (selected?.backendType ?? selectedType) as any,
+          provider: selected?.provider ?? null,
           name: name.trim(),
           host: host || null,
           port: port ? parseInt(port) : null,
@@ -194,7 +228,7 @@ export default function AddCloudScreen() {
           <TouchableOpacity
             key={opt.type}
             style={[styles.typeCard, selectedType === opt.type && styles.typeCardSelected]}
-            onPress={() => { setSelectedType(opt.type); setName(opt.label); }}
+            onPress={() => { setSelectedType(opt.type); setName(opt.label); setPort(opt.defaultPort ?? ""); }}
           >
             <View style={[styles.typeIcon, { backgroundColor: opt.color + "22" }]}>
               {opt.set === "mci"
@@ -213,6 +247,13 @@ export default function AddCloudScreen() {
         {selectedType && selected && (
           <>
             <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Connection Details</Text>
+
+            {selected.note && (
+              <View style={styles.infoCard}>
+                <Ionicons name="information-circle-outline" size={18} color={PRIMARY} />
+                <Text style={styles.infoText}>{selected.note}</Text>
+              </View>
+            )}
 
             <Field label="Connection Name">
               <TextInput
@@ -270,7 +311,7 @@ export default function AddCloudScreen() {
               <>
                 <Field
                   label="Server Host / URL"
-                  hint={selectedType === "webdav" ? "e.g. https://cloud.example.com/dav" : "e.g. ftp.example.com"}
+                  hint={selected.hostHint ?? "host or URL"}
                 >
                   <TextInput
                     style={styles.input} value={host} onChangeText={setHost}
@@ -279,7 +320,7 @@ export default function AddCloudScreen() {
                   />
                 </Field>
 
-                <Field label="Port (optional)" hint={selectedType === "ftp" ? "Default: 21" : "Default: 443"}>
+                <Field label="Port (optional)" hint={selected.portHint ?? "Leave blank for default"}>
                   <TextInput
                     style={styles.input} value={port} onChangeText={setPort}
                     placeholder="Leave blank for default" placeholderTextColor="#555"
@@ -370,6 +411,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(245,158,11,0.25)",
   },
   warnText: { flex: 1, fontSize: 12, color: "#d4a800", fontFamily: "Inter_400Regular", lineHeight: 17 },
+  infoCard: {
+    flexDirection: "row", alignItems: "flex-start", gap: 10,
+    backgroundColor: "rgba(177,152,112,0.08)", borderRadius: 10, padding: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.25)",
+  },
+  infoText: { flex: 1, fontSize: 12, color: "#c3b091", fontFamily: "Inter_400Regular", lineHeight: 17 },
   oauthBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     borderRadius: 14, paddingVertical: 15, marginTop: 4,

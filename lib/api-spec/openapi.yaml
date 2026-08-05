@@ -1023,6 +1023,9 @@ components:
         type:
           type: string
           enum: [ftp, webdav, onedrive, googledrive, dropbox]
+        provider:
+          type: ["string", "null"]
+          description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
         active:
@@ -1043,6 +1046,9 @@ components:
         type:
           type: string
           enum: [ftp, webdav, onedrive, googledrive, dropbox]
+        provider:
+          type: ["string", "null"]
+          description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
         host:

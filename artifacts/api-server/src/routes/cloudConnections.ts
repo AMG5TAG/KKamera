@@ -14,6 +14,7 @@ const cloudProviders = Object.values(CLOUD_PROVIDER) as [string, ...string[]];
 
 const createConnectionSchema = z.object({
   type: z.enum(cloudProviders as [string, ...string[]]),
+  provider: z.string().max(50).optional(),
   name: z.string().min(1).max(100),
   host: z.string().url().optional().or(z.string().min(1)).optional(),
   port: z.number().int().min(1).max(65535).optional(),
@@ -36,7 +37,7 @@ const updateConnectionSchema = z.object({
 
 function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
   return {
-    id: c.id, userId: c.userId, type: c.type, name: c.name,
+    id: c.id, userId: c.userId, type: c.type, provider: c.provider ?? null, name: c.name,
     active: c.active, uploadPath: c.uploadPath ?? null,
     accountLabel: c.accountLabel ?? null,
     hasCredentials: !!(c.passwordEncrypted || c.accessTokenEncrypted),
@@ -62,9 +63,9 @@ router.post("/cloud-connections", requireAuth, async (req, res) => {
       res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
       return;
     }
-    const { type, name, host, port, username, password, uploadPath, oauthCode } = parsed.data;
+    const { type, provider, name, host, port, username, password, uploadPath, oauthCode } = parsed.data;
     const [conn] = await db.insert(cloudConnectionsTable).values({
-      userId: req.userId!, type, name,
+      userId: req.userId!, type, provider: provider ?? null, name,
       host: host ?? null,
       port: port ?? null,
       username: username ?? null,

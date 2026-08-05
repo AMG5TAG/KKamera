@@ -18,9 +18,14 @@ localPort = 24623
 [services.development]
 run = "pnpm --filter @workspace/kkamera run dev"
 
-[services.production]
-build = [ "pnpm", "--filter", "@workspace/kkamera", "run", "build" ]
-run = [ "pnpm", "--filter", "@workspace/kkamera", "run", "serve" ]
+[services.production.build]
+args = ["pnpm", "--filter", "@workspace/kkamera", "run", "build"]
+
+[services.production.run]
+args = ["pnpm", "--filter", "@workspace/kkamera", "run", "serve"]
+
+[services.production.run.env]
+PORT = "24623"
 
 [services.env]
 PORT = "24623"

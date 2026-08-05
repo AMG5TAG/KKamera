@@ -9,6 +9,11 @@ import type { CloudConnectionInputType } from "./cloudConnectionInputType";
 
 export interface CloudConnectionInput {
   type: CloudConnectionInputType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @nullable
+   */
+  provider?: string | null;
   name: string;
   /** @nullable */
   host?: string | null;

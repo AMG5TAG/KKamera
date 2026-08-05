@@ -21,6 +21,14 @@ const ICONS: Record<string, { icon: string; color: string; set: "ion" | "mci" }>
   ftp: { icon: "folder-outline", color: "#8B5CF6", set: "ion" },
 };
 
+// UI sub-flavours (`provider`) that override the base `type` icon + type label.
+const PROVIDER_ICONS: Record<string, { icon: string; color: string; set: "ion" | "mci" }> = {
+  synology: { icon: "nas", color: "#b19870", set: "mci" },
+};
+const PROVIDER_LABELS: Record<string, string> = {
+  synology: "SYNOLOGY",
+};
+
 export default function CloudScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
@@ -104,7 +112,9 @@ export default function CloudScreen() {
           </View>
         )}
         renderItem={({ item }) => {
-          const cfg = ICONS[item.type] ?? { icon: "cloud-outline", color: PRIMARY, set: "ion" };
+          const cfg = (item.provider ? PROVIDER_ICONS[item.provider] : undefined)
+            ?? ICONS[item.type] ?? { icon: "cloud-outline", color: PRIMARY, set: "ion" as const };
+          const typeLabel = (item.provider ? PROVIDER_LABELS[item.provider] : undefined) ?? item.type.toUpperCase();
           return (
             <View style={styles.card}>
               <View style={[styles.cardTop, !item.active && styles.cardTopInactive]}>
@@ -119,7 +129,7 @@ export default function CloudScreen() {
                   {item.accountLabel ? (
                     <Text style={styles.cardAccount} numberOfLines={1}>{item.accountLabel}</Text>
                   ) : null}
-                  <Text style={styles.cardType}>{item.type.toUpperCase()} · {item.uploadPath || "/"}</Text>
+                  <Text style={styles.cardType}>{typeLabel} · {item.uploadPath || "/"}</Text>
                 </View>
                 <TouchableOpacity onPress={() => handleToggleActive(item.id, item.active)} style={styles.toggleBtn}>
                   <Ionicons name={item.active ? "toggle" : "toggle-outline"} size={32} color={item.active ? PRIMARY : "#555"} />
