@@ -13,6 +13,9 @@
   "pnpm": {
     "overrides": {
       "ws@>=8.0.0 <8.21.0": "8.21.0"
+    },
+    "patchedDependencies": {
+      "@expo/cli@54.0.25": "patches/@expo__cli@54.0.25.patch"
     }
   },
   "devDependencies": {
@@ -20,8 +23,6 @@
     "typescript": "~5.9.2"
   },
   "dependencies": {
-    "@replit/revenuecat-sdk": "4.0.0",
-    "stripe": "20.0.0",
-    "stripe-replit-sync": "1.0.0"
+    "@replit/revenuecat-sdk": "4.0.0"
   }
 }

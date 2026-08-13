@@ -121,7 +121,7 @@ export default function SecurityScreen() {
           <Text style={styles.manualSecret}>Or enter manually: <Text style={{ color: PRIMARY, fontFamily: "Inter_600SemiBold" }}>{setupData.secret}</Text></Text>
 
           <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Step 2: Save Backup Codes</Text>
-          <Text style={styles.bodyText}>? Store these codes safely. They let you access your account if you lose your phone:</Text>
+          <Text style={styles.bodyText}>⚠️ Store these codes safely. They let you access your account if you lose your phone:</Text>
           <View style={styles.backupGrid}>
             {setupData.backupCodes.map((c, i) => (
               <View key={i} style={styles.backupCode}><Text style={styles.backupCodeText}>{c}</Text></View>

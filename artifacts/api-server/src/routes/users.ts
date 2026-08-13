@@ -4,17 +4,30 @@ import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
   cloudConnectionsTable, uploadsTable, feedbackTable,
-  pushSubscriptionsTable, passwordResetTokensTable,
+  passwordResetTokensTable,
 } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { getUncachableStripeClient } from "../stripeClient.js";
 
 const router = Router();
 
 const updateMeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
+  onboardingCompleted: z.boolean().optional(),
 }).strict();
+
+const uploadTargetSchema = z.object({
+  mode: z.enum(["all", "selected", "none"]),
+  connectionIds: z.array(z.number().int().positive()).max(50).optional(),
+}).strict();
+
+/** Parse the stored CSV of connection ids into a positive-int array. */
+function parseTargetIds(csv: string | null): number[] {
+  if (!csv) return [];
+  return csv.split(",")
+    .map(s => parseInt(s.trim(), 10))
+    .filter(n => Number.isInteger(n) && n > 0);
+}
 
 router.get("/users/me", requireAuth, async (req, res) => {
   try {
@@ -23,6 +36,7 @@ router.get("/users/me", requireAuth, async (req, res) => {
     res.json({
       id: user.id, email: user.email, name: user.name,
       referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled,
+      onboardingCompleted: user.onboardingCompleted,
       createdAt: user.createdAt.toISOString(),
     });
   } catch (err) {
@@ -38,18 +52,72 @@ router.patch("/users/me", requireAuth, async (req, res) => {
       res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
       return;
     }
-    const updates: Partial<{ name: string }> = {};
+    const updates: Partial<{ name: string; onboardingCompleted: boolean }> = {};
     if (parsed.data.name) updates.name = parsed.data.name;
+    if (parsed.data.onboardingCompleted !== undefined) updates.onboardingCompleted = parsed.data.onboardingCompleted;
     const [user] = await db.update(usersTable).set(updates).where(eq(usersTable.id, req.userId!)).returning();
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
     res.json({
       id: user.id, email: user.email, name: user.name,
       referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled,
+      onboardingCompleted: user.onboardingCompleted,
       createdAt: user.createdAt.toISOString(),
     });
   } catch (err) {
     req.log.error({ err }, "Update me error");
     res.status(500).json({ message: "Failed to update user" });
+  }
+});
+
+// ─── Upload target default ────────────────────────────────────────────────────
+// Which connected cloud accounts a capture uploads to by default when the user
+// has more than one: "all" active, a "selected" subset, or "none" (capture only).
+
+router.get("/users/upload-target", requireAuth, async (req, res) => {
+  try {
+    const [user] = await db.select({
+      mode: usersTable.uploadTargetMode, ids: usersTable.uploadTargetIds,
+    }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
+    if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    res.json({ mode: user.mode, connectionIds: parseTargetIds(user.ids) });
+  } catch (err) {
+    req.log.error({ err }, "Get upload target error");
+    res.status(500).json({ message: "Failed to get upload target" });
+  }
+});
+
+router.put("/users/upload-target", requireAuth, async (req, res) => {
+  try {
+    const parsed = uploadTargetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { mode, connectionIds } = parsed.data;
+
+    // Only persist ids that actually belong to this user, so a stale/foreign id
+    // can never be stored or later uploaded to.
+    let ownedIds: number[] = [];
+    if (connectionIds?.length) {
+      const owned = await db.select({ id: cloudConnectionsTable.id })
+        .from(cloudConnectionsTable)
+        .where(and(
+          eq(cloudConnectionsTable.userId, req.userId!),
+          inArray(cloudConnectionsTable.id, connectionIds),
+        ));
+      const ownedSet = new Set(owned.map(c => c.id));
+      ownedIds = connectionIds.filter(id => ownedSet.has(id));
+    }
+
+    await db.update(usersTable).set({
+      uploadTargetMode: mode,
+      uploadTargetIds: ownedIds.length ? ownedIds.join(",") : null,
+    }).where(eq(usersTable.id, req.userId!));
+
+    res.json({ mode, connectionIds: ownedIds });
+  } catch (err) {
+    req.log.error({ err }, "Set upload target error");
+    res.status(500).json({ message: "Failed to set upload target" });
   }
 });
 
@@ -93,23 +161,14 @@ router.delete("/users/me", requireAuth, async (req, res) => {
   try {
     const userId = req.userId!;
 
-    // Cancel any live Stripe subscription immediately so a deleted account is
-    // not billed again. Best-effort — never block account deletion on Stripe.
-    try {
-      const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
-      if (sub?.stripeSubscriptionId) {
-        const stripe = await getUncachableStripeClient();
-        await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
-      }
-    } catch (err) {
-      req.log.error({ err }, "Failed to cancel Stripe subscription during account deletion");
-    }
+    // Billing is IAP-only; the user cancels the subscription store-side (App Store
+    // / Play). Deleting the account here just removes our data — RevenueCat stops
+    // mirroring once the store subscription lapses.
 
     // Delete all PII atomically — a partial delete must not leave orphaned rows
     // (e.g. encrypted cloud credentials) behind if one statement fails.
     await db.transaction(async (tx) => {
       await tx.delete(passwordResetTokensTable).where(eq(passwordResetTokensTable.userId, userId));
-      await tx.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
       await tx.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
       await tx.delete(uploadsTable).where(eq(uploadsTable.userId, userId));
       await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));

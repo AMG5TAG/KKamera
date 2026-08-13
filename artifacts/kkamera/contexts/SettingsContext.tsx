@@ -81,6 +81,8 @@ const SETTINGS_KEY = "kkamera_settings";
 interface SettingsContextValue {
   settings: AppSettings;
   updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
+  /** Restore all settings to defaults (clears the app-lock PIN) — used by Panic Wipe. */
+  resetSettings: () => Promise<void>;
   isLoading: boolean;
 }
 
@@ -109,9 +111,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const resetSettings = useCallback(async () => {
+    setSettings(DEFAULT_SETTINGS);
+    await AsyncStorage.removeItem(SETTINGS_KEY);
+  }, []);
+
   const value = useMemo<SettingsContextValue>(() => ({
-    settings, updateSetting, isLoading,
-  }), [settings, updateSetting, isLoading]);
+    settings, updateSetting, resetSettings, isLoading,
+  }), [settings, updateSetting, resetSettings, isLoading]);
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>;
 }

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useMemo, type Re
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
-import { setAuthTokenGetter, setBaseUrl, setUnauthorizedHandler } from "@workspace/api-client-react";
+import { setAuthTokenGetter, setBaseUrl, setUnauthorizedHandler, updateMe } from "@workspace/api-client-react";
 
 export interface AuthUser {
   id: number;
@@ -10,6 +10,7 @@ export interface AuthUser {
   name: string;
   referralCode: string;
   twoFAEnabled: boolean;
+  onboardingCompleted: boolean;
   createdAt: string;
 }
 
@@ -58,7 +59,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasCompletedWizard, setHasCompletedWizard] = useState(false);
+  // Device-local cache of the wizard-completion flag. The account's
+  // `onboardingCompleted` (below) is the source of truth; this is only a fast
+  // offline fallback and preserves completion for users who finished the wizard
+  // before it was tracked server-side.
+  const [localWizardDone, setLocalWizardDone] = useState(false);
 
   useEffect(() => {
     async function restore() {
@@ -74,7 +79,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(parsedUser);
           setAuthTokenGetter(() => storedToken);
         }
-        setHasCompletedWizard(wizardDone === "true");
+        setLocalWizardDone(wizardDone === "true");
       } catch {
         // ignore
       } finally {
@@ -113,16 +118,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const completeWizard = async () => {
+    // Mark locally first so navigation is instant and survives offline, then
+    // persist to the account so onboarding never re-shows on another device.
     await AsyncStorage.setItem(WIZARD_KEY, "true");
-    setHasCompletedWizard(true);
+    setLocalWizardDone(true);
+    try {
+      const updated = await updateMe({ onboardingCompleted: true });
+      setUser(updated as AuthUser);
+      await AsyncStorage.setItem(USER_KEY, JSON.stringify(updated));
+    } catch {
+      // Offline / transient failure: the local flag suppresses re-show on this
+      // device; the next successful login or /me fetch carries the server value.
+    }
   };
 
   const value = useMemo<AuthContextValue>(() => ({
     user, token, isLoading,
     isAuthenticated: !!token && !!user,
-    hasCompletedWizard,
+    hasCompletedWizard: !!user?.onboardingCompleted || localWizardDone,
     login, logout, updateUser, completeWizard,
-  }), [user, token, isLoading, hasCompletedWizard]);
+  }), [user, token, isLoading, localWizardDone]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

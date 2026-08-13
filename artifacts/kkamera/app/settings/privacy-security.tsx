@@ -26,8 +26,8 @@ async function getLocalAuth() {
 
 export default function PrivacySecurityScreen() {
   const insets = useSafeAreaInsets();
-  const { settings, updateSetting } = useSettings();
-  const { logout } = useAuth();
+  const { settings, updateSetting, resetSettings } = useSettings();
+  const { logout, token } = useAuth();
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [pinEntry, setPinEntry] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
@@ -93,18 +93,20 @@ export default function PrivacySecurityScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              // Fire API calls to clear server-side data. API_BASE_URL is "" on
-              // web (same-origin) — a valid prefix — so DON'T gate on it being
-              // truthy, or the wipe silently no-ops for web users.
-              const auth = (await import("@react-native-async-storage/async-storage")).default;
-              const storedToken = await auth.getItem("kkamera_token");
-              if (storedToken) {
+              // Use the in-memory auth token from context. Reading it from
+              // AsyncStorage broke on native, where the token lives in SecureStore
+              // — so the server-side wipe silently no-op'd on the exact platforms
+              // we ship. API_BASE_URL is "" on web (same-origin), a valid prefix.
+              if (token) {
                 await Promise.allSettled([
-                  fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
-                  fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
+                  fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+                  fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
                 ]);
               }
             } catch { /* best effort */ }
+            // Reset all local settings (clears the app-lock PIN too), as the
+            // confirmation dialog promises, then sign out.
+            await resetSettings();
             await logout();
           },
         },

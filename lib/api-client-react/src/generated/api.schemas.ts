@@ -9,6 +9,153 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface SuccessResponse {
+  success: boolean;
+}
+
+export type OAuthInitiateInputPlatform =
+  (typeof OAuthInitiateInputPlatform)[keyof typeof OAuthInitiateInputPlatform];
+
+export const OAuthInitiateInputPlatform = {
+  web: "web",
+  native: "native",
+} as const;
+
+export interface OAuthInitiateInput {
+  name?: string;
+  platform?: OAuthInitiateInputPlatform;
+  uploadPath?: string;
+}
+
+export interface OAuthInitiateResult {
+  authorizeUrl: string;
+  state: string;
+}
+
+export interface OAuthNotConfigured {
+  message: string;
+  missingEnv: string[];
+}
+
+export interface OAuthProviderStatus {
+  label: string;
+  configured: boolean;
+}
+
+/**
+ * Map keyed by provider id (googledrive, onedrive, dropbox)
+ */
+export interface OAuthStatus {
+  [key: string]: OAuthProviderStatus;
+}
+
+export interface WitnessNotifyInput {
+  witnessEmail: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  fileName: string;
+}
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  referralCode: string;
+  twoFAEnabled: boolean;
+  onboardingCompleted: boolean;
+  createdAt: string;
+}
+
+export type SubscriptionStatus =
+  (typeof SubscriptionStatus)[keyof typeof SubscriptionStatus];
+
+export const SubscriptionStatus = {
+  trial: "trial",
+  active: "active",
+  cancelled: "cancelled",
+  expired: "expired",
+  past_due: "past_due",
+  none: "none",
+} as const;
+
+export interface Subscription {
+  id: number;
+  userId: number;
+  status: SubscriptionStatus;
+  /** @nullable */
+  trialEnd?: string | null;
+  /** @nullable */
+  currentPeriodEnd?: string | null;
+  createdAt: string;
+}
+
+export type ReferralStatus =
+  (typeof ReferralStatus)[keyof typeof ReferralStatus];
+
+export const ReferralStatus = {
+  pending: "pending",
+  completed: "completed",
+} as const;
+
+export interface Referral {
+  id: number;
+  referredName: string;
+  status: ReferralStatus;
+  createdAt: string;
+}
+
+export type UploadItemStatus =
+  (typeof UploadItemStatus)[keyof typeof UploadItemStatus];
+
+export const UploadItemStatus = {
+  pending: "pending",
+  queued: "queued",
+  uploading: "uploading",
+  done: "done",
+  failed: "failed",
+  partial: "partial",
+} as const;
+
+export interface UploadItem {
+  id: number;
+  userId: number;
+  fileName: string;
+  fileType: string;
+  status: UploadItemStatus;
+  /** @nullable */
+  connectionIds?: string | null;
+  /** @nullable */
+  error?: string | null;
+  createdAt: string;
+}
+
+export type FeedbackItemType =
+  (typeof FeedbackItemType)[keyof typeof FeedbackItemType];
+
+export const FeedbackItemType = {
+  bug: "bug",
+  feature: "feature",
+  other: "other",
+} as const;
+
+export interface FeedbackItem {
+  id: number;
+  type: FeedbackItemType;
+  message: string;
+  createdAt: string;
+}
+
+export interface UserDataExport {
+  exportedAt: string;
+  user: User;
+  subscription?: Subscription | null;
+  referrals: Referral[];
+  uploads: UploadItem[];
+  feedback: FeedbackItem[];
+}
+
 export interface MessageResponse {
   message: string;
 }
@@ -46,23 +193,43 @@ export interface InviteCoworkersInput {
   emails: string[];
 }
 
-export interface User {
-  id: number;
-  email: string;
-  name: string;
-  referralCode: string;
-  twoFAEnabled: boolean;
-  createdAt: string;
-}
-
 export interface AuthResponse {
   token: string;
   user: User;
 }
 
+export type UploadTargetMode =
+  (typeof UploadTargetMode)[keyof typeof UploadTargetMode];
+
+export const UploadTargetMode = {
+  all: "all",
+  selected: "selected",
+  none: "none",
+} as const;
+
+export interface UploadTarget {
+  mode: UploadTargetMode;
+  connectionIds: number[];
+}
+
+export type UploadTargetInputMode =
+  (typeof UploadTargetInputMode)[keyof typeof UploadTargetInputMode];
+
+export const UploadTargetInputMode = {
+  all: "all",
+  selected: "selected",
+  none: "none",
+} as const;
+
+export interface UploadTargetInput {
+  mode: UploadTargetInputMode;
+  connectionIds?: number[];
+}
+
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
+  onboardingCompleted?: boolean;
 }
 
 export interface TwoFASetup {
@@ -75,53 +242,11 @@ export interface TwoFAVerifyInput {
   code: string;
 }
 
-export type SubscriptionStatus =
-  (typeof SubscriptionStatus)[keyof typeof SubscriptionStatus];
-
-export const SubscriptionStatus = {
-  trial: "trial",
-  active: "active",
-  cancelled: "cancelled",
-  expired: "expired",
-  past_due: "past_due",
-  none: "none",
-} as const;
-
-export interface Subscription {
-  id: number;
-  userId: number;
-  status: SubscriptionStatus;
-  /** @nullable */
-  trialEnd?: string | null;
-  /** @nullable */
-  currentPeriodEnd?: string | null;
-  createdAt: string;
-}
-
-export interface CheckoutSession {
-  url: string;
-}
-
 export interface AffiliateStats {
   referralCode: string;
   totalReferrals: number;
   completedReferrals: number;
   yearsEarned: number;
-}
-
-export type ReferralStatus =
-  (typeof ReferralStatus)[keyof typeof ReferralStatus];
-
-export const ReferralStatus = {
-  pending: "pending",
-  completed: "completed",
-} as const;
-
-export interface Referral {
-  id: number;
-  referredName: string;
-  status: ReferralStatus;
-  createdAt: string;
 }
 
 export type CloudConnectionType =
@@ -130,6 +255,7 @@ export type CloudConnectionType =
 export const CloudConnectionType = {
   ftp: "ftp",
   webdav: "webdav",
+  nextcloud: "nextcloud",
   onedrive: "onedrive",
   googledrive: "googledrive",
   dropbox: "dropbox",
@@ -139,10 +265,17 @@ export interface CloudConnection {
   id: number;
   userId: number;
   type: CloudConnectionType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @nullable
+   */
+  provider?: string | null;
   name: string;
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  /** @nullable */
+  accountLabel?: string | null;
   hasCredentials: boolean;
   createdAt: string;
 }
@@ -153,6 +286,7 @@ export type CloudConnectionInputType =
 export const CloudConnectionInputType = {
   ftp: "ftp",
   webdav: "webdav",
+  nextcloud: "nextcloud",
   onedrive: "onedrive",
   googledrive: "googledrive",
   dropbox: "dropbox",
@@ -160,6 +294,11 @@ export const CloudConnectionInputType = {
 
 export interface CloudConnectionInput {
   type: CloudConnectionInputType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @nullable
+   */
+  provider?: string | null;
   name: string;
   /** @nullable */
   host?: string | null;
@@ -197,31 +336,6 @@ export interface CloudConnectionUpdate {
 export interface TestResult {
   success: boolean;
   message: string;
-}
-
-export type UploadItemStatus =
-  (typeof UploadItemStatus)[keyof typeof UploadItemStatus];
-
-export const UploadItemStatus = {
-  pending: "pending",
-  queued: "queued",
-  uploading: "uploading",
-  done: "done",
-  failed: "failed",
-  partial: "partial",
-} as const;
-
-export interface UploadItem {
-  id: number;
-  userId: number;
-  fileName: string;
-  fileType: string;
-  status: UploadItemStatus;
-  /** @nullable */
-  connectionIds?: string | null;
-  /** @nullable */
-  error?: string | null;
-  createdAt: string;
 }
 
 export interface UploadInput {

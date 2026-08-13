@@ -11,10 +11,17 @@ export interface CloudConnection {
   id: number;
   userId: number;
   type: CloudConnectionType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @nullable
+   */
+  provider?: string | null;
   name: string;
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  /** @nullable */
+  accountLabel?: string | null;
   hasCredentials: boolean;
   createdAt: string;
 }

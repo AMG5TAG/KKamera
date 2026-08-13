@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
+import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
@@ -7,6 +8,7 @@ import { eq, and } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { fetchAccountIdentity } from "../lib/cloudIdentity.js";
 
 const router = Router();
 
@@ -94,7 +96,7 @@ function signState(s: OAuthState): string {
 
 function verifyState(state: string): OAuthState | null {
   try {
-    const d = jwt.verify(state, JWT_SECRET) as Record<string, string>;
+    const d = jwt.verify(state, JWT_SECRET, { algorithms: ["HS256"] }) as Record<string, string>;
     return {
       userId: Number(d["sub"]),
       provider: d["p"] ?? "",
@@ -173,6 +175,18 @@ async function exchangeCode(
   return res.json() as any;
 }
 
+// Extract a safe, human-readable reason from a callback failure. Providers put a
+// descriptive `error_description` (e.g. "AADSTS7000215: Invalid client secret") in
+// their FAILED token responses — never a token — so echoing a bounded copy back to
+// the user is safe and far more actionable than a generic message.
+function oauthErrorReason(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const m = raw.match(/"error_description"\s*:\s*"([^"]{0,300})"/);
+  if (m?.[1]) return m[1].replace(/\s+/g, " ").trim();
+  if (/Token exchange failed/i.test(raw)) return "The storage provider rejected the sign-in. Please try again.";
+  return "Could not complete the connection. Please try again.";
+}
+
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // POST /api/oauth/:provider/initiate  — authenticated, returns authorizeUrl
@@ -191,9 +205,17 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
       return;
     }
 
-    const { name = cfg.label, platform = "web", uploadPath = "/KKamera" } = req.body as {
-      name?: string; platform?: "web" | "native"; uploadPath?: string;
-    };
+    // Validate + bound the client-supplied fields — they flow into the stored
+    // connection name and upload path.
+    const parsedBody = z.object({
+      name: z.string().trim().min(1).max(100).optional(),
+      platform: z.enum(["web", "native"]).optional(),
+      uploadPath: z.string().trim().max(500).optional(),
+    }).safeParse(req.body ?? {});
+    if (!parsedBody.success) { res.status(400).json({ message: "Invalid request" }); return; }
+    const name = parsedBody.data.name ?? cfg.label;
+    const platform = parsedBody.data.platform ?? "native";
+    const uploadPath = parsedBody.data.uploadPath ?? "/KKamera";
 
     const verifier = generateVerifier();
     const challenge = generateChallenge(verifier);
@@ -222,14 +244,21 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   const provider = String(req.params["provider"] ?? "");
   const { code, state, error } = req.query as Record<string, string>;
 
+  // Recover the platform from the signed state up front so failures return to the
+  // right surface: the native app via the kkamera:// deep link, or the web app's
+  // /oauth-error page. Previously EVERY error redirected to the web page, which on
+  // the native app got stuck inside the in-app auth browser (the kkamera:// return
+  // scheme never matched) instead of handing control back with a reason.
+  const entry = state ? verifyState(state) : null;
+
   const errorRedirect = (msg: string) => {
-    res.redirect(`/oauth-error?error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`);
+    const qs = `error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`;
+    res.redirect(entry?.platform === "native" ? `kkamera://oauth-error?${qs}` : `/oauth-error?${qs}`);
   };
 
   if (error) { errorRedirect(error); return; }
   if (!code || !state) { errorRedirect("Missing code or state"); return; }
 
-  const entry = verifyState(state);
   if (!entry || entry.provider !== provider) {
     errorRedirect("Invalid or expired OAuth state — please try again");
     return;
@@ -246,16 +275,61 @@ router.get("/oauth/:provider/callback", async (req, res) => {
       ? new Date(Date.now() + tokens.expires_in * 1000)
       : null;
 
-    const [conn] = await db.insert(cloudConnectionsTable).values({
-      userId: entry.userId,
-      type: provider,
-      name: entry.name,
-      uploadPath: entry.uploadPath,
-      accessTokenEncrypted: encrypt(tokens.access_token),
-      refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
-      tokenExpiry: expiry,
-      active: true,
-    }).returning();
+    // Identify the account so a personal and a business account of the same
+    // provider can coexist as separate connections (best-effort; may be null).
+    const identity = await fetchAccountIdentity(provider, tokens.access_token);
+
+    let conn: typeof cloudConnectionsTable.$inferSelect | undefined;
+
+    // Reconnecting the SAME account refreshes that connection in place (keeps its
+    // id, so any saved upload-target selection stays valid) rather than stacking
+    // a duplicate. A different account of the same provider falls through to a
+    // fresh insert below.
+    if (identity.accountId) {
+      const [existing] = await db.select().from(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.userId, entry.userId),
+        eq(cloudConnectionsTable.type, provider),
+        eq(cloudConnectionsTable.accountId, identity.accountId),
+      )).limit(1);
+      if (existing) {
+        [conn] = await db.update(cloudConnectionsTable).set({
+          name: entry.name,
+          uploadPath: entry.uploadPath,
+          accessTokenEncrypted: encrypt(tokens.access_token),
+          // Keep the prior refresh token if the provider didn't return a new one.
+          refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : existing.refreshToken,
+          tokenExpiry: expiry,
+          accountLabel: identity.accountLabel,
+          active: true,
+        }).where(eq(cloudConnectionsTable.id, existing.id)).returning();
+      }
+    } else {
+      // Identity unknown — fall back to name-based dedup so repeated reconnects
+      // of the same (unidentifiable) account don't pile up duplicate rows.
+      await db.update(cloudConnectionsTable)
+        .set({ active: false })
+        .where(and(
+          eq(cloudConnectionsTable.userId, entry.userId),
+          eq(cloudConnectionsTable.type, provider),
+          eq(cloudConnectionsTable.name, entry.name),
+          eq(cloudConnectionsTable.active, true),
+        ));
+    }
+
+    if (!conn) {
+      [conn] = await db.insert(cloudConnectionsTable).values({
+        userId: entry.userId,
+        type: provider,
+        name: entry.name,
+        uploadPath: entry.uploadPath,
+        accountId: identity.accountId,
+        accountLabel: identity.accountLabel,
+        accessTokenEncrypted: encrypt(tokens.access_token),
+        refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+        tokenExpiry: expiry,
+        active: true,
+      }).returning();
+    }
 
     if (!conn) { errorRedirect("Failed to save connection"); return; }
 
@@ -269,7 +343,11 @@ router.get("/oauth/:provider/callback", async (req, res) => {
     }
   } catch (err: any) {
     req.log.error({ err }, "OAuth callback error");
-    errorRedirect(String(err?.message ?? "Token exchange failed"));
+    // Surface the provider's own failure reason (e.g. an AADSTS code) when we can
+    // extract it. It appears only in FAILED token responses, which carry no access
+    // tokens, so it's safe to show — and gives the user (and support) an actionable
+    // message instead of a dead-end "try again".
+    errorRedirect(oauthErrorReason(err));
   }
 });
 

@@ -38,8 +38,12 @@ export default function LoginScreen() {
         return;
       }
       if (result.token && result.user) {
-        await login(result.token, result.user as AuthUser);
-        router.replace(hasCompletedWizard ? "/camera" : "/wizard");
+        const loggedInUser = result.user as AuthUser;
+        await login(result.token, loggedInUser);
+        // Route on the account's onboarding flag from the login response — not a
+        // stale context value — so the wizard only ever shows for users who have
+        // not completed it, regardless of device or local storage.
+        router.replace(loggedInUser.onboardingCompleted || hasCompletedWizard ? "/camera" : "/wizard");
       }
     } catch (e) {
       setError(getUserFacingMessage(e, "Login failed. Check your credentials."));
@@ -116,7 +120,7 @@ export default function LoginScreen() {
         ) : (
           <View style={styles.field}>
             <Text style={styles.label}>Two-Factor Code</Text>
-            <Text style={styles.twoFAHint}>? Open your authenticator app and enter the 6-digit code.</Text>
+            <Text style={styles.twoFAHint}>🔐 Open your authenticator app and enter the 6-digit code.</Text>
             <TextInput
               style={[styles.input, styles.totpInput]}
               placeholder="000000"

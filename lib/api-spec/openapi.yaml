@@ -200,6 +200,38 @@ paths:
               schema:
                 $ref: "#/components/schemas/User"
 
+  /users/upload-target:
+    get:
+      operationId: getUploadTarget
+      tags: [users]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current upload-target default
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTarget"
+    put:
+      operationId: setUploadTarget
+      tags: [users]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadTargetInput"
+      responses:
+        "200":
+          description: Updated upload-target default
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTarget"
+
   /subscriptions/me:
     get:
       operationId: getSubscription
@@ -227,34 +259,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Subscription"
-
-  /subscriptions/checkout:
-    post:
-      operationId: createCheckout
-      tags: [subscriptions]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: Checkout session
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CheckoutSession"
-
-  /subscriptions/cancel:
-    post:
-      operationId: cancelSubscription
-      tags: [subscriptions]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: Cancelled
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
 
   /affiliates/me:
     get:
@@ -339,6 +343,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CloudConnection"
+    delete:
+      operationId: deleteAllCloudConnections
+      tags: [cloud-connections]
+      summary: Delete all of the current user's cloud connections (panic wipe)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: All connections deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /cloud-connections/{id}:
     patch:
@@ -514,6 +531,183 @@ paths:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
 
+  /oauth/{provider}/initiate:
+    post:
+      operationId: initiateOAuth
+      tags: [oauth]
+      summary: Begin an OAuth authorization flow for a cloud provider
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [googledrive, onedrive, dropbox]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthInitiateInput"
+      responses:
+        "200":
+          description: Authorization URL to redirect the user to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthInitiateResult"
+        "400":
+          description: Unknown OAuth provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "503":
+          description: Provider OAuth is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthNotConfigured"
+
+  /oauth/{provider}/callback:
+    get:
+      operationId: oauthCallback
+      tags: [oauth]
+      summary: OAuth provider redirect target; exchanges the code and stores the connection
+      description: >-
+        Browser redirect target for the provider (not called programmatically by
+        the client). The provider appends `code` + `state` query params on success
+        or `error` on failure; the server exchanges the code, stores the
+        connection, and 302-redirects to the app.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [googledrive, onedrive, dropbox]
+      responses:
+        "302":
+          description: >-
+            Redirect to the app success screen (/oauth-success), the native deep
+            link (kkamera://oauth-success), or the error screen (/oauth-error)
+
+  /oauth/status:
+    get:
+      operationId: getOAuthStatus
+      tags: [oauth]
+      summary: Report which OAuth providers are configured on the server
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Per-provider configuration status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthStatus"
+
+  /oauth/{provider}/refresh/{connectionId}:
+    post:
+      operationId: refreshOAuthToken
+      tags: [oauth]
+      summary: Refresh an expired access token for a stored cloud connection
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [googledrive, onedrive, dropbox]
+        - name: connectionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Unknown provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "404":
+          description: No refresh token found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "502":
+          description: Token refresh failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /users/me/export:
+    get:
+      operationId: exportMyData
+      tags: [users]
+      summary: Export all personal data for the current user (GDPR)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Personal data export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDataExport"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /uploads/witness-notify:
+    post:
+      operationId: notifyWitness
+      tags: [uploads]
+      summary: Email a witness that a file was captured and uploaded
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WitnessNotifyInput"
+      responses:
+        "200":
+          description: Witness notified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many witness notifications
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -526,6 +720,110 @@ components:
       required: [status]
       properties:
         status:
+          type: string
+
+    SuccessResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+
+    OAuthInitiateInput:
+      type: object
+      properties:
+        name:
+          type: string
+        platform:
+          type: string
+          enum: [web, native]
+        uploadPath:
+          type: string
+
+    OAuthInitiateResult:
+      type: object
+      required: [authorizeUrl, state]
+      properties:
+        authorizeUrl:
+          type: string
+        state:
+          type: string
+
+    OAuthNotConfigured:
+      type: object
+      required: [message, missingEnv]
+      properties:
+        message:
+          type: string
+        missingEnv:
+          type: array
+          items:
+            type: string
+
+    OAuthStatus:
+      type: object
+      description: Map keyed by provider id (googledrive, onedrive, dropbox)
+      additionalProperties:
+        $ref: "#/components/schemas/OAuthProviderStatus"
+
+    OAuthProviderStatus:
+      type: object
+      required: [label, configured]
+      properties:
+        label:
+          type: string
+        configured:
+          type: boolean
+
+    WitnessNotifyInput:
+      type: object
+      required: [witnessEmail, fileName]
+      properties:
+        witnessEmail:
+          type: string
+          format: email
+        fileName:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    UserDataExport:
+      type: object
+      required: [exportedAt, user, referrals, uploads, feedback]
+      properties:
+        exportedAt:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+        subscription:
+          oneOf:
+            - $ref: "#/components/schemas/Subscription"
+            - type: "null"
+        referrals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Referral"
+        uploads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UploadItem"
+        feedback:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeedbackItem"
+
+    FeedbackItem:
+      type: object
+      required: [id, type, message, createdAt]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [bug, feature, other]
+        message:
+          type: string
+        createdAt:
           type: string
 
     MessageResponse:
@@ -598,9 +896,33 @@ components:
         user:
           $ref: "#/components/schemas/User"
 
+    UploadTarget:
+      type: object
+      required: [mode, connectionIds]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected, none]
+        connectionIds:
+          type: array
+          items:
+            type: integer
+
+    UploadTargetInput:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected, none]
+        connectionIds:
+          type: array
+          items:
+            type: integer
+
     User:
       type: object
-      required: [id, email, name, referralCode, twoFAEnabled, createdAt]
+      required: [id, email, name, referralCode, twoFAEnabled, onboardingCompleted, createdAt]
       properties:
         id:
           type: integer
@@ -612,6 +934,8 @@ components:
           type: string
         twoFAEnabled:
           type: boolean
+        onboardingCompleted:
+          type: boolean
         createdAt:
           type: string
 
@@ -620,6 +944,8 @@ components:
       properties:
         name:
           type: ["string", "null"]
+        onboardingCompleted:
+          type: boolean
 
     TwoFASetup:
       type: object
@@ -659,13 +985,6 @@ components:
         createdAt:
           type: string
 
-    CheckoutSession:
-      type: object
-      required: [url]
-      properties:
-        url:
-          type: string
-
     AffiliateStats:
       type: object
       required: [referralCode, totalReferrals, completedReferrals, yearsEarned]
@@ -703,12 +1022,17 @@ components:
           type: integer
         type:
           type: string
-          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud, onedrive, googledrive, dropbox]
+        provider:
+          type: ["string", "null"]
+          description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
         active:
           type: boolean
         uploadPath:
+          type: ["string", "null"]
+        accountLabel:
           type: ["string", "null"]
         hasCredentials:
           type: boolean
@@ -721,7 +1045,10 @@ components:
       properties:
         type:
           type: string
-          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud, onedrive, googledrive, dropbox]
+        provider:
+          type: ["string", "null"]
+          description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
         host:

@@ -9,9 +9,10 @@ import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "./logger.js";
-import { encrypt, decrypt } from "./crypto.js";
+import { encrypt, decrypt, decryptCredential } from "./crypto.js";
 import { isPrivateIp } from "./ssrf.js";
 import { sanitizeFileName } from "./fileNames.js";
+import { nextcloudDavUrl } from "./nextcloud.js";
 
 // ─── SSRF guard ───────────────────────────────────────────────────────────────
 // User-supplied FTP/WebDAV hosts are attacker-controlled. We resolve the host and
@@ -122,7 +123,7 @@ async function refreshAndPersistToken(conn: CloudConn): Promise<string> {
   if (!cfg) throw new Error(`No refresh config for provider: ${conn.type}`);
   if (!conn.refreshToken) throw new Error(`No refresh token stored for connection ${conn.id} — re-connect the account.`);
 
-  const refreshTok = decrypt(conn.refreshToken);
+  const refreshTok = decryptCredential(conn.refreshToken);
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshTok,
@@ -165,7 +166,7 @@ async function refreshAndPersistToken(conn: CloudConn): Promise<string> {
  * token is absent, already expired, or expiring within the next 5 minutes.
  */
 async function getAccessToken(conn: CloudConn): Promise<string> {
-  const raw = conn.accessTokenEncrypted ? decrypt(conn.accessTokenEncrypted) : "";
+  const raw = decryptCredential(conn.accessTokenEncrypted);
   const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
   const expiringSoon = conn.tokenExpiry != null && conn.tokenExpiry < fiveMinFromNow;
 
@@ -195,16 +196,29 @@ async function ftpConnect(client: FtpClient, conn: CloudConn): Promise<void> {
     host: pinnedIp ?? conn.host!,
     port: conn.port ?? 21,
     user: conn.username ?? "anonymous",
-    password: conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "",
+    password: decryptCredential(conn.passwordEncrypted),
   };
+  // Prefer a fully certificate-validated TLS connection. Fall back to accepting a
+  // self-signed cert (common on self-hosted FTPS — encrypted but unauthenticated)
+  // and only as a last resort to PLAINTEXT — and even then only when an operator
+  // has explicitly opted in via ALLOW_INSECURE_FTP. Silently downgrading to
+  // cleartext (the previous behaviour) shipped the user's cloud password and their
+  // photos/videos in the clear on any TLS error, which is unacceptable for a
+  // privacy-first app; it now fails closed with a clear error instead.
   try {
-    // Explicit FTPS. Many self-hosted FTP servers use self-signed certs, so we
-    // don't hard-fail on cert validation — encrypted-but-unpinned still beats
-    // sending credentials and photos in cleartext.
-    await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: false } });
+    await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: true } });
   } catch {
-    await client.access({ ...base, secure: false });
-    logger.warn({ connectionId: conn.id }, "FTP server does not support TLS — connection is unencrypted");
+    try {
+      await client.access({ ...base, secure: true, secureOptions: { rejectUnauthorized: false } });
+      logger.warn({ connectionId: conn.id }, "FTPS certificate not validated (self-signed) — encrypted but unauthenticated");
+    } catch {
+      if (process.env["ALLOW_INSECURE_FTP"] === "true") {
+        await client.access({ ...base, secure: false });
+        logger.warn({ connectionId: conn.id }, "FTP connection is UNENCRYPTED (ALLOW_INSECURE_FTP opt-in)");
+      } else {
+        throw new Error("FTP server does not support TLS. Refusing to send credentials over an unencrypted connection.");
+      }
+    }
   }
   // Backstop: confirm the socket's actual peer is public.
   const remote = client.ftp.socket?.remoteAddress;
@@ -232,18 +246,27 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
     await client.list("/");
     return { success: true, message: "FTP connection successful" };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    // Don't surface raw internal errors (resolver text, private-IP guard messages,
+    // remote hostnames) to the client — log them, return actionable guidance.
+    logger.warn({ err, connectionId: conn.id }, "FTP connection test failed");
+    return { success: false, message: "Could not connect. Check the host, port, credentials, and that the server supports TLS." };
   } finally {
     client.close();
   }
 }
 
-// ─── WebDAV ───────────────────────────────────────────────────────────────────
+// ─── WebDAV (also the transport for Nextcloud) ────────────────────────────────
 
-async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
-  await assertPublicHost(conn.host!);
-  const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
-  const client = createWebdavClient(conn.host!, {
+/**
+ * Build a WebDAV client for `baseUrl` after checking the host is public.
+ * `baseUrl` is the DAV collection root — the connection's host for a plain
+ * WebDAV server, the derived `/remote.php/dav/files/<user>` endpoint for
+ * Nextcloud.
+ */
+async function webdavClientFor(conn: CloudConn, baseUrl: string) {
+  await assertPublicHost(baseUrl);
+  const pass = decryptCredential(conn.passwordEncrypted);
+  return createWebdavClient(baseUrl, {
     username: conn.username ?? undefined,
     password: pass || undefined,
     // Validate the resolved IP at connect time (and on every redirect) so a
@@ -251,6 +274,10 @@ async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Pro
     httpAgent: safeHttpAgent,
     httpsAgent: safeHttpsAgent,
   });
+}
+
+async function uploadWebdavTo(conn: CloudConn, baseUrl: string, buf: Buffer, fileName: string): Promise<void> {
+  const client = await webdavClientFor(conn, baseUrl);
   const dir = conn.uploadPath ?? "/KKamera";
   if (!(await client.exists(dir))) {
     await client.createDirectory(dir, { recursive: true });
@@ -258,26 +285,65 @@ async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Pro
   await client.putFileContents(`${dir}/${fileName}`, buf, { overwrite: true });
 }
 
-async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message: string }> {
+/**
+ * Probe a DAV endpoint. `label` names the service in the success text and
+ * `failureHint` is the (deliberately generic) guidance shown on failure — raw
+ * errors carry resolver text and internal hostnames, so they only go to the log.
+ */
+async function testWebdavAt(
+  conn: CloudConn,
+  baseUrl: string,
+  label: string,
+  failureHint: string,
+): Promise<{ success: boolean; message: string }> {
   try {
-    await assertPublicHost(conn.host!);
-    const pass = conn.passwordEncrypted ? decrypt(conn.passwordEncrypted) : "";
-    const client = createWebdavClient(conn.host!, {
-      username: conn.username ?? undefined,
-      password: pass || undefined,
-      httpAgent: safeHttpAgent,
-      httpsAgent: safeHttpsAgent,
-    });
+    const client = await webdavClientFor(conn, baseUrl);
     const exists = await client.exists(conn.uploadPath ?? "/");
     return {
       success: true,
       message: exists
-        ? "WebDAV folder exists and is accessible"
-        : "WebDAV connected — upload folder will be created on first upload",
+        ? `${label} folder exists and is accessible`
+        : `${label} connected — upload folder will be created on first upload`,
     };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, `${label} connection test failed`);
+    return { success: false, message: failureHint };
   }
+}
+
+async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
+  await uploadWebdavTo(conn, conn.host!, buf, fileName);
+}
+
+async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message: string }> {
+  return testWebdavAt(conn, conn.host!, "WebDAV", "Could not connect. Check the URL, credentials, and upload path.");
+}
+
+// ─── Nextcloud ────────────────────────────────────────────────────────────────
+// Nextcloud is WebDAV underneath, but the user only knows their server URL —
+// the files endpoint is derived from it and the username (see lib/nextcloud.ts).
+// Credentials should be an app password (Settings → Security), which is what
+// keeps working when the account has 2FA enabled.
+
+async function uploadNextcloud(conn: CloudConn, buf: Buffer, fileName: string): Promise<void> {
+  await uploadWebdavTo(conn, nextcloudDavUrl(conn.host, conn.username, conn.port), buf, fileName);
+}
+
+async function testNextcloud(conn: CloudConn): Promise<{ success: boolean; message: string }> {
+  let davUrl: string;
+  try {
+    davUrl = nextcloudDavUrl(conn.host, conn.username, conn.port);
+  } catch (err: any) {
+    // Derivation only fails on missing/malformed user input, so this message is
+    // safe (and useful) to hand back verbatim.
+    return { success: false, message: String(err?.message ?? "Invalid Nextcloud server URL") };
+  }
+  return testWebdavAt(
+    conn,
+    davUrl,
+    "Nextcloud",
+    "Could not connect. Check the server URL and username, and make sure the password is an app password (Nextcloud → Settings → Security → Create new app password).",
+  );
 }
 
 // ─── Google Drive ─────────────────────────────────────────────────────────────
@@ -335,7 +401,8 @@ async function testGoogleDrive(conn: CloudConn): Promise<{ success: boolean; mes
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.user?.displayName ?? "Google user"}` };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
+    return { success: false, message: "Could not verify the connection. Please re-connect the account." };
   }
 }
 
@@ -364,7 +431,8 @@ async function testOneDrive(conn: CloudConn): Promise<{ success: boolean; messag
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.owner?.user?.displayName ?? "Microsoft user"}` };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
+    return { success: false, message: "Could not verify the connection. Please re-connect the account." };
   }
 }
 
@@ -396,7 +464,8 @@ async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message
     const data = await res.json() as any;
     return { success: true, message: `Connected as ${data.name?.display_name ?? "Dropbox user"}` };
   } catch (err: any) {
-    return { success: false, message: err.message };
+    logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
+    return { success: false, message: "Could not verify the connection. Please re-connect the account." };
   }
 }
 
@@ -408,6 +477,7 @@ export async function uploadToCloud(conn: CloudConn, buf: Buffer, rawFileName: s
     switch (conn.type) {
       case "ftp":         await uploadFtp(conn, buf, fileName); break;
       case "webdav":      await uploadWebdav(conn, buf, fileName); break;
+      case "nextcloud":   await uploadNextcloud(conn, buf, fileName); break;
       case "googledrive": await uploadGoogleDrive(conn, buf, fileName, mimeType); break;
       case "onedrive":    await uploadOneDrive(conn, buf, fileName); break;
       case "dropbox":     await uploadDropbox(conn, buf, fileName); break;
@@ -421,12 +491,16 @@ export async function uploadToCloud(conn: CloudConn, buf: Buffer, rawFileName: s
 }
 
 export async function testCloudConnection(conn: CloudConn): Promise<{ success: boolean; message: string }> {
-  if (!conn.host && !conn.accessTokenEncrypted && conn.type !== "ftp" && conn.type !== "webdav") {
+  // Host-based types run their own probe even without a host — each returns a
+  // message pointing at the field that is actually missing.
+  const hostBased = conn.type === "ftp" || conn.type === "webdav" || conn.type === "nextcloud";
+  if (!conn.host && !conn.accessTokenEncrypted && !hostBased) {
     return { success: false, message: "No credentials configured for this connection." };
   }
   switch (conn.type) {
     case "ftp":         return testFtp(conn);
     case "webdav":      return testWebdav(conn);
+    case "nextcloud":   return testNextcloud(conn);
     case "googledrive": return testGoogleDrive(conn);
     case "onedrive":    return testOneDrive(conn);
     case "dropbox":     return testDropbox(conn);

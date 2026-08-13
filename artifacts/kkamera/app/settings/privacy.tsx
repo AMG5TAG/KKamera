@@ -32,7 +32,7 @@ export default function PrivacyScreen() {
 
       <Section title="3. How We Use Your Data">
         — To authenticate your account and maintain your session{"\n"}
-        — To manage your subscription and process payments via Stripe{"\n"}
+        — To manage your subscription (payments are processed by the Apple App Store or Google Play via RevenueCat){"\n"}
         — To manage your upload queue and retry failed uploads{"\n"}
         — To track referrals for the affiliate programme{"\n"}
         — To send you important account notifications (trial expiry, payment receipts)
@@ -47,7 +47,7 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="6. Third-Party Services">
-        <Bold>Stripe:</Bold> Payment processing. Stripe's privacy policy applies to payment data.{"\n"}
+        <Bold>Apple App Store / Google Play (via RevenueCat):</Bold> In-app purchase and subscription processing. The App Store, Google Play, and RevenueCat privacy policies apply to payment data.{"\n"}
         <Bold>Google Drive / OneDrive / Dropbox:</Bold> These services receive your media directly. Their respective privacy policies apply.{"\n"}
         We do not sell your data to any third party.
       </Section>

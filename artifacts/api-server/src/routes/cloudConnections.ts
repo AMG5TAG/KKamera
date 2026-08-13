@@ -6,38 +6,27 @@ import { eq, and } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { encrypt } from "../lib/crypto.js";
 import { testCloudConnection } from "../lib/cloudUpload.js";
-import { CLOUD_PROVIDER } from "../lib/constants.js";
+import { createConnectionSchema, updateConnectionSchema } from "../lib/cloudConnectionSchemas.js";
 
 const router = Router();
 
-const cloudProviders = Object.values(CLOUD_PROVIDER) as [string, ...string[]];
-
-const createConnectionSchema = z.object({
-  type: z.enum(cloudProviders as [string, ...string[]]),
-  name: z.string().min(1).max(100),
-  host: z.string().url().optional().or(z.string().min(1)).optional(),
-  port: z.number().int().min(1).max(65535).optional(),
-  username: z.string().max(200).optional(),
-  password: z.string().max(500).optional(),
-  uploadPath: z.string().max(500).optional(),
-  oauthCode: z.string().max(2000).optional(),
-});
-
-const updateConnectionSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  active: z.boolean().optional(),
-  uploadPath: z.string().max(500).optional(),
-  host: z.string().max(500).optional(),
-  port: z.number().int().min(1).max(65535).optional(),
-  username: z.string().max(200).optional(),
-  password: z.string().max(500).optional(),
-  oauthCode: z.string().max(2000).optional(),
-}).strict();
+/**
+ * Render the first validation issue, prefixed with the offending field. Zod's
+ * default text ("Expected string, received null") is useless on its own when a
+ * body has nine fields.
+ */
+function firstIssueMessage(error: z.ZodError): string {
+  const issue = error.errors[0];
+  if (!issue) return "Invalid request";
+  const path = issue.path.join(".");
+  return path ? `${path}: ${issue.message}` : issue.message;
+}
 
 function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
   return {
-    id: c.id, userId: c.userId, type: c.type, name: c.name,
+    id: c.id, userId: c.userId, type: c.type, provider: c.provider ?? null, name: c.name,
     active: c.active, uploadPath: c.uploadPath ?? null,
+    accountLabel: c.accountLabel ?? null,
     hasCredentials: !!(c.passwordEncrypted || c.accessTokenEncrypted),
     createdAt: c.createdAt.toISOString(),
   };
@@ -58,12 +47,12 @@ router.post("/cloud-connections", requireAuth, async (req, res) => {
   try {
     const parsed = createConnectionSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: firstIssueMessage(parsed.error) });
       return;
     }
-    const { type, name, host, port, username, password, uploadPath, oauthCode } = parsed.data;
+    const { type, provider, name, host, port, username, password, uploadPath, oauthCode } = parsed.data;
     const [conn] = await db.insert(cloudConnectionsTable).values({
-      userId: req.userId!, type, name,
+      userId: req.userId!, type, provider: provider ?? null, name,
       host: host ?? null,
       port: port ?? null,
       username: username ?? null,
@@ -86,19 +75,22 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
     if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
     const parsed = updateConnectionSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: firstIssueMessage(parsed.error) });
       return;
     }
     const { name, active, uploadPath, host, port, username, password, oauthCode } = parsed.data;
+    // `!= null` on purpose: the spec allows null on every field, and the client
+    // sends null for "not applicable". Treat that as leave-unchanged — `name`
+    // and `active` are NOT NULL columns, and encrypt(null) would throw.
     const updates: Partial<typeof cloudConnectionsTable.$inferInsert> = {};
-    if (name !== undefined) updates.name = name;
-    if (active !== undefined) updates.active = active;
-    if (uploadPath !== undefined) updates.uploadPath = uploadPath;
-    if (host !== undefined) updates.host = host;
-    if (port !== undefined) updates.port = port;
-    if (username !== undefined) updates.username = username;
-    if (password !== undefined) updates.passwordEncrypted = encrypt(password);
-    if (oauthCode !== undefined) updates.accessTokenEncrypted = encrypt(oauthCode);
+    if (name != null) updates.name = name;
+    if (active != null) updates.active = active;
+    if (uploadPath != null) updates.uploadPath = uploadPath;
+    if (host != null) updates.host = host;
+    if (port != null) updates.port = port;
+    if (username != null) updates.username = username;
+    if (password != null) updates.passwordEncrypted = encrypt(password);
+    if (oauthCode != null) updates.accessTokenEncrypted = encrypt(oauthCode);
     const [conn] = await db.update(cloudConnectionsTable).set(updates)
       .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
       .returning();

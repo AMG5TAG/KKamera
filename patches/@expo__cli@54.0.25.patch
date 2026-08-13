@@ -1,0 +1,100 @@
+diff --git a/build/src/start/server/getStaticRenderFunctions.js b/build/src/start/server/getStaticRenderFunctions.js
+index 26ff6bd4389310cc7fde94aa5f9fcf7ebb028de2..95df21fd1205e3bc61ddbacb39a3100be8d2cfd4 100644
+--- a/build/src/start/server/getStaticRenderFunctions.js
++++ b/build/src/start/server/getStaticRenderFunctions.js
+@@ -102,7 +102,7 @@ async function ensureFileInRootDirectory(projectRoot, otherFile) {
+     return moduleId;
+ }
+ async function createMetroEndpointAsync(projectRoot, devServerUrl, absoluteFilePath, props) {
+-    const root = (0, _paths().getMetroServerRoot)(projectRoot);
++    const root = projectRoot;
+     const safeOtherFile = await ensureFileInRootDirectory(projectRoot, absoluteFilePath);
+     const serverPath = _path().default.relative(root, safeOtherFile).replace(/\.[jt]sx?$/, '');
+     const urlFragment = (0, _metroOptions.createBundleUrlPath)({
+diff --git a/build/src/start/server/metro/MetroBundlerDevServer.js b/build/src/start/server/metro/MetroBundlerDevServer.js
+index ff12db2bf63605b005974645dbdbbeaa86189812..50cfc8c5366ce8a565599e615337f2cb3be01b41 100644
+--- a/build/src/start/server/metro/MetroBundlerDevServer.js
++++ b/build/src/start/server/metro/MetroBundlerDevServer.js
+@@ -606,7 +606,7 @@ class MetroBundlerDevServer extends _BundlerDevServer.BundlerDevServer {
+         const bundle = await processClientBoundaries(serverActionReferencesInServer);
+         // Inject the global CSS that was imported during the server render.
+         bundle.artifacts.push(...cssModules);
+-        const serverRoot = (0, _paths().getMetroServerRoot)(this.projectRoot);
++        const serverRoot = this.projectRoot;
+         // HACK: Maybe this should be done in the serializer.
+         const clientBoundariesAsOpaqueIds = clientBoundaries.map((boundary)=>// NOTE(cedric): relative module specifiers / IDs should always be POSIX formatted
+             (0, _filePath.toPosixPath)(_path().default.relative(serverRoot, boundary)));
+@@ -790,7 +790,7 @@ class MetroBundlerDevServer extends _BundlerDevServer.BundlerDevServer {
+                 }
+             });
+             middleware.use(deepLinkMiddleware.getHandler());
+-            const serverRoot = (0, _paths().getMetroServerRoot)(this.projectRoot);
++            const serverRoot = this.projectRoot;
+             const domComponentRenderer = (0, _DomComponentsMiddleware.createDomComponentsMiddleware)({
+                 metroRoot: serverRoot,
+                 projectRoot: this.projectRoot
+@@ -1370,7 +1370,7 @@ class MetroBundlerDevServer extends _BundlerDevServer.BundlerDevServer {
+             if (// TODO: hot should be a callback function for invalidating the related SSR module.
+             extras.hot && this.instanceMetroOptions.isExporting !== true) {
+                 // Register SSR HMR
+-                const serverRoot = (0, _paths().getMetroServerRoot)(this.projectRoot);
++                const serverRoot = this.projectRoot;
+                 const relativePath = _path().default.relative(serverRoot, res.filename);
+                 const url = new URL(relativePath, this.getDevServerUrlOrAssert());
+                 this.setupHmr(url);
+diff --git a/build/src/start/server/metro/createServerComponentsMiddleware.js b/build/src/start/server/metro/createServerComponentsMiddleware.js
+index 04aa19ab61497a961192eddf276666942746c70a..112805750b3774017272b6991f9867a7a51776a5 100644
+--- a/build/src/start/server/metro/createServerComponentsMiddleware.js
++++ b/build/src/start/server/metro/createServerComponentsMiddleware.js
+@@ -71,7 +71,7 @@ function _interop_require_default(obj) {
+     };
+ }
+ const debug = require('debug')('expo:rsc');
+-const getMetroServerRootMemo = (0, _fn.memoize)(_paths().getMetroServerRoot);
++const getMetroServerRootMemo = (0, _fn.memoize)((projectRoot) => projectRoot);
+ function createServerComponentsMiddleware(projectRoot, { rscPath, instanceMetroOptions, ssrLoadModule, ssrLoadModuleArtifacts, useClientRouter, createModuleId, routerOptions }) {
+     const routerModule = useClientRouter ? 'expo-router/build/rsc/router/noopRouter' : 'expo-router/build/rsc/router/expo-definedRouter';
+     const rscMiddleware = (0, _private().getRscMiddleware)({
+diff --git a/build/src/start/server/metro/dev-server/createMetroMiddleware.js b/build/src/start/server/metro/dev-server/createMetroMiddleware.js
+index 8ded4c4f982d53cfb96464b9104635e25aaae62c..ea3d28c60afe6bcdd2ce2799008ca813831a9c09 100644
+--- a/build/src/start/server/metro/dev-server/createMetroMiddleware.js
++++ b/build/src/start/server/metro/dev-server/createMetroMiddleware.js
+@@ -112,7 +112,7 @@ function createMetroOpenStackFrameMiddleware(metroConfig) {
+             res.statusCode = 400;
+             return res.end('Open stack frame requires the JSON stack frame as request body');
+         }
+-        const root = (0, _paths().getMetroServerRoot)(metroConfig.projectRoot);
++        const root = metroConfig.projectRoot;
+         const file = await ensureFileInRootDirectory(root, frame.file);
+         if (!file) {
+             res.statusCode = 400;
+diff --git a/build/src/start/server/metro/instantiateMetro.js b/build/src/start/server/metro/instantiateMetro.js
+index afa5269212e43bc2e1a5aa48c2112567184d9c2d..3ecc75d5bc4e57d121dbdbce31f3b5cac513c820 100644
+--- a/build/src/start/server/metro/instantiateMetro.js
++++ b/build/src/start/server/metro/instantiateMetro.js
+@@ -136,7 +136,11 @@ async function loadMetroConfigAsync(projectRoot, options, { exp, isExporting, ge
+         process.env.EXPO_USE_METRO_REQUIRE = '1';
+     }
+     const isReactCanaryEnabled = (((_exp_experiments3 = exp.experiments) == null ? void 0 : _exp_experiments3.reactServerComponentRoutes) || serverActionsEnabled || ((_exp_experiments4 = exp.experiments) == null ? void 0 : _exp_experiments4.reactCanary)) ?? false;
+-    const serverRoot = (0, _paths().getMetroServerRoot)(projectRoot);
++    // PERMANENT FIX: Use projectRoot as serverRoot in pnpm workspaces.
++    // getMetroServerRoot() walks up to the workspace root, which embeds the
++    // full pnpm hash into relative module paths. Using projectRoot ensures
++    // paths are stable: node_modules/expo-router/entry (via symlink).
++    const serverRoot = projectRoot;
+     const terminalReporter = new _MetroTerminalReporter.MetroTerminalReporter(serverRoot, terminal);
+     // NOTE: Allow external tools to override the metro config. This is considered internal and unstable
+     const configPath = _env.env.EXPO_OVERRIDE_METRO_CONFIG ?? undefined;
+diff --git a/build/src/start/server/metro/metroErrorInterface.js b/build/src/start/server/metro/metroErrorInterface.js
+index 10c51c45cf1e1bcb34476cd662031bff3d4352c8..b9d8e3caca2a4889c6e8ab610fc4afa78bde13b9 100644
+--- a/build/src/start/server/metro/metroErrorInterface.js
++++ b/build/src/start/server/metro/metroErrorInterface.js
+@@ -369,7 +369,7 @@ function parseErrorStack(projectRoot, stack) {
+     if (Array.isArray(stack)) {
+         return stack;
+     }
+-    const serverRoot = (0, _paths().getMetroServerRoot)(projectRoot);
++    const serverRoot = projectRoot;
+     return (0, _stacktraceparser().parse)(stack).map((frame)=>{
+         // frame.file will mostly look like `http://localhost:8081/index.bundle?platform=web&dev=true&hot=false`
+         if (frame.file) {

@@ -1,3 +1,5 @@
+import fs from "fs";
+import os from "os";
 import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
@@ -8,16 +10,46 @@ import { eq, and, inArray, desc } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
-import { sendPushToUser } from "../lib/pushNotifications.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { normalizeConnectionIds } from "../lib/connectionIds.js";
 
 const router = Router();
 
+// Stream uploads to a temp file on disk rather than buffering the whole body in
+// RAM. memoryStorage held the entire file (up to the cap) in memory for every
+// concurrent request, so a handful of large videos could OOM-kill the shared
+// instance and drop all users. Disk storage bounds receive-time memory; the
+// semaphore below then bounds how many files are read into a Buffer at once for
+// the actual cloud upload.
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 500 * 1024 * 1024 },
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (_req, _file, cb) => cb(null, `kkamera-upload-${Date.now()}-${Math.round(Math.random() * 1e9)}`),
+  }),
+  limits: { fileSize: 200 * 1024 * 1024, files: 1 },
 });
+
+// Cap concurrent in-flight cloud uploads so peak memory (one Buffer per active
+// upload) stays bounded regardless of how many clients upload at once. Excess
+// requests wait for a slot rather than being rejected, so no capture is lost.
+const MAX_CONCURRENT_UPLOADS = 3;
+let activeUploads = 0;
+const uploadWaiters: Array<() => void> = [];
+
+function acquireUploadSlot(): Promise<void> {
+  if (activeUploads < MAX_CONCURRENT_UPLOADS) {
+    activeUploads += 1;
+    return Promise.resolve();
+  }
+  // Inherit the releaser's slot (activeUploads stays at the cap) when resumed.
+  return new Promise<void>(resolve => uploadWaiters.push(resolve));
+}
+
+function releaseUploadSlot(): void {
+  const next = uploadWaiters.shift();
+  if (next) next(); // hand our slot straight to the next waiter
+  else activeUploads -= 1;
+}
 
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -97,6 +129,7 @@ router.post(
   requireSubscription,
   upload.single("file"),
   async (req, res) => {
+    const tmpPath = req.file?.path;
     try {
       const file = req.file;
       if (!file) { res.status(400).json({ message: "No file provided" }); return; }
@@ -127,7 +160,18 @@ router.post(
             and(eq(cloudConnectionsTable.userId, req.userId!), eq(cloudConnectionsTable.active, true))
           );
 
-      if (connections.length === 0) {
+      // Collapse duplicate active rows that point at the same cloud account
+      // (possible if an identity lookup failed on a prior reconnect) so a single
+      // capture is never uploaded twice to the same account.
+      const seenAccounts = new Set<string>();
+      const targets = connections.filter(c => {
+        const key = c.accountId ? `${c.type}:${c.accountId}` : `id:${c.id}`;
+        if (seenAccounts.has(key)) return false;
+        seenAccounts.add(key);
+        return true;
+      });
+
+      if (targets.length === 0) {
         const [item] = await db.insert(uploadsTable).values({
           userId: req.userId!, fileName, fileType, status: "queued",
           error: "No active cloud connections configured",
@@ -138,12 +182,21 @@ router.post(
 
       const [uploadRecord] = await db.insert(uploadsTable).values({
         userId: req.userId!, fileName, fileType, status: "uploading",
-        connectionIds: connections.map(c => c.id).join(","),
+        connectionIds: targets.map(c => c.id).join(","),
       }).returning();
 
-      const results = await Promise.all(
-        connections.map(conn => uploadToCloud(conn, file.buffer, fileName, mimeType))
-      );
+      // Read the file into memory (for uploadToCloud) only while holding a slot,
+      // then release it before the DB write so we don't pin memory needlessly.
+      await acquireUploadSlot();
+      let results;
+      try {
+        const buf = await fs.promises.readFile(file.path);
+        results = await Promise.all(
+          targets.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
+        );
+      } finally {
+        releaseUploadSlot();
+      }
 
       const allOk = results.every(r => r.success);
       const anyOk = results.some(r => r.success);
@@ -157,20 +210,14 @@ router.post(
         }).where(eq(uploadsTable.id, uploadRecord.id));
       }
 
-      if (uploadRecord?.userId) {
-        const destination = connections[0]?.name ?? connections[0]?.type ?? "cloud";
-        if (finalStatus === "done" || finalStatus === "partial") {
-          sendPushToUser(uploadRecord.userId, { type: "upload_done", fileName, destination }).catch(() => {});
-        } else if (finalStatus === "failed") {
-          sendPushToUser(uploadRecord.userId, { type: "upload_failed", fileName }).catch(() => {});
-        }
-      }
-
       res.json({ uploadId: uploadRecord?.id, status: finalStatus, results });
     } catch (err) {
       req.log.error({ err }, "Execute upload error");
       // Don't leak internal error details to the client; they're in the logs.
       res.status(500).json({ message: "Upload failed" });
+    } finally {
+      // Always remove the temp file, on every path (early return, success, error).
+      if (tmpPath) fs.promises.unlink(tmpPath).catch(() => {});
     }
   }
 );
@@ -248,11 +295,15 @@ router.post("/uploads/witness-notify", requireAuth, witnessLimiter, async (req, 
     const userName = user?.name ?? "A KKamera user";
     const safeUserName = escapeHtml(userName);
     const safeFileName = escapeHtml(fileName);
+    // Email headers are line-delimited — strip CR/LF (and collapse whitespace) from
+    // any user-derived value used in the Subject so a crafted name can't inject
+    // additional headers.
+    const subjectName = userName.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100) || "A KKamera user";
     const timestamp = new Date().toLocaleString("en-AU", { timeZone: "UTC", dateStyle: "short", timeStyle: "medium" });
 
     await sendEmail({
       to: witnessEmail,
-      subject: `Witness notification: ${userName} captured a file`,
+      subject: `Witness notification: ${subjectName} captured a file`,
       html: `<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0d0b08;color:#ccc;padding:40px">
         <div style="max-width:480px;margin:0 auto;background:#1a1710;border-radius:16px;padding:28px;border:1px solid rgba(177,152,112,0.2)">
           <p style="color:#b19870;font-size:20px;font-weight:700;margin:0 0 20px">KKamera — Witness Notification</p>

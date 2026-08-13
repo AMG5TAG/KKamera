@@ -22,7 +22,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   const token = auth.slice(7);
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { userId: number; iat?: number };
+    // Pin the algorithm so a token can't be verified under an unexpected alg
+    // (algorithm-confusion hardening).
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] }) as { userId: number; iat?: number };
 
     // Reject tokens issued before the user's last password change so that a
     // password reset invalidates all previously-issued sessions.

@@ -65,7 +65,7 @@ export default function RegisterScreen() {
 
         <View style={styles.trialBadge}>
           <Ionicons name="gift-outline" size={18} color={PRIMARY} />
-          <Text style={styles.trialText}>14-day free trial · Then $25/year</Text>
+          <Text style={styles.trialText}>14-day free trial · Then $30/year</Text>
         </View>
 
         {error ? (
@@ -94,7 +94,7 @@ export default function RegisterScreen() {
             </TouchableOpacity>
           </View>
         </Field>
-        <Field label="Referral Code (optional)" hint="? Enter a friend's code to help them earn a free year">
+        <Field label="Referral Code (optional)" hint="🎁 Enter a friend's code to help them earn a free year">
           <TextInput style={[styles.input, { textTransform: "uppercase" }]} placeholder="e.g. JOHN42K" placeholderTextColor="#555" autoCapitalize="characters" value={referralCode} onChangeText={setReferralCode} />
         </Field>
 

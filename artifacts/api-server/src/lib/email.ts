@@ -85,8 +85,8 @@ export function trialEndingEmail(name: string, daysLeft: number): { subject: str
     html: wrap("Your trial is almost over", `
       <p>Hi ${escapeHtml(name)},</p>
       <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.</p>
-      <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$25/year</strong>, less than 7¢ a day.</p>
-      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $25/year</a>
+      <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$30/year</strong>, less than 9¢ a day.</p>
+      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $30/year</a>
       <p>Don't lose access to your camera uploads. Your existing cloud connections and settings will be preserved.</p>
     `),
   };
@@ -120,8 +120,11 @@ export function coworkerInviteEmail(inviterName: string, referralCode: string): 
   const link = `https://app.kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
   const safeName = escapeHtml(inviterName);
   const safeCode = escapeHtml(referralCode);
+  // Strip CR/LF/tab from any user-derived value used in a header line, matching
+  // the witness-notify subject handling.
+  const subjectName = inviterName.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100) || "Someone";
   return {
-    subject: `${inviterName} invited you to KKamera 📷`,
+    subject: `${subjectName} invited you to KKamera 📷`,
     html: wrap(`${safeName} thinks you'd love KKamera`, `
       <p><strong style="color:#b19870">${safeName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
       <p>Sign up with their invite and you'll get a <strong style="color:#b19870">14-day free trial</strong> — no credit card required.</p>

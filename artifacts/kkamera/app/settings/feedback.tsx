@@ -75,7 +75,7 @@ export default function FeedbackScreen() {
       ))}
 
       <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Your Message</Text>
-      <Text style={styles.hint}>? The more detail you provide, the better we can help.</Text>
+      <Text style={styles.hint}>💡 The more detail you provide, the better we can help.</Text>
       <TextInput
         style={styles.messageInput}
         placeholder={

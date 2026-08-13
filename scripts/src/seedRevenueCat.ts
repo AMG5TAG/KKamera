@@ -18,9 +18,12 @@ const PRODUCT_USER_FACING_TITLE = "KKamera — Annual";
 const PRODUCT_DURATION = "P1Y";
 
 const APP_STORE_APP_NAME = "KKamera iOS";
-const APP_STORE_BUNDLE_ID = "com.kkamera.app";
+// Must match the app's real identifier in artifacts/kkamera/app.json
+// (ios.bundleIdentifier / android.package) or RevenueCat entitlements won't
+// resolve on device.
+const APP_STORE_BUNDLE_ID = "app.kkamera";
 const PLAY_STORE_APP_NAME = "KKamera Android";
-const PLAY_STORE_PACKAGE_NAME = "com.kkamera.app";
+const PLAY_STORE_PACKAGE_NAME = "app.kkamera";
 
 const ENTITLEMENT_IDENTIFIER = "pro";
 const ENTITLEMENT_DISPLAY_NAME = "Pro Access";
@@ -31,14 +34,32 @@ const OFFERING_DISPLAY_NAME = "Default Offering";
 const PACKAGE_IDENTIFIER = "$rc_annual";
 const PACKAGE_DISPLAY_NAME = "Annual Subscription";
 
-// $25/year = 25_000_000 micros
+// $30/year = 30_000_000 micros
 const PRODUCT_PRICES = [
-  { amount_micros: 25_000_000, currency: "USD" },
+  { amount_micros: 30_000_000, currency: "USD" },
   { amount_micros: 22_990_000, currency: "EUR" },
   { amount_micros: 19_990_000, currency: "GBP" },
 ];
 
 type TestStorePricesResponse = { object: string; prices: { amount_micros: number; currency: string }[] };
+
+// Loudly flag an existing RevenueCat store app whose identifier drifted from what
+// the app actually ships as (app.json). A mismatch means entitlements won't
+// resolve on device, so surface it rather than silently reusing the wrong app.
+let bundleMismatch = false;
+function warnBundleMismatch(label: string, kind: string, actual: string | undefined, expected: string): void {
+  if (actual && actual !== expected) {
+    bundleMismatch = true;
+    console.warn(
+      `\n⚠️  ${label} ${kind} MISMATCH: RevenueCat app has "${actual}" but the app ships as ` +
+      `"${expected}" (artifacts/kkamera/app.json). Entitlements will NOT resolve on device.\n` +
+      `    Fix the ${kind} in the RevenueCat dashboard (Project → Apps), or delete that app and ` +
+      `re-run this seed, so it matches app.json — then refresh the REVENUECAT_*_APP_ID / public keys.\n`
+    );
+  } else if (actual) {
+    console.log(`  ${label} ${kind} OK: ${actual}`);
+  }
+}
 
 async function seedRevenueCat() {
   const client = await getUncachableRevenueCatClient();
@@ -46,7 +67,7 @@ async function seedRevenueCat() {
   // Project
   let project: Project;
   const { data: existingProjects, error: listProjectsError } = await listProjects({ client, query: { limit: 20 } });
-  if (listProjectsError) throw new Error("Failed to list projects");
+  if (listProjectsError) throw new Error("Failed to list projects: " + JSON.stringify(listProjectsError));
   const existingProject = existingProjects.items?.find((p) => p.name === PROJECT_NAME);
   if (existingProject) {
     console.log("Project already exists:", existingProject.id);
@@ -79,6 +100,7 @@ async function seedRevenueCat() {
     console.log("Created App Store app:", appStoreApp.id);
   } else {
     console.log("App Store app:", appStoreApp.id);
+    warnBundleMismatch("App Store", "bundle id", appStoreApp.app_store?.bundle_id, APP_STORE_BUNDLE_ID);
   }
 
   if (!playStoreApp) {
@@ -91,6 +113,7 @@ async function seedRevenueCat() {
     console.log("Created Play Store app:", playStoreApp.id);
   } else {
     console.log("Play Store app:", playStoreApp.id);
+    warnBundleMismatch("Play Store", "package name", playStoreApp.play_store?.package_name, PLAY_STORE_PACKAGE_NAME);
   }
 
   // Products
@@ -133,7 +156,7 @@ async function seedRevenueCat() {
       throw new Error("Failed to set test store prices");
     }
   } else {
-    console.log("Test store prices set: $25 USD / €22.99 EUR / £19.99 GBP");
+    console.log("Test store prices set: $30 USD / €22.99 EUR / £19.99 GBP");
   }
 
   // Entitlement
@@ -225,6 +248,13 @@ async function seedRevenueCat() {
   console.log("  EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=" + (androidKeys?.items.map((k) => k.key).join(", ") ?? "N/A"));
   console.log("====================");
   console.log("\nCopy the env vars above into Replit Secrets.");
+
+  if (bundleMismatch) {
+    console.warn(
+      "\n⚠️  ONE OR MORE STORE APP IDENTIFIERS DO NOT MATCH app.json — see the warning(s) above. " +
+      "Purchases will not attribute to the 'pro' entitlement on device until this is fixed."
+    );
+  }
 }
 
 seedRevenueCat().catch(console.error);

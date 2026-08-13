@@ -30,6 +30,7 @@ const CLOUD_OPTIONS = [
   { type: "googledrive", label: "Google Drive", icon: "google-drive", color: "#4285F4", desc: "Connect via OAuth" },
   { type: "onedrive", label: "OneDrive", icon: "microsoft-onedrive", color: "#0078D4", desc: "Connect via OAuth" },
   { type: "dropbox", label: "Dropbox", icon: "dropbox", color: "#0061FF", desc: "Connect via OAuth" },
+  { type: "nextcloud", label: "Nextcloud", icon: "cloud-outline", color: "#0082C9", desc: "Enter server details" },
   { type: "webdav", label: "WebDAV", icon: "server", color: "#6B7280", desc: "Enter server details" },
   { type: "ftp", label: "FTP / SFTP", icon: "folder-network", color: "#8B5CF6", desc: "Enter FTP details" },
 ];
@@ -202,7 +203,7 @@ export default function WizardScreen() {
               Your 14-day free trial has already started. Enjoy full access to all KKamera features — no credit card required right now.
             </Text>
             <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during your trial." />
-            <InfoCard icon="calendar-outline" text="After 14 days: just $25/year to continue — less than 7¢ per day." />
+            <InfoCard icon="calendar-outline" text="After 14 days: just $30/year to continue — less than 9¢ per day." />
             <InfoCard icon="notifications-outline" text="We'll remind you 3 days before your trial ends." />
             <InfoCard icon="close-circle-outline" text="Cancel anytime. No hidden fees, ever." />
           </View>

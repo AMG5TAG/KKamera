@@ -88,17 +88,6 @@ export default function UploadScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Destinations */}
-        <Text style={styles.sectionLabel}>Destinations</Text>
-        <View style={styles.card}>
-          <SettingRow
-            icon="cloud-upload-outline"
-            label="Cloud Connections"
-            hint="FTP, WebDAV, Google Drive, OneDrive, Dropbox"
-            onPress={() => router.push("/settings/cloud")}
-          />
-        </View>
-
         {/* History */}
         <Text style={styles.sectionLabel}>History</Text>
         <View style={styles.card}>

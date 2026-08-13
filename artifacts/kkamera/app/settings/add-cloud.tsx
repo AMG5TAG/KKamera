@@ -8,7 +8,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
-import { useCreateCloudConnection, getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
+import { useCreateCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_BASE_URL } from "@/lib/config";
 
@@ -20,7 +20,31 @@ const CARD = "#1a1710";
 
 const BASE_URL = API_BASE_URL;
 
-const CLOUD_TYPES = [
+// `type` is the card's identity in this screen. `backendType` (when set) is what
+// the server actually stores — e.g. Synology reuses the WebDAV upload path.
+type CloudType = {
+  type: string;
+  backendType?: string;
+  provider?: string;
+  label: string;
+  icon: string;
+  color: string;
+  set: "mci" | "ion";
+  oAuth: boolean;
+  desc: string;
+  hostLabel?: string;
+  hostHint?: string;
+  portHint?: string;
+  defaultPort?: string;
+  usernameHint?: string;
+  /** Username is part of the server path (Nextcloud), so it can't be left blank. */
+  requiresUsername?: boolean;
+  passwordLabel?: string;
+  passwordHint?: string;
+  note?: string;
+};
+
+const CLOUD_TYPES: CloudType[] = [
   {
     type: "googledrive", label: "Google Drive", icon: "google-drive", color: "#4285F4", set: "mci", oAuth: true,
     desc: "Connect via your Google account — no tokens to copy.",
@@ -34,12 +58,44 @@ const CLOUD_TYPES = [
     desc: "Connect via your Dropbox account — secure OAuth 2 flow.",
   },
   {
+    type: "synology", backendType: "webdav", provider: "synology", label: "Synology NAS", icon: "nas", color: "#b19870", set: "mci", oAuth: false,
+    desc: "Upload to a Synology DiskStation over WebDAV.",
+    hostHint: "e.g. https://yourname.quickconnect.to or your DDNS/IP",
+    portHint: "Default: 5006 (WebDAV over HTTPS)", defaultPort: "5006",
+    note:
+      "Enable the “WebDAV Server” package in DSM (Package Center) and turn on HTTPS on port 5006. " +
+      "Then use your DSM username and password below.\n\n" +
+      "Note: Synology BeeStation appliances are not supported directly — they don’t offer WebDAV, FTP, or an upload API. " +
+      "For a BeeStation, connect Google Drive / Dropbox / OneDrive instead and set the BeeStation to pull from that folder.",
+  },
+  {
+    type: "nextcloud", label: "Nextcloud", icon: "cloud-outline", color: "#0082C9", set: "ion", oAuth: false,
+    desc: "Upload straight to your own Nextcloud server.",
+    hostLabel: "Server URL",
+    hostHint: "e.g. https://cloud.example.com — the address you sign in at",
+    portHint: "Default: 443 — leave blank unless your server uses a custom port", defaultPort: "",
+    usernameHint: "Your Nextcloud login — it forms part of your files' address",
+    requiresUsername: true,
+    passwordLabel: "App Password",
+    passwordHint: "Stored encrypted on the server",
+    note:
+      "Use an app password, not your account password: in Nextcloud go to Settings → Security → " +
+      "“Create new app password”, name it KKamera, and paste the generated password below. " +
+      "This is the only way that works when two-factor authentication is enabled, and you can revoke " +
+      "it from that same screen without changing your account password.\n\n" +
+      "Just enter your server address — the upload folder is created inside your Files automatically.",
+  },
+  {
     type: "webdav", label: "WebDAV Server", icon: "server-outline", color: "#6B7280", set: "ion", oAuth: false,
-    desc: "Connect to any WebDAV server (Nextcloud, ownCloud, etc.).",
+    desc: "Connect to any other WebDAV server (ownCloud, Seafile, etc.).",
+    hostHint: "e.g. https://cloud.example.com/dav",
+    portHint: "Default: 443", defaultPort: "",
   },
   {
     type: "ftp", label: "FTP / SFTP", icon: "folder-outline", color: "#8B5CF6", set: "ion", oAuth: false,
     desc: "Connect to an FTP server to upload photos and videos.",
+    hostHint: "e.g. ftp.example.com",
+    portHint: "Default: 21", defaultPort: "",
   },
 ];
 
@@ -119,8 +175,12 @@ export default function AddCloudScreen() {
         // Native: open in-app browser, intercept kkamera:// deep link
         const result = await WebBrowser.openAuthSessionAsync(authorizeUrl, "kkamera://");
         if (result.type === "success" && result.url) {
+          // The server deep-links back to kkamera://oauth-success (with a
+          // connectionId) on success, or kkamera://oauth-error (with an error) on
+          // failure — both close the auth browser, so inspect which one we got.
           const url = new URL(result.url);
           const connectionId = url.searchParams.get("connectionId");
+          const errParam = url.searchParams.get("error");
           const connName = url.searchParams.get("name");
           if (connectionId) {
             queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
@@ -129,6 +189,10 @@ export default function AddCloudScreen() {
               `"${decodeURIComponent(connName ?? selected?.label ?? "Connection")}" added successfully.`,
               [{ text: "Done", onPress: () => router.back() }]
             );
+          } else if (errParam) {
+            Alert.alert("Connection Failed", decodeURIComponent(errParam));
+          } else {
+            Alert.alert("Connection Failed", "The connection did not complete. Please try again.");
           }
         } else if (result.type === "cancel") {
           // User cancelled — do nothing
@@ -152,10 +216,15 @@ export default function AddCloudScreen() {
       Alert.alert("Missing Info", "Please enter the server host / URL.");
       return;
     }
+    if (selected?.requiresUsername && !username.trim()) {
+      Alert.alert("Missing Info", `Please enter your ${selected.label} username.`);
+      return;
+    }
     try {
       await createMutation.mutateAsync({
         data: {
-          type: selectedType as any,
+          type: (selected?.backendType ?? selectedType) as any,
+          provider: selected?.provider ?? null,
           name: name.trim(),
           host: host || null,
           port: port ? parseInt(port) : null,
@@ -168,7 +237,10 @@ export default function AddCloudScreen() {
       queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
       Alert.alert("Connection Added", `"${name}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
     } catch (e: any) {
-      Alert.alert("Error", e?.response?.data?.message || "Failed to add connection.");
+      // This client throws ApiError (custom fetch mutator), not an axios error —
+      // there is no `e.response.data`, so read the server's `{ message }` through
+      // the shared helper or validation failures show up as a bare generic error.
+      Alert.alert("Error", getUserFacingMessage(e, "Failed to add connection."));
     }
   };
 
@@ -186,7 +258,7 @@ export default function AddCloudScreen() {
           <TouchableOpacity
             key={opt.type}
             style={[styles.typeCard, selectedType === opt.type && styles.typeCardSelected]}
-            onPress={() => { setSelectedType(opt.type); setName(opt.label); }}
+            onPress={() => { setSelectedType(opt.type); setName(opt.label); setPort(opt.defaultPort ?? ""); }}
           >
             <View style={[styles.typeIcon, { backgroundColor: opt.color + "22" }]}>
               {opt.set === "mci"
@@ -205,6 +277,13 @@ export default function AddCloudScreen() {
         {selectedType && selected && (
           <>
             <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Connection Details</Text>
+
+            {selected.note && (
+              <View style={styles.infoCard}>
+                <Ionicons name="information-circle-outline" size={18} color={PRIMARY} />
+                <Text style={styles.infoText}>{selected.note}</Text>
+              </View>
+            )}
 
             <Field label="Connection Name">
               <TextInput
@@ -261,8 +340,8 @@ export default function AddCloudScreen() {
             {!selected.oAuth && (
               <>
                 <Field
-                  label="Server Host / URL"
-                  hint={selectedType === "webdav" ? "e.g. https://cloud.example.com/dav" : "e.g. ftp.example.com"}
+                  label={selected.hostLabel ?? "Server Host / URL"}
+                  hint={selected.hostHint ?? "host or URL"}
                 >
                   <TextInput
                     style={styles.input} value={host} onChangeText={setHost}
@@ -271,7 +350,7 @@ export default function AddCloudScreen() {
                   />
                 </Field>
 
-                <Field label="Port (optional)" hint={selectedType === "ftp" ? "Default: 21" : "Default: 443"}>
+                <Field label="Port (optional)" hint={selected.portHint ?? "Leave blank for default"}>
                   <TextInput
                     style={styles.input} value={port} onChangeText={setPort}
                     placeholder="Leave blank for default" placeholderTextColor="#555"
@@ -279,14 +358,17 @@ export default function AddCloudScreen() {
                   />
                 </Field>
 
-                <Field label="Username">
+                <Field label="Username" hint={selected.usernameHint}>
                   <TextInput
                     style={styles.input} value={username} onChangeText={setUsername}
                     placeholder="username" placeholderTextColor="#555" autoCapitalize="none"
                   />
                 </Field>
 
-                <Field label="Password" hint="Stored encrypted on the server">
+                <Field
+                  label={selected.passwordLabel ?? "Password"}
+                  hint={selected.passwordHint ?? "Stored encrypted on the server"}
+                >
                   <View style={styles.inputRow}>
                     <TextInput
                       style={[styles.input, { flex: 1, borderWidth: 0 }]}
@@ -362,6 +444,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(245,158,11,0.25)",
   },
   warnText: { flex: 1, fontSize: 12, color: "#d4a800", fontFamily: "Inter_400Regular", lineHeight: 17 },
+  infoCard: {
+    flexDirection: "row", alignItems: "flex-start", gap: 10,
+    backgroundColor: "rgba(177,152,112,0.08)", borderRadius: 10, padding: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.25)",
+  },
+  infoText: { flex: 1, fontSize: 12, color: "#c3b091", fontFamily: "Inter_400Regular", lineHeight: 17 },
   oauthBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     borderRadius: 14, paddingVertical: 15, marginTop: 4,

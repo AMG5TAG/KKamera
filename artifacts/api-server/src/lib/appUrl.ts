@@ -1,8 +1,8 @@
 /**
- * Canonical public origin of the deployed app. Every user-facing URL — OAuth
- * callbacks, Stripe checkout redirect + webhook, password-reset links — is built
- * from this, never from the Replit preview domain. Override with the APP_URL env
- * var only if the app is ever hosted somewhere other than app.kkamera.app.
+ * Canonical public origin of the deployed API. Every user-facing URL — OAuth
+ * callbacks and password-reset links — is built from this, never from the Replit
+ * preview domain. Override with the APP_URL env var only if the API is ever
+ * hosted somewhere other than app.kkamera.app.
  */
 export function getPublicBaseUrl(): string {
   const override = process.env["APP_URL"]?.trim();
