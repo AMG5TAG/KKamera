@@ -188,7 +188,14 @@ export const InviteCoworkersResponse = zod.object({
 export const ListCloudConnectionsResponseItem = zod.object({
   id: zod.number(),
   userId: zod.number(),
-  type: zod.enum(["ftp", "webdav", "onedrive", "googledrive", "dropbox"]),
+  type: zod.enum([
+    "ftp",
+    "webdav",
+    "nextcloud",
+    "onedrive",
+    "googledrive",
+    "dropbox",
+  ]),
   provider: zod
     .string()
     .nullish()
@@ -207,7 +214,14 @@ export const ListCloudConnectionsResponse = zod.array(
 );
 
 export const CreateCloudConnectionBody = zod.object({
-  type: zod.enum(["ftp", "webdav", "onedrive", "googledrive", "dropbox"]),
+  type: zod.enum([
+    "ftp",
+    "webdav",
+    "nextcloud",
+    "onedrive",
+    "googledrive",
+    "dropbox",
+  ]),
   provider: zod
     .string()
     .nullish()
@@ -248,7 +262,14 @@ export const UpdateCloudConnectionBody = zod.object({
 export const UpdateCloudConnectionResponse = zod.object({
   id: zod.number(),
   userId: zod.number(),
-  type: zod.enum(["ftp", "webdav", "onedrive", "googledrive", "dropbox"]),
+  type: zod.enum([
+    "ftp",
+    "webdav",
+    "nextcloud",
+    "onedrive",
+    "googledrive",
+    "dropbox",
+  ]),
   provider: zod
     .string()
     .nullish()

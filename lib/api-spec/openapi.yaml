@@ -1022,7 +1022,7 @@ components:
           type: integer
         type:
           type: string
-          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud, onedrive, googledrive, dropbox]
         provider:
           type: ["string", "null"]
           description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
@@ -1045,7 +1045,7 @@ components:
       properties:
         type:
           type: string
-          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud, onedrive, googledrive, dropbox]
         provider:
           type: ["string", "null"]
           description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.

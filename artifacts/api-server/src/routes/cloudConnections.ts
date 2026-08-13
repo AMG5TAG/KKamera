@@ -22,6 +22,17 @@ const createConnectionSchema = z.object({
   password: z.string().max(500).optional(),
   uploadPath: z.string().max(500).optional(),
   oauthCode: z.string().max(2000).optional(),
+}).superRefine((val, ctx) => {
+  // Nextcloud's WebDAV endpoint is built from the server URL *and* the login
+  // (…/remote.php/dav/files/<username>), so a connection missing either can
+  // never upload — reject it here rather than at capture time.
+  if (val.type !== CLOUD_PROVIDER.NEXTCLOUD) return;
+  if (!val.host?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["host"], message: "Nextcloud server URL is required" });
+  }
+  if (!val.username?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["username"], message: "Nextcloud username is required" });
+  }
 });
 
 const updateConnectionSchema = z.object({

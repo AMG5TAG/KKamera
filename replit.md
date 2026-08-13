@@ -1,6 +1,6 @@
 # KKamera
 
-A subscription-based native camera app (iOS/Android) that directly uploads photos and videos to FTP, WebDAV, Google Drive, OneDrive, and Dropbox.
+A subscription-based native camera app (iOS/Android) that directly uploads photos and videos to FTP, WebDAV, Nextcloud, Google Drive, OneDrive, and Dropbox.
 
 ## Run & Operate
 
@@ -47,7 +47,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Express runs with `trust proxy` (required behind Replit's proxy for per-client rate limiting)
 
 ### Security model (don't regress)
-- **SSRF guard** (`lib/ssrf.ts` + `cloudUpload.ts`): user-supplied FTP/WebDAV hosts are validated against private/loopback/link-local/IPv4-mapped-IPv6 ranges, the resolved IP is pinned (FTP) or re-validated at connect on every redirect (WebDAV agent). Keep this on any new outbound request to a user-controlled host.
+- **SSRF guard** (`lib/ssrf.ts` + `cloudUpload.ts`): user-supplied FTP/WebDAV/Nextcloud hosts are validated against private/loopback/link-local/IPv4-mapped-IPv6 ranges, the resolved IP is pinned (FTP) or re-validated at connect on every redirect (WebDAV agent). Keep this on any new outbound request to a user-controlled host.
 - **RevenueCat webhook** (`routes/revenuecat.ts`): shared-secret authenticated (fails closed without `REVENUECAT_WEBHOOK_AUTH`); mirrors IAP entitlements into `subscriptionsTable`; referral milestones are idempotent + row-locked; period-end writes are forward-only (`GREATEST`); stale future-dated EXPIRATION events are ignored.
 - **CSP** is enabled and **CORS** allows only the app host (no cookies — bearer only). HTML interpolated into emails goes through `escapeHtml`; upload filenames through `sanitizeFileName`.
 - Security/billing pure logic is unit-tested (`artifacts/api-server/test/`) — extend the tests when changing it.

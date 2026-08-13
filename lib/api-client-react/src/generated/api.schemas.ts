@@ -255,6 +255,7 @@ export type CloudConnectionType =
 export const CloudConnectionType = {
   ftp: "ftp",
   webdav: "webdav",
+  nextcloud: "nextcloud",
   onedrive: "onedrive",
   googledrive: "googledrive",
   dropbox: "dropbox",
@@ -285,6 +286,7 @@ export type CloudConnectionInputType =
 export const CloudConnectionInputType = {
   ftp: "ftp",
   webdav: "webdav",
+  nextcloud: "nextcloud",
   onedrive: "onedrive",
   googledrive: "googledrive",
   dropbox: "dropbox",

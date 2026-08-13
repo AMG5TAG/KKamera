@@ -30,6 +30,7 @@ const CLOUD_OPTIONS = [
   { type: "googledrive", label: "Google Drive", icon: "google-drive", color: "#4285F4", desc: "Connect via OAuth" },
   { type: "onedrive", label: "OneDrive", icon: "microsoft-onedrive", color: "#0078D4", desc: "Connect via OAuth" },
   { type: "dropbox", label: "Dropbox", icon: "dropbox", color: "#0061FF", desc: "Connect via OAuth" },
+  { type: "nextcloud", label: "Nextcloud", icon: "cloud-outline", color: "#0082C9", desc: "Enter server details" },
   { type: "webdav", label: "WebDAV", icon: "server", color: "#6B7280", desc: "Enter server details" },
   { type: "ftp", label: "FTP / SFTP", icon: "folder-network", color: "#8B5CF6", desc: "Enter FTP details" },
 ];

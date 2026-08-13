@@ -17,6 +17,7 @@ const ICONS: Record<string, { icon: string; color: string; set: "ion" | "mci" }>
   googledrive: { icon: "google-drive", color: "#4285F4", set: "mci" },
   onedrive: { icon: "microsoft-onedrive", color: "#0078D4", set: "mci" },
   dropbox: { icon: "dropbox", color: "#0061FF", set: "mci" },
+  nextcloud: { icon: "cloud-outline", color: "#0082C9", set: "ion" },
   webdav: { icon: "server-outline", color: "#6B7280", set: "ion" },
   ftp: { icon: "folder-outline", color: "#8B5CF6", set: "ion" },
 };
