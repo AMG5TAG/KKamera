@@ -53,11 +53,11 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="7. Data Retention">
-        Your account data is retained until you delete your account. Upload queue records are retained for 90 days. You can request deletion of all your data at any time by contacting us at privacy@kkamera.app.
+        Your account data is retained until you delete your account. Upload queue records are retained for 90 days. You can request deletion of all your data at any time by contacting us at development@koastal.com.au.
       </Section>
 
       <Section title="8. Your Rights">
-        Depending on your location, you may have the right to: access your personal data, correct inaccurate data, delete your data, port your data, and withdraw consent for processing. Contact us at privacy@kkamera.app to exercise these rights.
+        Depending on your location, you may have the right to: access your personal data, correct inaccurate data, delete your data, port your data, and withdraw consent for processing. Contact us at development@koastal.com.au to exercise these rights.
       </Section>
 
       <Section title="9. Children's Privacy">
@@ -65,7 +65,7 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="10. Contact">
-        For privacy enquiries: privacy@kkamera.app
+        For privacy enquiries: development@koastal.com.au
       </Section>
     </ScrollView>
     </View>

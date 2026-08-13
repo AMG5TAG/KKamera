@@ -72,7 +72,7 @@ export default function TermsScreen() {
       </Section>
 
       <Section title="12. Contact">
-        For legal enquiries: legal@kkamera.app
+        For legal enquiries: development@koastal.com.au
       </Section>
     </ScrollView>
     </View>

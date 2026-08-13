@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { DEFAULT_ZOOM, type ZoomValue } from "@/lib/zoomLevels";
 
 export type GridType = "off" | "thirds" | "golden" | "square" | "diagonal";
 
@@ -18,6 +19,8 @@ export interface AppSettings {
   recordHistory: boolean;
   // Pro camera controls
   gridType: GridType;
+  /** Zoom the rear camera opens at (and returns to when flipping back). */
+  defaultZoom: ZoomValue;
   timerSeconds: 0 | 3 | 10;
   timerBeep: boolean;
   burstCount: number;
@@ -56,6 +59,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   markupUploadMode: "both",
   recordHistory: true,
   gridType: "off",
+  defaultZoom: DEFAULT_ZOOM,
   timerSeconds: 0,
   timerBeep: false,
   burstCount: 1,

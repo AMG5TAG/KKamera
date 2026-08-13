@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSettings, type GridType } from "@/contexts/SettingsContext";
+import { ZOOM_LEVELS, type ZoomValue } from "@/lib/zoomLevels";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -145,6 +146,15 @@ export default function CameraScreen() {
             ]}
             value={settings.gridType}
             onChange={v => updateSetting("gridType", v)}
+          />
+          <View style={styles.divider} />
+          <SegmentRow<ZoomValue>
+            icon="search-outline"
+            label="Default Zoom"
+            hint="Zoom level the rear camera opens at"
+            options={ZOOM_LEVELS.map(z => ({ label: z.label, value: z.value }))}
+            value={settings.defaultZoom}
+            onChange={v => updateSetting("defaultZoom", v)}
           />
           <View style={styles.divider} />
           <ToggleRow

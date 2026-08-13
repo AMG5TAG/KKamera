@@ -168,7 +168,7 @@ function passwordResetEmail(name: string, resetUrl: string): { html: string } {
       <p class="warn">If you didn't request this, you can safely ignore this email. Your password won't change.</p>
     </div>
     <div class="footer">KKamera &mdash; Cloud Based Photography<br>
-    Questions? <a href="mailto:support@kkamera.app" style="color:#b19870">support@kkamera.app</a></div>
+    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a></div>
   </div>
 </body>
 </html>`,

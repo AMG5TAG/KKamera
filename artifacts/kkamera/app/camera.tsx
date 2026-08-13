@@ -31,6 +31,7 @@ import {
   PANO_STEP_DEG, PANO_MAX_SWEEP_DEG, PANO_MAX_FRAMES, PANO_MIN_FRAMES,
   PANO_FALLBACK_INTERVAL_MS,
 } from "@/lib/panorama";
+import { ZOOM_LEVELS, DEFAULT_ZOOM, FRONT_CAMERA_ZOOM } from "@/lib/zoomLevels";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -151,13 +152,6 @@ const FILTERS: FilterDef[] = [
   { name: "Porcelain", css: "brightness(1.09) saturate(0.9) contrast(0.98) hue-rotate(4deg) blur(0.5px)", swatch: "#dfe8f0", overlay: { color: "#dfe8f0", opacity: 0.07 }, isBeauty: true  },
 ];
 
-const ZOOM_LEVELS = [
-  { value: 0,    label: "·5" },
-  { value: 0.25, label: "1×" },
-  { value: 0.5,  label: "2×" },
-  { value: 0.75, label: "5×" },
-  { value: 1,    label: "10×" },
-];
 
 // iOS Camera-style ordered strip: 3 left · VIDEO · PHOTO · DOC · 3 right
 const STRIP_MODES: ModeConfig[] = [
@@ -200,7 +194,7 @@ export default function CameraScreen() {
   const { width: screenW } = useWindowDimensions();
   const { token } = useAuth();
   const { lastUpload, executeUpload } = useUpload();
-  const { settings, updateSetting } = useSettings();
+  const { settings, updateSetting, isLoading: settingsLoading } = useSettings();
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const rcSub = useSubscription();
   const { data: uploadTarget, refetch: refetchUploadTarget } = useGetUploadTarget();
@@ -239,7 +233,7 @@ export default function CameraScreen() {
   const [extMode, setExtMode] = useState<ExtMode>("photo");
   const [facing, setFacing] = useState<CameraType>("back");
   const [flash, setFlash] = useState<FlashMode>("auto");
-  const [zoom, setZoom] = useState(0.25);
+  const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
   const [isRecording, setIsRecording] = useState(false);
   const [selectedFilter, setSelectedFilter] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
@@ -291,7 +285,7 @@ export default function CameraScreen() {
   const cameraRef = useRef<CameraView>(null);
   const captureScale = useRef(new Animated.Value(1)).current;
   const screenFlashOpacity = useRef(new Animated.Value(0)).current;
-  const baseZoom = useRef(0.25);
+  const baseZoom = useRef<number>(DEFAULT_ZOOM);
 
   // Native photo-baking (stamp burn-in + filter tint) via react-native-view-shot.
   const [bakeConfig, setBakeConfig] = useState<BakeConfig | null>(null);
@@ -327,6 +321,17 @@ export default function CameraScreen() {
     if (!cameraPermission?.granted) requestCameraPermission();
     if (!micPermission?.granted) requestMicPermission();
   }, []);
+
+  // Apply the user's default zoom. Settings arrive asynchronously from
+  // AsyncStorage, so the initial useState value is only the built-in default —
+  // this runs once the stored value has loaded, and again if the preference is
+  // changed. It deliberately does NOT depend on `zoom`, so a pinch or a tap on
+  // the zoom rail stays put for the rest of the session.
+  useEffect(() => {
+    if (settingsLoading || facing !== "back") return;
+    setZoom(settings.defaultZoom);
+    baseZoom.current = settings.defaultZoom;
+  }, [settingsLoading, settings.defaultZoom, facing]);
 
   // Magnetometer subscription for compass bearing (GPSImgDirection)
   useEffect(() => {
@@ -1063,12 +1068,12 @@ export default function CameraScreen() {
   // Tap the top of the screen to switch (flip) cameras while staying covert.
   const handleHiddenFlip = useCallback(() => {
     const next = facing === "back" ? "front" : "back";
-    // Front camera starts at 0.5× (zoom 0); rear resumes at the 1× default
-    const z = next === "front" ? 0 : 0.25;
+    // Front camera has no useful zoom range; rear resumes at the user's default.
+    const z = next === "front" ? FRONT_CAMERA_ZOOM : settings.defaultZoom;
     setFacing(next);
     setZoom(z);
     baseZoom.current = z;
-  }, [facing]);
+  }, [facing, settings.defaultZoom]);
 
   // Triple-press the bottom of the screen to close the app completely.
   const closeTapCount = useRef(0);
@@ -1651,8 +1656,8 @@ export default function CameraScreen() {
               style={styles.sideBtn}
               onPress={() => {
                 const next = facing === "back" ? "front" : "back";
-                // Front camera starts at 0.5× (zoom 0); rear resumes at the 1× default
-                const z = next === "front" ? 0 : 0.25;
+                // Front camera has no useful zoom range; rear resumes at the default.
+                const z = next === "front" ? FRONT_CAMERA_ZOOM : settings.defaultZoom;
                 setFacing(next);
                 setZoom(z);
                 baseZoom.current = z;

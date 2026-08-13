@@ -61,7 +61,7 @@ function wrap(title: string, body: string): string {
     </div>
     <div class="footer">KKamera &mdash; Cloud Based Photography<br>
     You're receiving this because you have a KKamera account.<br>
-    Questions? <a href="mailto:support@kkamera.app" style="color:#b19870">support@kkamera.app</a></div>
+    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a></div>
   </div>
 </body>
 </html>`;

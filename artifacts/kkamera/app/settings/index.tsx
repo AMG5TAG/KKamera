@@ -5,6 +5,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { useGetSubscription, useGetMe } from "@workspace/api-client-react";
+import { shareInvite } from "@/lib/shareInvite";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -58,6 +59,26 @@ export default function SettingsScreen() {
     subStatus === "trial" ? "TRIAL" :
     subStatus === "active" ? "ACTIVE" : undefined;
 
+  // Alert isn't implemented by react-native-web, so web feedback goes through
+  // the browser dialog (same split as handleLogout below).
+  const notify = (title: string, body: string) => {
+    if (Platform.OS === "web") window.alert(`${title}\n\n${body}`);
+    else Alert.alert(title, body);
+  };
+
+  // Tapping the referral code opens the OS share sheet — Messages, Mail,
+  // WhatsApp, social apps, whatever the user has installed.
+  const handleShareCode = async () => {
+    const code = user?.referralCode;
+    if (!code) return;
+    const result = await shareInvite(code);
+    if (result === "copied") {
+      notify("Invite copied", "Your invite link and code are on the clipboard — paste them anywhere.");
+    } else if (result === "unavailable") {
+      notify("Share unavailable", `Sharing isn't supported here. Your referral code is ${code}.`);
+    }
+  };
+
   const handleLogout = () => {
     if (Platform.OS === "web") {
       if (window.confirm("Sign out of KKamera?")) logout();
@@ -93,10 +114,21 @@ export default function SettingsScreen() {
             <Text style={styles.profileName}>{displayName}</Text>
             <Text style={styles.profileEmail}>{displayEmail}</Text>
             {user?.referralCode ? (
-              <View style={styles.referralPill}>
+              <TouchableOpacity
+                style={styles.referralPill}
+                onPress={handleShareCode}
+                activeOpacity={0.65}
+                // The pill is deliberately small; widen the touch area rather
+                // than its padding so the layout is unchanged.
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel={`Share your referral code ${user.referralCode}`}
+                accessibilityHint="Opens the share sheet"
+              >
                 <Ionicons name="people-outline" size={12} color={PRIMARY} />
                 <Text style={styles.referralPillText}>Code: {user.referralCode}</Text>
-              </View>
+                <Ionicons name="share-outline" size={12} color={PRIMARY} />
+              </TouchableOpacity>
             ) : null}
           </View>
           <TouchableOpacity style={styles.editBtn} onPress={() => router.push("/settings/subscription")}>

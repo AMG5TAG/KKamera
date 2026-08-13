@@ -35,7 +35,7 @@ export default function DeleteAccountScreen() {
       if (!res.ok) throw new Error("Delete failed");
       await logout();
     } catch {
-      Alert.alert("Error", "Could not delete account. Please contact support@kkamera.app.");
+      Alert.alert("Error", "Could not delete account. Please contact development@koastal.com.au.");
     } finally {
       setLoading(false);
     }
