@@ -8,7 +8,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
-import { useCreateCloudConnection, getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
+import { useCreateCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_BASE_URL } from "@/lib/config";
 
@@ -237,7 +237,10 @@ export default function AddCloudScreen() {
       queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
       Alert.alert("Connection Added", `"${name}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
     } catch (e: any) {
-      Alert.alert("Error", e?.response?.data?.message || "Failed to add connection.");
+      // This client throws ApiError (custom fetch mutator), not an axios error —
+      // there is no `e.response.data`, so read the server's `{ message }` through
+      // the shared helper or validation failures show up as a bare generic error.
+      Alert.alert("Error", getUserFacingMessage(e, "Failed to add connection."));
     }
   };
 
