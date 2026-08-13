@@ -26,6 +26,11 @@ import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
 import { API_BASE_URL } from "@/lib/config";
 import { resolveUploadTarget, type ResolvedTarget } from "@/lib/uploadTarget";
+import {
+  accumulateSweep, panoLayout, type PanoLayout,
+  PANO_STEP_DEG, PANO_MAX_SWEEP_DEG, PANO_MAX_FRAMES, PANO_MIN_FRAMES,
+  PANO_FALLBACK_INTERVAL_MS,
+} from "@/lib/panorama";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -85,6 +90,15 @@ async function getAccelerometer() {
   return Accelerometer;
 }
 
+// Yaw source for the panorama sweep. DeviceMotion carries an integrated
+// orientation (rotation.alpha), which is far steadier than the raw magnetometer
+// used for the compass badge.
+async function getDeviceMotion() {
+  if (Platform.OS === "web") return null;
+  const { DeviceMotion } = await import("expo-sensors");
+  return DeviceMotion;
+}
+
 // Native-only document scanner (iOS VisionKit / Android ML Kit). The module
 // registers a TurboModule at import time and throws on web, so it must only be
 // imported lazily on native — never at the top level.
@@ -97,7 +111,7 @@ async function getDocumentScanner() {
 const LEVEL_TOLERANCE_DEG = 2;
 
 type FlashMode = "off" | "on" | "auto";
-type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "spatial" | "hidden";
+type ExtMode = "photo" | "portrait" | "cinematic" | "video" | "slow-mo" | "timelapse" | "pano" | "scan" | "hidden";
 
 interface ModeConfig { mode: ExtMode; label: string; cameraMode: CameraMode; isVideo: boolean }
 
@@ -110,7 +124,6 @@ const EXT_MODES: ModeConfig[] = [
   { mode: "timelapse", label: "TIME-LAPSE", cameraMode: "picture", isVideo: false },
   { mode: "pano",      label: "PANO",       cameraMode: "picture", isVideo: false },
   { mode: "scan",      label: "SCAN",       cameraMode: "picture", isVideo: false },
-  { mode: "spatial",   label: "SPATIAL",    cameraMode: "video",   isVideo: true  },
   { mode: "hidden",    label: "HIDDEN",     cameraMode: "picture", isVideo: false },
 ];
 
@@ -156,7 +169,6 @@ const STRIP_MODES: ModeConfig[] = [
   EXT_MODES.find(m => m.mode === "scan")!,
   EXT_MODES.find(m => m.mode === "slow-mo")!,
   EXT_MODES.find(m => m.mode === "timelapse")!,
-  EXT_MODES.find(m => m.mode === "spatial")!,
   EXT_MODES.find(m => m.mode === "hidden")!,
 ];
 const STRIP_LABEL: Partial<Record<ExtMode, string>> = {
@@ -177,6 +189,11 @@ interface BakeConfig {
   stampLines: string[];
   overlay: { color: string; opacity: number } | null;
 }
+
+interface PanoFrame { uri: string; width: number; height: number }
+
+// Offscreen strip composition for PANO, rasterised the same way as BakeConfig.
+interface PanoConfig extends PanoLayout { frames: PanoFrame[] }
 
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
@@ -281,6 +298,30 @@ export default function CameraScreen() {
   const bakeViewRef = useRef<View>(null);
   const bakeResolver = useRef<((uri: string | null) => void) | null>(null);
   const bakeCaptured = useRef(false);
+
+  // ── Panorama sweep ────────────────────────────────────────────────────────
+  const [isPanoCapturing, setIsPanoCapturing] = useState(false);
+  const [panoComposing, setPanoComposing] = useState(false);
+  const [panoSweep, setPanoSweep] = useState(0);      // degrees swept so far
+  const [panoFrameCount, setPanoFrameCount] = useState(0);
+  // Refs shadow the state above because the sensor callback and the capture
+  // loop both run outside React's render cycle and need the live values.
+  const panoActive = useRef(false);
+  const panoFrames = useRef<PanoFrame[]>([]);
+  const panoSweepRef = useRef(0);
+  const panoLastYaw = useRef<number | null>(null);
+  const panoNextCaptureAt = useRef(0);
+  const panoGrabbing = useRef(false);
+  const panoSensorSub = useRef<{ remove: () => void } | null>(null);
+  const panoWebHandler = useRef<((e: any) => void) | null>(null);
+  const panoTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finishPanoRef = useRef<() => void>(() => {});
+  // Offscreen strip composition.
+  const [panoConfig, setPanoConfig] = useState<PanoConfig | null>(null);
+  const panoViewRef = useRef<View>(null);
+  const panoResolver = useRef<((uri: string | null) => void) | null>(null);
+  const panoCaptured = useRef(false);
+  const panoSettled = useRef(0);
 
   useEffect(() => {
     if (!cameraPermission?.granted) requestCameraPermission();
@@ -618,6 +659,256 @@ export default function CameraScreen() {
     return () => clearTimeout(t);
   }, [bakeConfig, captureBakedView]);
 
+  // ── Panorama ──────────────────────────────────────────────────────────────
+  // A sweep captures a frame every PANO_STEP_DEG of yaw, then composites the
+  // frames' centre strips into one wide image (see lib/panorama.ts).
+
+  /** Grab one frame mid-sweep. Re-entrancy-guarded — the sensor can tick again
+   *  while takePictureAsync is still in flight. */
+  const panoGrabFrame = useCallback(async () => {
+    if (!panoActive.current || panoGrabbing.current) return;
+    if (panoFrames.current.length >= PANO_MAX_FRAMES) return;
+    panoGrabbing.current = true;
+    try {
+      const photo = await cameraRef.current?.takePictureAsync({
+        quality: 0.8,
+        skipProcessing: true,
+        shutterSound: false,
+      });
+      // Re-check: the sweep may have been ended while the shot was in flight.
+      if (photo?.uri && panoActive.current) {
+        panoFrames.current.push({ uri: photo.uri, width: photo.width ?? 0, height: photo.height ?? 0 });
+        setPanoFrameCount(panoFrames.current.length);
+        if (Platform.OS !== "web") {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        }
+      }
+    } catch { /* drop this frame and keep sweeping */ }
+    finally { panoGrabbing.current = false; }
+  }, []);
+
+  /** Fold a yaw reading into the sweep, capturing and finishing at thresholds. */
+  const panoOnYaw = useCallback((yawDeg: number) => {
+    if (!panoActive.current) return;
+    const { total, accepted } = accumulateSweep(panoLastYaw.current, yawDeg, panoSweepRef.current);
+    panoLastYaw.current = yawDeg;
+    if (!accepted) return;
+    panoSweepRef.current = total;
+    setPanoSweep(Math.round(total));
+
+    const due = total >= panoNextCaptureAt.current;
+    if (due) panoNextCaptureAt.current = total + PANO_STEP_DEG;
+    const atEnd = total >= PANO_MAX_SWEEP_DEG || panoFrames.current.length >= PANO_MAX_FRAMES;
+
+    if (due) {
+      // Let the last frame land before closing the sweep. finishPano clears
+      // panoActive, and panoGrabFrame drops any shot still in flight when it
+      // does — so finishing first would silently lose the final strip.
+      const grab = panoGrabFrame();
+      if (atEnd) grab.then(() => finishPanoRef.current());
+      return;
+    }
+    if (atEnd) finishPanoRef.current();
+  }, [panoGrabFrame]);
+
+  const panoStopSensor = useCallback(() => {
+    panoSensorSub.current?.remove();
+    panoSensorSub.current = null;
+    if (panoWebHandler.current && Platform.OS === "web") {
+      window.removeEventListener("deviceorientation", panoWebHandler.current);
+      panoWebHandler.current = null;
+    }
+    if (panoTimer.current) { clearInterval(panoTimer.current); panoTimer.current = null; }
+  }, []);
+
+  /** Subscribe to a yaw source. Returns false when none is usable, so the
+   *  caller can fall back to a timed sweep. */
+  const panoStartSensor = useCallback(async (): Promise<boolean> => {
+    if (Platform.OS === "web") {
+      const DOE: any = (globalThis as any).DeviceOrientationEvent;
+      if (!DOE) return false;
+      try {
+        // iOS Safari gates motion events behind a user-gesture permission call;
+        // this runs from the shutter tap, so it is allowed to prompt.
+        if (typeof DOE.requestPermission === "function") {
+          const res = await DOE.requestPermission();
+          if (res !== "granted") return false;
+        }
+      } catch { return false; }
+      let sawReading = false;
+      const handler = (e: any) => {
+        if (e?.alpha == null) return;
+        sawReading = true;
+        panoOnYaw(e.alpha);
+      };
+      panoWebHandler.current = handler;
+      window.addEventListener("deviceorientation", handler);
+      // Some browsers register the listener happily but never emit; give it a
+      // moment and fall back to the timer if nothing arrives.
+      await new Promise(r => setTimeout(r, 400));
+      if (!sawReading) { panoStopSensor(); return false; }
+      return true;
+    }
+
+    try {
+      const DeviceMotion = await getDeviceMotion();
+      if (!DeviceMotion) return false;
+      const available = await DeviceMotion.isAvailableAsync().catch(() => false);
+      if (!available) return false;
+      const perm = await DeviceMotion.requestPermissionsAsync().catch(() => null);
+      if (perm && !perm.granted) return false;
+      DeviceMotion.setUpdateInterval(60);
+      panoSensorSub.current = DeviceMotion.addListener(({ rotation }) => {
+        if (rotation?.alpha == null) return;
+        panoOnYaw(rotation.alpha * (180 / Math.PI));
+      });
+      return true;
+    } catch { return false; }
+  }, [panoOnYaw, panoStopSensor]);
+
+  /** Rasterise the offscreen strip row once every frame has painted. */
+  const capturePanoView = useCallback(async () => {
+    if (!panoConfig || panoCaptured.current) return;
+    panoCaptured.current = true;
+    let out: string | null = null;
+    try {
+      await new Promise<void>(r => requestAnimationFrame(() => r()));
+      const result = await captureRef(panoViewRef, {
+        format: "jpg",
+        quality: 0.92,
+        result: "tmpfile",
+        width: panoConfig.outW,
+        height: panoConfig.outH,
+      });
+      out = result.startsWith("file:") || result.startsWith("content:")
+        ? result
+        : result.startsWith("/") ? `file://${result}` : result;
+    } catch { out = null; }
+    const resolve = panoResolver.current;
+    panoResolver.current = null;
+    setPanoConfig(null);
+    resolve?.(out);
+  }, [panoConfig]);
+
+  /** Count frames in, and rasterise once they have all settled. */
+  const onPanoFrameSettled = useCallback(() => {
+    panoSettled.current += 1;
+    if (panoConfig && panoSettled.current >= panoConfig.frames.length) capturePanoView();
+  }, [panoConfig, capturePanoView]);
+
+  // Backstop in case an onLoad never fires (cached/decoded images can skip it).
+  // Scales with frame count so a long sweep isn't cut off early.
+  useEffect(() => {
+    if (!panoConfig) return;
+    const t = setTimeout(() => { capturePanoView(); }, 1200 + panoConfig.frames.length * 250);
+    return () => clearTimeout(t);
+  }, [panoConfig, capturePanoView]);
+
+  const composePano = useCallback((frames: PanoFrame[]): Promise<string | null> => {
+    const first = frames[0]!;
+    const layout = panoLayout({
+      frameW: first.width,
+      frameH: first.height,
+      frameCount: frames.length,
+    });
+    panoCaptured.current = false;
+    panoSettled.current = 0;
+    return new Promise((resolve) => {
+      panoResolver.current = resolve;
+      setPanoConfig({ ...layout, frames });
+    });
+  }, []);
+
+  const finishPano = useCallback(async () => {
+    if (!panoActive.current) return;
+    panoActive.current = false;
+    panoStopSensor();
+    setIsPanoCapturing(false);
+
+    const frames = [...panoFrames.current];
+    panoFrames.current = [];
+    setPanoFrameCount(0);
+    setPanoSweep(0);
+    panoSweepRef.current = 0;
+    panoLastYaw.current = null;
+
+    if (frames.length === 0) return;
+
+    let uri = frames[0]!.uri;
+    let stitched = false;
+    if (frames.length >= PANO_MIN_FRAMES) {
+      setPanoComposing(true);
+      const composed = await composePano(frames);
+      setPanoComposing(false);
+      if (composed) {
+        uri = composed;
+        stitched = true;
+      } else {
+        // Never silently pass a single frame off as the panorama.
+        Alert.alert(
+          "Panorama Failed",
+          `Could not stitch the ${frames.length} captured frames. Saving the first frame instead.`,
+        );
+      }
+    } else {
+      // Below the minimum the composite would be narrower than one ordinary
+      // photo, so there is nothing to gain from stitching it.
+      setStampToast("Sweep too short — saved a single frame");
+      setTimeout(() => setStampToast(null), 2200);
+    }
+
+    await doUpload(uri, `PANO_${Date.now()}.jpg`, "image");
+    if (stitched) {
+      setStampToast(`Panorama stitched from ${frames.length} frames`);
+      setTimeout(() => setStampToast(null), 2200);
+    }
+  }, [panoStopSensor, composePano, doUpload]);
+
+  // The sensor callback is created before finishPano exists, so it calls
+  // through this ref.
+  useEffect(() => { finishPanoRef.current = () => { finishPano(); }; }, [finishPano]);
+
+  const startPano = useCallback(async () => {
+    if (panoActive.current) return;
+    panoFrames.current = [];
+    panoSweepRef.current = 0;
+    panoLastYaw.current = null;
+    panoNextCaptureAt.current = PANO_STEP_DEG;
+    panoActive.current = true;
+    setPanoSweep(0);
+    setPanoFrameCount(0);
+    setIsPanoCapturing(true);
+    if (Platform.OS !== "web") {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    }
+
+    // Anchor frame straight away so a sweep always has a starting edge.
+    await panoGrabFrame();
+
+    const hasSensor = await panoStartSensor();
+    if (!hasSensor && panoActive.current) {
+      // No usable yaw source (web without motion permission, or a device
+      // lacking the sensor): fall back to a timed sweep. The user still pans;
+      // we just assume the nominal step per tick instead of measuring it.
+      panoTimer.current = setInterval(() => {
+        if (!panoActive.current) return;
+        panoSweepRef.current += PANO_STEP_DEG;
+        setPanoSweep(Math.round(panoSweepRef.current));
+        const grab = panoGrabFrame();
+        if (panoSweepRef.current >= PANO_MAX_SWEEP_DEG || panoFrames.current.length >= PANO_MAX_FRAMES) {
+          grab.then(() => finishPanoRef.current());
+        }
+      }, PANO_FALLBACK_INTERVAL_MS);
+    }
+  }, [panoGrabFrame, panoStartSensor]);
+
+  const handlePano = useCallback(() => {
+    if (panoComposing) return;
+    pulseCaptureBtn();
+    if (panoActive.current) finishPano();
+    else startPano();
+  }, [panoComposing, finishPano, startPano]);
+
   // Single capture cycle (screen flash → snap → stamp/strip → upload).
   // The self-timer runs once at the start of a burst, not on every shot.
   const captureOne = useCallback(async (indexLabel?: string) => {
@@ -721,7 +1012,7 @@ export default function CameraScreen() {
         if (recordTimer.current) clearInterval(recordTimer.current);
         setRecordSeconds(0);
         if (video?.uri) {
-          const prefix = extMode === "cinematic" ? "CIN" : extMode === "slow-mo" ? "SLO" : extMode === "spatial" ? "SPA" : "VID";
+          const prefix = extMode === "cinematic" ? "CIN" : extMode === "slow-mo" ? "SLO" : "VID";
           const fileName = `${prefix}_${Date.now()}.${settings.videoFormat}`;
           await doUpload(video.uri, fileName, "video");
         }
@@ -810,6 +1101,16 @@ export default function CameraScreen() {
       if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
       if (closeTapTimer.current) clearTimeout(closeTapTimer.current);
       if (programmaticClearTimer.current) clearTimeout(programmaticClearTimer.current);
+      // Stop the panorama sweep too — its sensor listener and fallback timer
+      // would otherwise keep firing takePictureAsync on a torn-down camera.
+      panoActive.current = false;
+      panoSensorSub.current?.remove();
+      panoSensorSub.current = null;
+      if (panoWebHandler.current && Platform.OS === "web") {
+        window.removeEventListener("deviceorientation", panoWebHandler.current);
+        panoWebHandler.current = null;
+      }
+      if (panoTimer.current) clearInterval(panoTimer.current);
       try { cameraRef.current?.stopRecording(); } catch { /* already stopped */ }
     };
   }, []);
@@ -921,6 +1222,7 @@ export default function CameraScreen() {
     const m = extMode;
     if (m === "hidden") return; // capture happens via the full-screen tap zones
     if (m === "scan") return handleScan();
+    if (m === "pano") return handlePano();
     if (m === "timelapse") return handleTimelapse();
     if (currentModeConfig.isVideo) return handleVideoToggle();
     return handlePhotoCapture();
@@ -1027,7 +1329,7 @@ export default function CameraScreen() {
   }
 
   const isVideoMode = currentModeConfig.isVideo && extMode !== "timelapse";
-  const captureIsActive = isRecording || isTimelapsing;
+  const captureIsActive = isRecording || isTimelapsing || isPanoCapturing || panoComposing;
 
   const handleModeScrollEnd = (e: any) => {
     if (programmaticScroll.current) return; // ignore scrolls we triggered ourselves
@@ -1122,11 +1424,34 @@ export default function CameraScreen() {
             </View>
           )}
 
-          {/* Pano guide */}
+          {/* Pano guide + live sweep progress */}
           {extMode === "pano" && (
             <View style={[StyleSheet.absoluteFill, styles.overlayCenter]} pointerEvents="none">
               <View style={styles.panoLine} />
-              <Text style={styles.modeHint}>Pan slowly left to right</Text>
+              {isPanoCapturing ? (
+                <>
+                  <View style={styles.panoTrack}>
+                    <View
+                      style={[
+                        styles.panoFill,
+                        { width: `${Math.min(100, (panoSweep / PANO_MAX_SWEEP_DEG) * 100)}%` },
+                      ]}
+                    />
+                  </View>
+                  <Text style={styles.panoProgress}>
+                    {panoSweep}° · {panoFrameCount} frame{panoFrameCount === 1 ? "" : "s"}
+                  </Text>
+                  <Text style={styles.modeHint}>
+                    Keep panning — tap the shutter to finish
+                  </Text>
+                </>
+              ) : panoComposing ? (
+                <Text style={styles.panoProgress}>Stitching panorama…</Text>
+              ) : (
+                <Text style={styles.modeHint}>
+                  Tap the shutter, then pan slowly left to right
+                </Text>
+              )}
             </View>
           )}
 
@@ -1286,11 +1611,20 @@ export default function CameraScreen() {
                   isVideoMode && { borderColor: "#ef4444" },
                   extMode === "scan" && { borderColor: PRIMARY },
                   extMode === "timelapse" && { borderColor: "#f59e0b" },
+                  extMode === "pano" && { borderColor: PRIMARY },
                 ]}
                 onPress={handleCapture}
                 activeOpacity={0.8}
+                disabled={panoComposing}
               >
-                {extMode === "timelapse" ? (
+                {extMode === "pano" ? (
+                  <View style={[
+                    styles.captureInner,
+                    isPanoCapturing
+                      ? { backgroundColor: PRIMARY, borderRadius: 6, width: 28, height: 28 }
+                      : { backgroundColor: PRIMARY, opacity: panoComposing ? 0.4 : 1 },
+                  ]} />
+                ) : extMode === "timelapse" ? (
                   <View style={[
                     styles.captureInner,
                     isTimelapsing
@@ -1435,6 +1769,43 @@ export default function CameraScreen() {
                 ))}
               </View>
             )}
+          </View>
+        )}
+
+        {/* ── Offscreen panorama composition (strip row → one wide JPEG) ───── */}
+        {panoConfig && (
+          <View
+            ref={panoViewRef}
+            collapsable={false}
+            pointerEvents="none"
+            style={{
+              position: "absolute", left: -100000, top: 0,
+              width: panoConfig.outW, height: panoConfig.outH,
+              flexDirection: "row", backgroundColor: "#000",
+            }}
+          >
+            {panoConfig.frames.map((f, i) => (
+              // Each frame contributes a centre strip: the image is rendered at
+              // full width inside a narrower clipping view and shifted left so
+              // its middle lands in the slice.
+              <View
+                key={`${f.uri}-${i}`}
+                style={{ width: panoConfig.sliceW, height: panoConfig.outH, overflow: "hidden" }}
+              >
+                <Image
+                  source={{ uri: f.uri }}
+                  style={{
+                    width: panoConfig.frameW,
+                    height: panoConfig.frameH,
+                    marginLeft: panoConfig.frameOffsetX,
+                  }}
+                  resizeMode="cover"
+                  fadeDuration={0}
+                  onLoad={onPanoFrameSettled}
+                  onError={onPanoFrameSettled}
+                />
+              </View>
+            ))}
           </View>
         )}
 
@@ -1585,6 +1956,15 @@ const styles = StyleSheet.create({
     borderWidth: 2, borderColor: "rgba(177,152,112,0.7)", borderStyle: "dashed",
   },
   panoLine: { width: "80%", height: 1, backgroundColor: "rgba(177,152,112,0.8)" },
+  panoTrack: {
+    width: "70%", height: 4, borderRadius: 2, marginTop: 18,
+    backgroundColor: "rgba(255,255,255,0.18)", overflow: "hidden",
+  },
+  panoFill: { height: "100%", backgroundColor: PRIMARY, borderRadius: 2 },
+  panoProgress: {
+    marginTop: 10, fontSize: 15, color: PRIMARY, fontFamily: "Inter_600SemiBold",
+    textShadowColor: "rgba(0,0,0,0.8)", textShadowRadius: 6,
+  },
   modeHint: { color: "rgba(177,152,112,0.9)", fontSize: 12, fontFamily: "Inter_500Medium", marginTop: 12 },
   tlCounter: {
     position: "absolute", top: "40%", alignSelf: "center",
