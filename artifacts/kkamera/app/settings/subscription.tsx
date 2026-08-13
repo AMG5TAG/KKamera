@@ -106,7 +106,10 @@ export default function SubscriptionScreen() {
           <View style={[styles.statusBadge, { backgroundColor: "rgba(34,197,94,0.2)" }]}>
             <Text style={[styles.statusBadgeText, { color: "#22c55e" }]}>ACTIVE</Text>
           </View>
-          <Text style={styles.statusTitle}>$30 / year</Text>
+          {/* Use the live store price, never a hardcoded one — a literal here
+              contradicted the price card below whenever the store's configured
+              price differed from what the code assumed. */}
+          <Text style={styles.statusTitle}>{priceString} / year</Text>
           <Text style={styles.statusSub}>Renews {sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd).toLocaleDateString() : "—"}</Text>
         </View>
       );

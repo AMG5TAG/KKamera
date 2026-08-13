@@ -205,6 +205,12 @@ export const ListCloudConnectionsResponseItem = zod.object({
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  host: zod
+    .string()
+    .nullish()
+    .describe(
+      "Server URL for self-hosted types (nextcloud\/webdav\/ftp); null for OAuth providers.",
+    ),
   accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),
@@ -279,6 +285,12 @@ export const UpdateCloudConnectionResponse = zod.object({
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  host: zod
+    .string()
+    .nullish()
+    .describe(
+      "Server URL for self-hosted types (nextcloud\/webdav\/ftp); null for OAuth providers.",
+    ),
   accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),

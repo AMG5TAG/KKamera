@@ -53,7 +53,9 @@ export default function SettingsScreen() {
   const subStatus = sub?.status ?? "none";
   const subLabel =
     subStatus === "trial" ? "14-Day Trial" :
-    subStatus === "active" ? "Active · $30/yr" :
+    // No price here: this screen has no access to the live store price, and a
+    // hardcoded one drifts the moment the store's price changes.
+    subStatus === "active" ? "Active" :
     subStatus === "cancelled" ? "Cancelled" : "Subscribe";
   const subBadge =
     subStatus === "trial" ? "TRIAL" :

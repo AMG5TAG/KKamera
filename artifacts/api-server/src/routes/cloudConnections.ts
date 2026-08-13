@@ -26,6 +26,10 @@ function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
   return {
     id: c.id, userId: c.userId, type: c.type, provider: c.provider ?? null, name: c.name,
     active: c.active, uploadPath: c.uploadPath ?? null,
+    // The server URL the user typed. Not a secret (credentials stay behind
+    // `hasCredentials`), and the app needs it to open a self-hosted cloud's
+    // own web UI. Only ever returned to the owning user.
+    host: c.host ?? null,
     accountLabel: c.accountLabel ?? null,
     hasCredentials: !!(c.passwordEncrypted || c.accessTokenEncrypted),
     createdAt: c.createdAt.toISOString(),

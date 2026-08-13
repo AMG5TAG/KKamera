@@ -47,6 +47,7 @@ type TestStorePricesResponse = { object: string; prices: { amount_micros: number
 // the app actually ships as (app.json). A mismatch means entitlements won't
 // resolve on device, so surface it rather than silently reusing the wrong app.
 let bundleMismatch = false;
+let priceUpdateSkipped = false;
 function warnBundleMismatch(label: string, kind: string, actual: string | undefined, expected: string): void {
   if (actual && actual !== expected) {
     bundleMismatch = true;
@@ -151,7 +152,18 @@ async function seedRevenueCat() {
   });
   if (priceError) {
     if (typeof priceError === "object" && "type" in priceError && (priceError as any).type === "resource_already_exists") {
-      console.log("Test store prices already set");
+      // This endpoint only CREATES. Prices seeded once are never updated by a
+      // re-run, so changing PRODUCT_PRICES here does not reach RevenueCat and
+      // the app keeps showing (and charging) the old price — exactly how the
+      // $25 → $30 change silently failed to take effect. Say so loudly.
+      priceUpdateSkipped = true;
+      const usd = PRODUCT_PRICES.find(p => p.currency === "USD");
+      console.warn(
+        `\n⚠️  TEST STORE PRICES ALREADY EXIST — NOT UPDATED.\n` +
+        `    This script can only create prices, never change them. If the existing\n` +
+        `    price differs from $${((usd?.amount_micros ?? 0) / 1_000_000).toFixed(2)} USD, the app will display and charge the OLD price.\n` +
+        `    Verify/fix it in the RevenueCat dashboard (Product → Test store prices).\n`
+      );
     } else {
       throw new Error("Failed to set test store prices");
     }
@@ -253,6 +265,15 @@ async function seedRevenueCat() {
     console.warn(
       "\n⚠️  ONE OR MORE STORE APP IDENTIFIERS DO NOT MATCH app.json — see the warning(s) above. " +
       "Purchases will not attribute to the 'pro' entitlement on device until this is fixed."
+    );
+  }
+
+  if (priceUpdateSkipped) {
+    console.warn(
+      "\n⚠️  TEST STORE PRICE WAS NOT UPDATED — see the warning above. Confirm the live price " +
+      "in the RevenueCat dashboard matches PRODUCT_PRICES in this script.\n" +
+      "    Real App Store / Play customers are billed the price set in App Store Connect and " +
+      "Google Play Console — neither this script nor the app code can change that."
     );
   }
 }

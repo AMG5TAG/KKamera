@@ -274,6 +274,11 @@ export interface CloudConnection {
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  /**
+   * Server URL for self-hosted types (nextcloud/webdav/ftp); null for OAuth providers.
+   * @nullable
+   */
+  host?: string | null;
   /** @nullable */
   accountLabel?: string | null;
   hasCredentials: boolean;

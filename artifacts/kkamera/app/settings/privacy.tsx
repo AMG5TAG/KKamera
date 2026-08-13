@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Platform, TouchableOpacity } from "
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { MailLink } from "@/components/MailLink";
 
 const BG = "#0d0b08";
 const PRIMARY = "#b19870";
@@ -53,11 +54,11 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="7. Data Retention">
-        Your account data is retained until you delete your account. Upload queue records are retained for 90 days. You can request deletion of all your data at any time by contacting us at development@koastal.com.au.
+        Your account data is retained until you delete your account. Upload queue records are retained for 90 days. You can request deletion of all your data at any time by contacting us at <MailLink address="development@koastal.com.au" subject="KKamera — data deletion request" />.
       </Section>
 
       <Section title="8. Your Rights">
-        Depending on your location, you may have the right to: access your personal data, correct inaccurate data, delete your data, port your data, and withdraw consent for processing. Contact us at development@koastal.com.au to exercise these rights.
+        Depending on your location, you may have the right to: access your personal data, correct inaccurate data, delete your data, port your data, and withdraw consent for processing. Contact us at <MailLink address="development@koastal.com.au" subject="KKamera — data rights request" /> to exercise these rights.
       </Section>
 
       <Section title="9. Children's Privacy">
@@ -65,7 +66,7 @@ export default function PrivacyScreen() {
       </Section>
 
       <Section title="10. Contact">
-        For privacy enquiries: development@koastal.com.au
+        For privacy enquiries: <MailLink address="development@koastal.com.au" subject="KKamera — privacy enquiry" />
       </Section>
     </ScrollView>
     </View>

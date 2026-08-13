@@ -53,7 +53,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Security/billing pure logic is unit-tested (`artifacts/api-server/test/`) — extend the tests when changing it.
 - Production deployment is an API-only server (`/api`); the native apps ship via EAS and talk to it
 - Affiliate programme: 5 successful referral signups = 1 free year added to subscription
-- App Store / Play in-app purchases (via RevenueCat) handle subscription billing (14-day trial → $25/year)
+- App Store / Play in-app purchases (via RevenueCat) handle subscription billing (14-day trial → $30/year)
 - Offline upload queue (in-app retry with backoff)
 
 ## Product
@@ -69,7 +69,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Brand colours: #b19870 (primary/gold), #c3b091 (secondary)
 - Dark background: #0d0b08
 - iOS/Android target — Expo managed workflow
-- Subscription: 14-day trial then $25/year via App Store / Play (RevenueCat)
+- Subscription: 14-day trial then $30/year via App Store / Play (RevenueCat)
 - Affiliate: 5 referrals = 1 free year
 
 ## Gotchas

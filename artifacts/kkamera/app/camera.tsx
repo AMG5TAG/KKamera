@@ -2,10 +2,9 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Pressable, Platform,
   Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
-  useWindowDimensions, BackHandler,
+  useWindowDimensions, BackHandler, Linking,
 } from "react-native";
 import * as Network from "expo-network";
-import * as ImagePicker from "expo-image-picker";
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
 import * as FileSystem from "expo-file-system";
@@ -20,7 +19,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import { useSettings, type GridType } from "@/contexts/SettingsContext";
 import { useSubscription } from "@/lib/revenuecat";
-import { useGetSubscription, useGetUploadTarget } from "@workspace/api-client-react";
+import { useGetSubscription, useGetUploadTarget, useListCloudConnections } from "@workspace/api-client-react";
 import Svg, { Line, Rect, G } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
@@ -32,6 +31,7 @@ import {
   PANO_FALLBACK_INTERVAL_MS,
 } from "@/lib/panorama";
 import { ZOOM_LEVELS, DEFAULT_ZOOM, FRONT_CAMERA_ZOOM } from "@/lib/zoomLevels";
+import { cloudAppTarget, pickCloudConnection } from "@/lib/cloudApps";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -198,6 +198,7 @@ export default function CameraScreen() {
   const { data: sub, isLoading: subLoading } = useGetSubscription();
   const rcSub = useSubscription();
   const { data: uploadTarget, refetch: refetchUploadTarget } = useGetUploadTarget();
+  const { data: cloudConnections } = useListCloudConnections();
 
   // Resolve the user's default upload destination for a capture. If the target
   // hasn't loaded yet (e.g. a capture in the first moments after a cold start),
@@ -1205,23 +1206,43 @@ export default function CameraScreen() {
     }
   }, [isTimelapsing, getUploadTarget, checkWifi, executeUpload, token, settings.deleteLocalAfterUpload]);
 
-  const handleGalleryImport = useCallback(async () => {
+  // Open the cloud account captures are being uploaded to — its app when
+  // installed, otherwise its web UI. See lib/cloudApps.ts for why this attempts
+  // openURL rather than asking canOpenURL first.
+  const handleOpenCloudApp = useCallback(async () => {
     if (isRecording || isTimelapsing) return;
-    try {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        allowsEditing: false, quality: 0.9, allowsMultipleSelection: false,
-      });
-      if (!result.canceled && result.assets?.[0]) {
-        const asset = result.assets[0];
-        const isVideo = asset.type === "video";
-        const fileName = `${isVideo ? "VID" : "IMG"}_IMPORT_${Date.now()}.${isVideo ? settings.videoFormat : "jpg"}`;
-        await doUpload(asset.uri, fileName, isVideo ? "video" : "image");
-      }
-    } catch (err: any) {
-      Alert.alert("Import Failed", err?.message ?? "Could not import.");
+    const target = resolveUploadTarget(uploadTarget);
+    const conn = pickCloudConnection(cloudConnections, target.ids);
+    if (!conn) {
+      Alert.alert(
+        "No Cloud Connected",
+        "Connect a cloud account to upload your captures.",
+        [
+          { text: "Not now", style: "cancel" },
+          { text: "Connect", onPress: () => router.push("/settings/add-cloud") },
+        ],
+      );
+      return;
     }
-  }, [isRecording, isTimelapsing, settings.videoFormat, doUpload]);
+
+    const { label, appUrl, webUrl } = cloudAppTarget(conn.type, conn.host);
+    if (appUrl) {
+      try {
+        await Linking.openURL(appUrl);
+        return;
+      } catch { /* app not installed — fall through to the website */ }
+    }
+    if (webUrl) {
+      try {
+        await Linking.openURL(webUrl);
+        return;
+      } catch { /* no browser handler either */ }
+    }
+    Alert.alert(
+      "Can't Open",
+      `There's no app or website to open for ${label}. Your uploads are still going there.`,
+    );
+  }, [isRecording, isTimelapsing, uploadTarget, cloudConnections]);
 
   const handleCapture = () => {
     const m = extMode;
@@ -1604,8 +1625,14 @@ export default function CameraScreen() {
           {/* Capture row */}
           <View style={styles.captureRow}>
             {/* Gallery import */}
-            <TouchableOpacity style={styles.sideBtn} onPress={handleGalleryImport} disabled={captureIsActive}>
-              <Ionicons name="images-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+            <TouchableOpacity
+              style={styles.sideBtn}
+              onPress={handleOpenCloudApp}
+              disabled={captureIsActive}
+              accessibilityRole="button"
+              accessibilityLabel="Open your cloud storage"
+            >
+              <Ionicons name="cloud-outline" size={26} color={captureIsActive ? "#333" : "white"} />
             </TouchableOpacity>
 
             {/* Capture button */}

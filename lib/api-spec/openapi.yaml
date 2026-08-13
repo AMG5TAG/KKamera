@@ -1032,6 +1032,9 @@ components:
           type: boolean
         uploadPath:
           type: ["string", "null"]
+        host:
+          type: ["string", "null"]
+          description: Server URL for self-hosted types (nextcloud/webdav/ftp); null for OAuth providers.
         accountLabel:
           type: ["string", "null"]
         hasCredentials:

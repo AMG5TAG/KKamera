@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Platform, TouchableOpacity } from "
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { MailLink } from "@/components/MailLink";
 
 const BG = "#0d0b08";
 const PRIMARY = "#b19870";
@@ -72,7 +73,7 @@ export default function TermsScreen() {
       </Section>
 
       <Section title="12. Contact">
-        For legal enquiries: development@koastal.com.au
+        For legal enquiries: <MailLink address="development@koastal.com.au" subject="KKamera — legal enquiry" />
       </Section>
     </ScrollView>
     </View>
