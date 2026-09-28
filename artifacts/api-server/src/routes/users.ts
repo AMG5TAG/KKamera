@@ -6,7 +6,7 @@ import {
   cloudConnectionsTable, uploadsTable, feedbackTable,
   passwordResetTokensTable,
 } from "@workspace/db";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, ne, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 
 const router = Router();
@@ -174,6 +174,15 @@ router.delete("/users/me", requireAuth, async (req, res) => {
       await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));
       await tx.delete(subscriptionsTable).where(eq(subscriptionsTable.userId, userId));
       await tx.delete(referralsTable).where(eq(referralsTable.referrerId, userId));
+      // Rows where this user was the one referred: a completed referral still
+      // counts toward the referrer's free-year milestone (deleting it would
+      // silently undo credit already earned), so anonymise it; pending/void rows
+      // carry no credit and are deleted outright.
+      await tx.update(referralsTable)
+        .set({ referredName: "Deleted user" })
+        .where(and(eq(referralsTable.referredId, userId), eq(referralsTable.status, "completed")));
+      await tx.delete(referralsTable)
+        .where(and(eq(referralsTable.referredId, userId), ne(referralsTable.status, "completed")));
       await tx.delete(usersTable).where(eq(usersTable.id, userId));
     });
 

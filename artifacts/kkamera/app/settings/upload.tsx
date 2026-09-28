@@ -157,10 +157,22 @@ export default function UploadScreen() {
           <ToggleRow
             icon="wifi-outline"
             label="Wi-Fi Only"
-            hint="Upload only when connected to Wi-Fi"
+            hint="Off Wi-Fi, captures wait in the queue and upload once you're on Wi-Fi"
             value={settings.uploadOnlyOnWifi}
             onToggle={v => updateSetting("uploadOnlyOnWifi", v)}
           />
+          {Platform.OS !== "web" && (
+            <>
+              <View style={styles.divider} />
+              <ToggleRow
+                icon="images-outline"
+                label="Save to Photos"
+                hint={"Also keep a copy of every capture in your photo library. With \u201cDon't upload\u201d selected, captures are always saved here."}
+                value={settings.saveToCameraRoll}
+                onToggle={v => updateSetting("saveToCameraRoll", v)}
+              />
+            </>
+          )}
           <View style={styles.divider} />
           <ToggleRow
             icon="help-circle-outline"

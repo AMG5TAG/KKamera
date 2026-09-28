@@ -20,6 +20,12 @@ interface AuthContextValue {
   isLoading: boolean;
   isAuthenticated: boolean;
   hasCompletedWizard: boolean;
+  /**
+   * Timestamp of the last interactive password sign-in in this app process (0 if
+   * the session was restored from storage). The app-lock gate treats a sign-in
+   * as an unlock.
+   */
+  lastLoginAt: number;
   login: (token: string, user: AuthUser) => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (user: AuthUser) => void;
@@ -64,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // offline fallback and preserves completion for users who finished the wizard
   // before it was tracked server-side.
   const [localWizardDone, setLocalWizardDone] = useState(false);
+  const [lastLoginAt, setLastLoginAt] = useState(0);
 
   useEffect(() => {
     async function restore() {
@@ -92,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (newToken: string, newUser: AuthUser) => {
     await storeToken(newToken);
     await AsyncStorage.setItem(USER_KEY, JSON.stringify(newUser));
+    setLastLoginAt(Date.now());
     setToken(newToken);
     setUser(newUser);
     setAuthTokenGetter(() => newToken);
@@ -136,8 +144,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user, token, isLoading,
     isAuthenticated: !!token && !!user,
     hasCompletedWizard: !!user?.onboardingCompleted || localWizardDone,
+    lastLoginAt,
     login, logout, updateUser, completeWizard,
-  }), [user, token, isLoading, localWizardDone]);
+  }), [user, token, isLoading, localWizardDone, lastLoginAt]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

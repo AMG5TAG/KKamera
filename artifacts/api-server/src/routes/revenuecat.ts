@@ -1,10 +1,8 @@
 import { Router } from "express";
 import crypto from "node:crypto";
-import { db } from "@workspace/db";
-import { subscriptionsTable } from "@workspace/db";
-import { eq, sql } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
-import { mapRevenueCatEvent } from "../lib/revenueCatMapping.js";
+import { allowSandboxIap, mapRevenueCatEvent } from "../lib/revenueCatMapping.js";
+import { applyMirrorDecision, RevenueCatNotConfiguredError, syncUserFromRevenueCat } from "../lib/revenueCatApi.js";
 import { completeReferralForUser, reverseReferralForUser } from "../lib/referrals.js";
 
 const router = Router();
@@ -20,6 +18,10 @@ const router = Router();
  * RevenueCat in the Authorization header (configure it in the RevenueCat
  * dashboard and as REVENUECAT_WEBHOOK_AUTH here) — the route fails closed if it
  * is unset, so an unconfigured deploy never trusts an unauthenticated caller.
+ *
+ * SANDBOX events are ignored unless ALLOW_SANDBOX_IAP=true, and even then never
+ * complete or reverse referrals. Row writes go through applyMirrorDecision
+ * (forward-only period ends, refunds pinned, no rows for deleted users).
  */
 
 function timingSafeEqualStr(a: string, b: string): boolean {
@@ -49,64 +51,66 @@ router.post("/revenuecat/webhook", async (req, res) => {
   }
 
   try {
-    const decision = mapRevenueCatEvent(ev, Date.now());
+    const decision = mapRevenueCatEvent(ev, Date.now(), { allowSandbox: allowSandboxIap() });
 
     switch (decision.kind) {
-      case "grant": {
-        // Forward-only period end (GREATEST) guards against out-of-order delivery.
-        await db.insert(subscriptionsTable)
-          .values({ userId: decision.userId, status: "active", currentPeriodEnd: decision.periodEnd })
-          .onConflictDoUpdate({
-            target: subscriptionsTable.userId,
-            set: {
-              status: "active",
-              currentPeriodEnd: sql`GREATEST(${subscriptionsTable.currentPeriodEnd}, ${decision.periodEnd})`,
-            },
-          });
-        logger.info({ userId: decision.userId, periodEnd: decision.periodEnd }, "RevenueCat entitlement active");
-        // Complete a pending referral only when real money moved (price > 0) — a
-        // store-side free trial (price 0) must not credit a referrer. Idempotent:
-        // completeReferralForUser atomically claims the pending row, so renewals
-        // won't re-complete it.
-        if (Number((ev as any).price ?? (ev as any).price_in_purchased_currency ?? 0) > 0) {
-          await completeReferralForUser(decision.userId);
+      case "grant":
+      case "cancel":
+      case "past_due":
+      case "expire":
+      case "refund": {
+        const result = await applyMirrorDecision(decision.userId, decision);
+        if (result === "no_user") {
+          // Deleted account (or a foreign id) — ack without creating an orphan row.
+          logger.info({ type: ev.type, userId: decision.userId }, "RevenueCat event for unknown user — ignored");
+          break;
+        }
+        logger.info(
+          { type: ev.type, userId: decision.userId, kind: decision.kind, result, sandbox: !decision.referrals },
+          "RevenueCat event mirrored",
+        );
+        // Referrals move only on production events (sandbox never touches them).
+        if (!decision.referrals) break;
+        if (decision.kind === "grant") {
+          // Complete a pending referral only when real money moved (price > 0) — a
+          // store-side free trial (price 0) must not credit a referrer. Idempotent:
+          // completeReferralForUser atomically claims the pending row, so renewals
+          // won't re-complete it.
+          if (Number((ev as any).price ?? (ev as any).price_in_purchased_currency ?? 0) > 0) {
+            await completeReferralForUser(decision.userId);
+          }
+        } else if (decision.kind === "expire" || decision.kind === "refund") {
+          // Claw back any referral reward earned from this lapsed/refunded subscription.
+          await reverseReferralForUser(decision.userId);
         }
         break;
       }
-      case "cancel": {
-        // Auto-renew off but access continues until expiration — mirror as cancelled
-        // with the period end so evaluateAccess keeps them until it elapses.
-        await db.insert(subscriptionsTable)
-          .values({ userId: decision.userId, status: "cancelled", currentPeriodEnd: decision.periodEnd })
-          .onConflictDoUpdate({
-            target: subscriptionsTable.userId,
-            set: {
-              status: "cancelled",
-              ...(decision.periodEnd ? { currentPeriodEnd: sql`GREATEST(${subscriptionsTable.currentPeriodEnd}, ${decision.periodEnd})` } : {}),
-            },
-          });
-        logger.info({ userId: decision.userId, periodEnd: decision.periodEnd }, "RevenueCat cancelled (access until period end)");
-        break;
-      }
-      case "past_due": {
-        await db.update(subscriptionsTable)
-          .set({ status: "past_due", ...(decision.periodEnd ? { currentPeriodEnd: sql`GREATEST(${subscriptionsTable.currentPeriodEnd}, ${decision.periodEnd})` } : {}) })
-          .where(eq(subscriptionsTable.userId, decision.userId));
-        logger.info({ userId: decision.userId }, "RevenueCat billing issue — past_due");
-        break;
-      }
-      case "expire": {
-        await db.update(subscriptionsTable)
-          .set({ status: "expired" })
-          .where(eq(subscriptionsTable.userId, decision.userId));
-        logger.info({ userId: decision.userId }, "RevenueCat entitlement expired");
-        // Claw back any referral reward earned from this now-lapsed subscription.
-        await reverseReferralForUser(decision.userId);
+      case "transfer": {
+        // Purchases moved between app user ids. RevenueCat sends this only for
+        // the destination, so re-read every affected user from the REST API
+        // (best effort — a failure here must not make RevenueCat retry forever).
+        const targets = [
+          ...decision.toUserIds.map((id) => ({ id, revokeIfNone: false })),
+          ...decision.fromUserIds
+            .filter((id) => !decision.toUserIds.includes(id))
+            .map((id) => ({ id, revokeIfNone: true })),
+        ];
+        for (const t of targets) {
+          try {
+            await syncUserFromRevenueCat(t.id, { revokeIfNone: t.revokeIfNone });
+          } catch (err) {
+            if (err instanceof RevenueCatNotConfiguredError) {
+              logger.warn({ userId: t.id }, "RevenueCat TRANSFER not reconciled — REVENUECAT_SECRET_API_KEY unset");
+            } else {
+              logger.error({ err, userId: t.id }, "RevenueCat TRANSFER re-sync failed");
+            }
+          }
+        }
         break;
       }
       default:
-        // Anonymous purchase, non-pro entitlement, stale event, or TRANSFER — ack
-        // so RevenueCat stops retrying; the client reconciles on next logIn.
+        // Anonymous purchase, non-pro entitlement, stale or sandbox event — ack so
+        // RevenueCat stops retrying; the client reconciles via /subscriptions/sync.
         logger.info({ type: ev.type, reason: decision.reason }, "RevenueCat event acknowledged (no state change)");
     }
 

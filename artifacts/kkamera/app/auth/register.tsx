@@ -1,11 +1,11 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   ScrollView, Platform, Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useRegister, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -19,14 +19,22 @@ export default function RegisterScreen() {
   const insets = useSafeAreaInsets();
   const { login } = useAuth();
   const registerMutation = useRegister();
+  // Invite links are https://app.kkamera.app/auth/register?ref=CODE — prefill the code.
+  const { ref } = useLocalSearchParams<{ ref?: string | string[] }>();
+  const refParam = (Array.isArray(ref) ? ref[0] : ref)?.trim().toUpperCase() ?? "";
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [referralCode, setReferralCode] = useState("");
+  const [referralCode, setReferralCode] = useState(refParam);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [agreed, setAgreed] = useState(false);
+
+  // Params can arrive after first render on web; fill in only if the field is still empty.
+  useEffect(() => {
+    if (refParam) setReferralCode(prev => prev || refParam);
+  }, [refParam]);
 
   const handleRegister = async () => {
     setError("");
@@ -37,7 +45,7 @@ export default function RegisterScreen() {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       const result = await registerMutation.mutateAsync({
-        data: { name, email, password, referralCode: referralCode.trim() || undefined }
+        data: { name, email, password, referralCode: referralCode.trim().toUpperCase() || undefined }
       });
       if (result.token && result.user) {
         await login(result.token, result.user as AuthUser);
@@ -65,7 +73,7 @@ export default function RegisterScreen() {
 
         <View style={styles.trialBadge}>
           <Ionicons name="gift-outline" size={18} color={PRIMARY} />
-          <Text style={styles.trialText}>14-day free trial · Then $30/year</Text>
+          <Text style={styles.trialText}>14-day free trial · Then an annual subscription</Text>
         </View>
 
         {error ? (
@@ -94,7 +102,7 @@ export default function RegisterScreen() {
             </TouchableOpacity>
           </View>
         </Field>
-        <Field label="Referral Code (optional)" hint="🎁 Enter a friend's code to help them earn a free year">
+        <Field label="Referral Code (optional)" hint="🎁 Enter a friend's code — it counts toward their free year when you subscribe">
           <TextInput style={[styles.input, { textTransform: "uppercase" }]} placeholder="e.g. JOHN42K" placeholderTextColor="#555" autoCapitalize="characters" value={referralCode} onChangeText={setReferralCode} />
         </Field>
 

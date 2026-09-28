@@ -1,8 +1,9 @@
-import React, { createContext, useContext, useEffect } from "react";
-import { Platform } from "react-native";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { Linking, Platform } from "react-native";
 import Purchases from "react-native-purchases";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
+import { getGetSubscriptionQueryKey, syncSubscription } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
@@ -38,9 +39,50 @@ export function initializeRevenueCat() {
   }
 }
 
+const APP_STORE_SUBSCRIPTIONS_URL = "https://apps.apple.com/account/subscriptions";
+const PLAY_SUBSCRIPTIONS_URL = "https://play.google.com/store/account/subscriptions";
+
+/** Name of the store that bills this device's subscription, for user-facing copy. */
+export const STORE_NAME = Platform.OS === "android" ? "Google Play" : "App Store";
+
+/**
+ * Opens the store's subscription management page, where the user cancels or
+ * changes their KKamera subscription. Store subscriptions can only be cancelled
+ * by the user in the store — deleting the account does not stop billing.
+ */
+export async function openManageSubscriptions(managementURL?: string | null): Promise<void> {
+  if (Platform.OS === "ios" && _revenueCatReady) {
+    try {
+      await Purchases.showManageSubscriptions();
+      return;
+    } catch { /* fall through to the web URL */ }
+  }
+  const fallback = Platform.OS === "android" ? PLAY_SUBSCRIPTIONS_URL : APP_STORE_SUBSCRIPTIONS_URL;
+  await Linking.openURL(managementURL || fallback);
+}
+
 function useSubscriptionContext() {
   const enabled = _revenueCatReady || Platform.OS === "web";
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+  // The user id RevenueCat is currently logged in as. Purchases are only allowed
+  // once this matches the signed-in user, so a purchase can never be made on an
+  // anonymous RevenueCat id the server can't map back to an account.
+  const [identifiedUserId, setIdentifiedUserId] = useState<number | null>(null);
+  const identityReady = user?.id != null && identifiedUserId === user.id;
+
+  // Ask the server to reconcile from RevenueCat (webhooks can lag or be missed),
+  // then refetch the server subscription that gates uploads. Best effort — the
+  // webhook remains the primary path.
+  const syncServerSubscription = useCallback(async () => {
+    try {
+      await syncSubscription();
+    } catch {
+      // Sync unavailable / rate-limited — the webhook will still catch up.
+    } finally {
+      await queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
+    }
+  }, [queryClient]);
 
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info", user?.id ?? null],
@@ -57,10 +99,16 @@ function useSubscriptionContext() {
   useEffect(() => {
     if (Platform.OS === "web" || !_revenueCatReady) return;
     let cancelled = false;
+    setIdentifiedUserId(null);
     (async () => {
       try {
         if (user?.id != null) {
           await Purchases.logIn(String(user.id));
+          if (cancelled) return;
+          setIdentifiedUserId(user.id);
+          // Pick up purchases already on this store account (reinstall, other
+          // device, or a TRANSFER) without waiting for a webhook.
+          syncServerSubscription();
         } else {
           await Purchases.logOut();
         }
@@ -84,15 +132,24 @@ function useSubscriptionContext() {
 
   const purchaseMutation = useMutation({
     mutationFn: async (packageToPurchase: any) => {
+      if (!identityReady) {
+        throw new Error("We're still linking your account to the store. Please wait a moment and try again.");
+      }
       const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
       return customerInfo;
     },
-    onSuccess: () => customerInfoQuery.refetch(),
+    onSuccess: () => {
+      customerInfoQuery.refetch();
+      return syncServerSubscription();
+    },
   });
 
   const restoreMutation = useMutation({
     mutationFn: () => Purchases.restorePurchases(),
-    onSuccess: () => customerInfoQuery.refetch(),
+    onSuccess: () => {
+      customerInfoQuery.refetch();
+      return syncServerSubscription();
+    },
   });
 
   const isSubscribed =
@@ -103,6 +160,7 @@ function useSubscriptionContext() {
     offerings: offeringsQuery.data,
     isSubscribed,
     isReady: enabled,
+    identityReady,
     isLoading: customerInfoQuery.isLoading || offeringsQuery.isLoading,
     purchase: purchaseMutation.mutateAsync,
     restore: restoreMutation.mutateAsync,

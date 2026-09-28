@@ -29,10 +29,15 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     setError("");
-    if (!email || !password) { setError("Please enter your email and password."); return; }
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) { setError("Please enter your email and password."); return; }
+    // Accept a TOTP code or a backup code (8 hex chars, optionally typed with a
+    // dash/spaces — the server compares the bare uppercase form).
+    const code = totp.replace(/[\s-]/g, "").toUpperCase();
+    if (requires2FA && !code) { setError("Enter your authenticator code or a backup code."); return; }
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const result = await loginMutation.mutateAsync({ data: { email, password, totpCode: totp || null } });
+      const result = await loginMutation.mutateAsync({ data: { email: trimmedEmail, password, totpCode: code || null } });
       if ((result as any).requires2FA) {
         setRequires2FA(true);
         return;
@@ -46,8 +51,16 @@ export default function LoginScreen() {
         router.replace(loggedInUser.onboardingCompleted || hasCompletedWizard ? "/camera" : "/wizard");
       }
     } catch (e) {
-      setError(getUserFacingMessage(e, "Login failed. Check your credentials."));
+      setError(getUserFacingMessage(e, requires2FA ? "That code didn't work. Try again." : "Login failed. Check your credentials."));
     }
+  };
+
+  // Leave the 2FA step: back to email/password (e.g. to use a different account).
+  const handleBackFrom2FA = () => {
+    setRequires2FA(false);
+    setTotp("");
+    setPassword("");
+    setError("");
   };
 
   return (
@@ -120,16 +133,24 @@ export default function LoginScreen() {
         ) : (
           <View style={styles.field}>
             <Text style={styles.label}>Two-Factor Code</Text>
-            <Text style={styles.twoFAHint}>🔐 Open your authenticator app and enter the 6-digit code.</Text>
+            <Text style={styles.twoFAHint}>Enter the 6-digit code from your authenticator app, or a backup code.</Text>
             <TextInput
               style={[styles.input, styles.totpInput]}
               placeholder="000000"
               placeholderTextColor="#555"
-              keyboardType="number-pad"
-              maxLength={6}
+              keyboardType="default"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="one-time-code"
+              textContentType="oneTimeCode"
+              autoFocus
+              maxLength={10}
               value={totp}
               onChangeText={setTotp}
+              onSubmitEditing={handleLogin}
+              returnKeyType="go"
             />
+            <Text style={styles.twoFAAccount}>Signing in as {email.trim()}</Text>
           </View>
         )}
 
@@ -141,9 +162,13 @@ export default function LoginScreen() {
           <Text style={styles.loginText}>{loginMutation.isPending ? "Signing in..." : "Sign In"}</Text>
         </TouchableOpacity>
 
-        {!requires2FA && (
+        {!requires2FA ? (
           <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")}>
             <Text style={styles.forgotLinkText}>Forgot password?</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.forgotLink} onPress={handleBackFrom2FA} accessibilityRole="button">
+            <Text style={styles.forgotLinkText}>Back · Use a different account</Text>
           </TouchableOpacity>
         )}
 
@@ -180,7 +205,8 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: "row", alignItems: "center", backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.2)", paddingHorizontal: 16 },
   eyeBtn: { paddingLeft: 8 },
   twoFAHint: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 10 },
-  totpInput: { fontSize: 24, textAlign: "center", letterSpacing: 8, fontFamily: "Inter_700Bold", color: PRIMARY },
+  totpInput: { fontSize: 24, textAlign: "center", letterSpacing: 6, fontFamily: "Inter_700Bold", color: PRIMARY },
+  twoFAAccount: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", marginTop: 8, textAlign: "center" },
   loginBtn: { backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 16, alignItems: "center", marginTop: 8, marginBottom: 12 },
   forgotLink: { alignItems: "center", marginBottom: 16 },
   forgotLinkText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_400Regular" },

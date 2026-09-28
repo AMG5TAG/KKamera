@@ -6,10 +6,10 @@ import {
   useFonts,
 } from "@expo-google-fonts/inter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import { Stack, router } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useRef, useState } from "react";
-import { AppState } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { AppState, BackHandler, Keyboard, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { setBaseUrl } from "@workspace/api-client-react";
@@ -19,7 +19,8 @@ import { UploadProvider } from "@/contexts/UploadContext";
 import { SettingsProvider, useSettings } from "@/contexts/SettingsContext";
 import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
 import { API_BASE_URL } from "@/lib/config";
-import LockScreen from "@/app/lock";
+import LockScreen, { type LockSignOutReason } from "@/components/LockScreen";
+import { isAuthPromptActive, RELOCK_GRACE_MS } from "@/lib/appLock";
 
 if (API_BASE_URL) {
   setBaseUrl(API_BASE_URL);
@@ -30,54 +31,115 @@ initializeRevenueCat();
 
 // ---------------------------------------------------------------------------
 // App lock gate
+//
+// The lock screen is an absolutely-positioned overlay ABOVE the navigator — it
+// never replaces it — so navigation state, in-progress markup, recordings and
+// half-filled forms survive a lock/unlock cycle.
 // ---------------------------------------------------------------------------
+
 function AppLockGate({ children }: { children: React.ReactNode }) {
-  const { settings, isLoading: settingsLoading } = useSettings();
-  const { isAuthenticated, logout } = useAuth();
-  const [locked, setLocked] = useState(settings.appLockEnabled && isAuthenticated);
+  const { settings, isLoading: settingsLoading, updateSetting } = useSettings();
+  const { isAuthenticated, isLoading: authLoading, lastLoginAt, logout } = useAuth();
+  const ready = !settingsLoading && !authLoading;
+  const lockEnabled = settings.appLockEnabled && isAuthenticated;
 
-  // Re-lock when lock setting is enabled
+  // null = not decided yet (settings/session still hydrating from storage).
+  const [lockedState, setLockedState] = useState<boolean | null>(null);
+  // Derive the initial decision synchronously during render, so the frame in
+  // which hydration finishes already shows the lock — a deep-linked screen never
+  // paints unlocked on a cold start. A session restored from storage (no
+  // interactive sign-in in this process) with the lock enabled starts locked.
+  const locked: boolean | null =
+    lockedState !== null ? lockedState : ready ? lockEnabled && lastLoginAt === 0 : null;
+
   useEffect(() => {
-    if (settings.appLockEnabled && isAuthenticated) setLocked(true);
-  }, [settings.appLockEnabled, isAuthenticated]);
+    if (lockedState === null && locked !== null) setLockedState(locked);
+  }, [lockedState, locked]);
 
-  // Unlock when user logs out
+  // Signing out always clears the lock (the login screen is the way back in).
   useEffect(() => {
-    if (!isAuthenticated) setLocked(false);
-  }, [isAuthenticated]);
+    if (ready && !isAuthenticated) setLockedState(false);
+  }, [ready, isAuthenticated]);
 
-  // Re-lock when the app returns to the foreground from background/inactive, so
-  // "Require unlock on open" protects on resume — not just on a cold start.
-  const appState = useRef(AppState.currentState);
+  // A successful password sign-in counts as an unlock. If the user was sent to
+  // sign in because the lock had no usable credential (no PIN stored and no
+  // biometrics/passcode on the device), turn the lock off so they aren't trapped
+  // in a sign-in loop; they can set it up again in Privacy & Security.
+  const disableLockOnNextLogin = useRef(false);
+  const backgroundedAt = useRef<number | null>(null);
+  useEffect(() => {
+    if (!lastLoginAt) return;
+    setLockedState(false);
+    backgroundedAt.current = null;
+    if (disableLockOnNextLogin.current) {
+      disableLockOnNextLogin.current = false;
+      updateSetting("appLockEnabled", false);
+      updateSetting("appLockType", "biometric");
+    }
+  }, [lastLoginAt, updateSetting]);
+
+  // Re-lock only after a real trip to the background longer than the grace
+  // period. `inactive` alone never re-locks, and a background transition caused
+  // by our own device-auth prompt (Android's credential screen) is ignored.
+  const lockEnabledRef = useRef(lockEnabled);
+  useEffect(() => { lockEnabledRef.current = lockEnabled; }, [lockEnabled]);
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
-      const prev = appState.current;
-      appState.current = next;
-      if (next === "active" && (prev === "background" || prev === "inactive")
-        && settings.appLockEnabled && isAuthenticated) {
-        setLocked(true);
+      if (next === "background") {
+        if (backgroundedAt.current === null && !isAuthPromptActive()) {
+          backgroundedAt.current = Date.now();
+        }
+      } else if (next === "active") {
+        const since = backgroundedAt.current;
+        backgroundedAt.current = null;
+        if (since !== null && Date.now() - since >= RELOCK_GRACE_MS && lockEnabledRef.current) {
+          Keyboard.dismiss();
+          setLockedState(true);
+        }
       }
     });
     return () => sub.remove();
-  }, [settings.appLockEnabled, isAuthenticated]);
+  }, []);
 
-  // Hold rendering until settings hydrate from storage. Otherwise `locked` is
-  // computed from defaults (appLockEnabled=false) for the first frame and a
-  // locked account briefly flashes the camera/home before the lock applies.
-  if (settingsLoading && isAuthenticated) {
-    return null;
-  }
+  // Android hardware back must not navigate the stack hidden under the lock.
+  useEffect(() => {
+    if (!locked) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => true);
+    return () => sub.remove();
+  }, [locked]);
 
-  if (locked) {
-    return (
-      <LockScreen
-        onUnlock={() => setLocked(false)}
-        onLogout={async () => { await logout(); setLocked(false); }}
-      />
-    );
-  }
-  return <>{children}</>;
+  const handleUnlock = useCallback(() => setLockedState(false), []);
+
+  const handleSignOut = useCallback(async (reason: LockSignOutReason) => {
+    if (reason === "no-credential") disableLockOnNextLogin.current = true;
+    await logout();
+    setLockedState(false);
+    router.replace("/auth/login");
+  }, [logout]);
+
+  return (
+    <View style={styles.gateRoot}>
+      <View
+        style={styles.gateRoot}
+        importantForAccessibility={locked === false ? "auto" : "no-hide-descendants"}
+        accessibilityElementsHidden={locked !== false}
+      >
+        {children}
+      </View>
+      {locked === null && <View style={styles.cover} />}
+      {locked === true && (
+        <View style={styles.cover} accessibilityViewIsModal>
+          <LockScreen onUnlock={handleUnlock} onSignOut={handleSignOut} />
+        </View>
+      )}
+    </View>
+  );
 }
+
+const styles = StyleSheet.create({
+  gateRoot: { flex: 1, backgroundColor: "#0d0b08" },
+  cover: { ...StyleSheet.absoluteFillObject, backgroundColor: "#0d0b08", zIndex: 1000, elevation: 1000 },
+});
 
 // ---------------------------------------------------------------------------
 
@@ -93,7 +155,9 @@ function RootLayoutNav() {
     >
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="camera" options={{ headerShown: false }} />
-      <Stack.Screen name="wizard" options={{ headerShown: false, presentation: "modal" }} />
+      {/* A card (not a native modal) so the app-lock overlay can cover it — a native
+          modal is presented above the root view and would sit on top of the lock. */}
+      <Stack.Screen name="wizard" options={{ headerShown: false, animation: "slide_from_bottom" }} />
       <Stack.Screen name="auth/login" options={{ headerShown: false }} />
       <Stack.Screen name="auth/register" options={{ headerShown: false }} />
       <Stack.Screen name="settings/index" options={{ title: "Settings" }} />

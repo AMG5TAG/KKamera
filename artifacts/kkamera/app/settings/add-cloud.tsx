@@ -60,11 +60,13 @@ const CLOUD_TYPES: CloudType[] = [
   {
     type: "synology", backendType: "webdav", provider: "synology", label: "Synology NAS", icon: "nas", color: "#b19870", set: "mci", oAuth: false,
     desc: "Upload to a Synology DiskStation over WebDAV.",
-    hostHint: "e.g. https://yourname.quickconnect.to or your DDNS/IP",
+    hostHint: "e.g. https://<your-nas-address> — your DDNS name or public address (not QuickConnect)",
     portHint: "Default: 5006 (WebDAV over HTTPS)", defaultPort: "5006",
     note:
       "Enable the “WebDAV Server” package in DSM (Package Center) and turn on HTTPS on port 5006. " +
       "Then use your DSM username and password below.\n\n" +
+      "The NAS must be reachable from the internet on port 5006 (e.g. a Synology DDNS name with that port forwarded). " +
+      "QuickConnect addresses won’t work — QuickConnect doesn’t relay WebDAV.\n\n" +
       "Note: Synology BeeStation appliances are not supported directly — they don’t offer WebDAV, FTP, or an upload API. " +
       "For a BeeStation, connect Google Drive / Dropbox / OneDrive instead and set the BeeStation to pull from that folder.",
   },
@@ -92,8 +94,8 @@ const CLOUD_TYPES: CloudType[] = [
     portHint: "Default: 443", defaultPort: "",
   },
   {
-    type: "ftp", label: "FTP / SFTP", icon: "folder-outline", color: "#8B5CF6", set: "ion", oAuth: false,
-    desc: "Connect to an FTP server to upload photos and videos.",
+    type: "ftp", label: "FTP / FTPS", icon: "folder-outline", color: "#8B5CF6", set: "ion", oAuth: false,
+    desc: "Connect to an FTP server over FTPS (FTP over TLS). SFTP is not supported.",
     hostHint: "e.g. ftp.example.com",
     portHint: "Default: 21", defaultPort: "",
   },

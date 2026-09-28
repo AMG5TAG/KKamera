@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "kkamera",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/images/splash.png",
@@ -30,10 +30,11 @@
       "infoPlist": {
         "NSCameraUsageDescription": "KKamera uses the camera to capture photos and videos for direct cloud upload.",
         "NSMicrophoneUsageDescription": "KKamera uses the microphone to record audio with your videos.",
-        "NSPhotoLibraryUsageDescription": "KKamera can access your photo library to upload existing photos.",
-        "NSPhotoLibraryAddUsageDescription": "KKamera saves captured photos to your photo library.",
         "NSLocationWhenInUseUsageDescription": "KKamera can embed location data in your photos.",
         "NSFaceIDUsageDescription": "KKamera uses Face ID to unlock the app and protect your cloud connections."
+      },
+      "config": {
+        "usesNonExemptEncryption": false
       }
     },
     "android": {
@@ -54,10 +55,6 @@
         }
       },
       "permissions": [
-        "CAMERA",
-        "RECORD_AUDIO",
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -85,7 +82,25 @@
       [
         "react-native-document-scanner-plugin",
         {
-          "cameraPermission": "KKamera uses the camera to scan documents."
+          "cameraPermission": "KKamera uses the camera to capture photos and videos for direct cloud upload."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "KKamera saves the photos and videos you capture to your photo library.",
+          "savePhotosPermission": "KKamera saves the photos and videos you capture to your photo library.",
+          "isAccessMediaLocationEnabled": false,
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
+        }
+      ],
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "KKamera uses motion sensors for the level guide and panorama capture."
         }
       ]
     ],

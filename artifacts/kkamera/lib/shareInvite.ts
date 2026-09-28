@@ -14,7 +14,7 @@ const SHARE_TITLE = "Try KKamera — no-trace camera";
 
 /** Public signup URL that credits the referral. */
 export function inviteLink(code: string): string {
-  return `https://app.kkamera.app/register?ref=${encodeURIComponent(code.trim())}`;
+  return `https://app.kkamera.app/auth/register?ref=${encodeURIComponent(code.trim())}`;
 }
 
 export function inviteMessage(code: string): string {

@@ -1,5 +1,6 @@
-import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch } from "react-native";
+import React, { useCallback } from "react";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Switch, Platform, Linking, Alert } from "react-native";
+import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -79,6 +80,35 @@ function SegmentRow<T extends string | number>({
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
   const { settings, updateSetting } = useSettings();
+  const [locationPerm, requestLocationPerm] = Location.useForegroundPermissions();
+
+  // Turning GPS on asks for location access right away, so the first geotagged
+  // photo isn't the one that silently goes out without coordinates.
+  const toggleLocation = useCallback(async (v: boolean) => {
+    updateSetting("saveLocation", v);
+    if (v && !locationPerm?.granted) {
+      try {
+        const res = await requestLocationPerm();
+        if (!res.granted && !res.canAskAgain && Platform.OS !== "web") {
+          Alert.alert(
+            "Location Access Off",
+            "Photos will be saved without GPS until you allow location access for KKamera.",
+            [
+              { text: "Not now", style: "cancel" },
+              { text: "Open Settings", onPress: () => { Linking.openSettings().catch(() => {}); } },
+            ],
+          );
+        }
+      } catch { /* permission API unavailable */ }
+    }
+  }, [updateSetting, locationPerm?.granted, requestLocationPerm]);
+
+  const locationDenied = settings.saveLocation && locationPerm != null && !locationPerm.granted;
+  const locationHint = locationDenied
+    ? (locationPerm?.canAskAgain
+      ? "Location access not granted yet — photos are saved without GPS"
+      : "Location access is off for KKamera — enable it in system Settings")
+    : "Save GPS coordinates with the file";
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -91,36 +121,12 @@ export default function CameraScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
       >
-        <SectionLabel title="Format" />
+        <SectionLabel title="Video" />
         <View style={styles.card}>
-          <SegmentRow
-            icon="camera-outline"
-            label="Photo Format"
-            options={[
-              { label: "JPEG", value: "jpeg" },
-              { label: "HEIC", value: "heic" },
-              { label: "PNG", value: "png" },
-              { label: "WebP", value: "webp" },
-            ]}
-            value={settings.imageFormat}
-            onChange={v => updateSetting("imageFormat", v)}
-          />
-          <View style={styles.divider} />
-          <SegmentRow
-            icon="videocam-outline"
-            label="Video Format"
-            options={[
-              { label: "MP4", value: "mp4" },
-              { label: "MOV", value: "mov" },
-              { label: "HEVC", value: "hevc" },
-            ]}
-            value={settings.videoFormat}
-            onChange={v => updateSetting("videoFormat", v)}
-          />
-          <View style={styles.divider} />
           <SegmentRow
             icon="film-outline"
             label="Video Quality"
+            hint="Falls back to the best the camera supports"
             options={[
               { label: "720p", value: "720p" },
               { label: "1080p", value: "1080p" },
@@ -129,6 +135,22 @@ export default function CameraScreen() {
             value={settings.videoQuality}
             onChange={v => updateSetting("videoQuality", v)}
           />
+          {Platform.OS === "ios" && (
+            <>
+              <View style={styles.divider} />
+              <SegmentRow
+                icon="videocam-outline"
+                label="Video Codec"
+                hint="HEVC files are about half the size; H.264 plays everywhere"
+                options={[
+                  { label: "H.264", value: "h264" },
+                  { label: "HEVC", value: "hevc" },
+                ]}
+                value={settings.videoCodec}
+                onChange={v => updateSetting("videoCodec", v)}
+              />
+            </>
+          )}
         </View>
 
         <SectionLabel title="Composition" />
@@ -151,8 +173,8 @@ export default function CameraScreen() {
           <SegmentRow<ZoomValue>
             icon="search-outline"
             label="Default Zoom"
-            hint="Zoom level the rear camera opens at"
-            options={ZOOM_LEVELS.map(z => ({ label: z.label, value: z.value }))}
+            hint="Zoom the rear camera opens at (1× = no zoom)"
+            options={ZOOM_LEVELS.map(z => ({ label: z.name, value: z.value }))}
             value={settings.defaultZoom}
             onChange={v => updateSetting("defaultZoom", v)}
           />
@@ -246,15 +268,15 @@ export default function CameraScreen() {
           <ToggleRow
             icon="location-outline"
             label="Embed GPS in Photos"
-            hint="Save GPS coordinates with the file"
+            hint={locationHint}
             value={settings.saveLocation}
-            onToggle={v => updateSetting("saveLocation", v)}
+            onToggle={toggleLocation}
           />
           <View style={styles.divider} />
           <ToggleRow
             icon="compass-outline"
             label="Compass Direction"
-            hint="Add bearing (GPSImgDirection) to GPS data"
+            hint="Add the compass bearing (GPSImgDirection) to photos"
             value={settings.compassMeta}
             onToggle={v => updateSetting("compassMeta", v)}
           />
@@ -269,8 +291,8 @@ export default function CameraScreen() {
           <View style={styles.divider} />
           <ToggleRow
             icon="shield-checkmark-outline"
-            label="Strip EXIF on Upload"
-            hint="Remove camera/device metadata before sending"
+            label="Strip EXIF"
+            hint="Save photos without camera metadata — also drops GPS and bearing"
             value={settings.stripExif}
             onToggle={v => updateSetting("stripExif", v)}
           />
@@ -278,6 +300,7 @@ export default function CameraScreen() {
           <ToggleRow
             icon="phone-portrait-outline"
             label="Mirror Front Camera"
+            hint="Save selfies as seen in the preview"
             value={settings.mirrorFrontCamera}
             onToggle={v => updateSetting("mirrorFrontCamera", v)}
           />

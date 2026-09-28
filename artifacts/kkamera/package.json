@@ -53,14 +53,13 @@
     "zod": "catalog:",
     "zod-validation-error": "^3.4.0"
   },
-  "optionalDependencies": {},
   "dependencies": {
-    "serve": "^14.2.4",
     "expo-camera": "^17.0.10",
-    "expo-dev-client": "~6.0.21",
     "expo-crypto": "^15.0.9",
+    "expo-dev-client": "~6.0.21",
     "expo-file-system": "^19.0.23",
     "expo-local-authentication": "~17.0.8",
+    "expo-media-library": "~18.2.1",
     "expo-network": "^8.0.8",
     "expo-secure-store": "^15.0.8",
     "expo-sensors": "^15.0.8",
@@ -70,6 +69,7 @@
     "react-native-document-scanner-plugin": "2.0.4",
     "react-native-purchases": "9.7.2",
     "react-native-view-shot": "^4.0.3",
-    "react-native-web": "0.21.0"
+    "react-native-web": "0.21.0",
+    "serve": "^14.2.4"
   }
 }

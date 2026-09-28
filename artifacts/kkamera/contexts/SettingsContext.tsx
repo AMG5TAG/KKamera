@@ -1,13 +1,19 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { DEFAULT_ZOOM, type ZoomValue } from "@/lib/zoomLevels";
+import { DEFAULT_ZOOM, migrateStoredZoom, type ZoomValue } from "@/lib/zoomLevels";
 
 export type GridType = "off" | "thirds" | "golden" | "square" | "diagonal";
 
 export interface AppSettings {
-  imageFormat: "jpeg" | "heic" | "png" | "webp";
-  videoFormat: "mp4" | "mov" | "hevc";
+  /** Bumped when stored values need migrating (see migrateSettings). */
+  schemaVersion: number;
+  // Photos are always JPEG; the container a video lands in is whatever the
+  // platform recorder produces (.mov on iOS, .mp4 on Android). Only the codec
+  // is selectable, and only iOS exposes it.
+  videoCodec: "h264" | "hevc";
   videoQuality: "1080p" | "4k" | "720p";
+  /** Also save every capture to the device photo library. */
+  saveToCameraRoll: boolean;
   uploadOnlyOnWifi: boolean;
   promptBeforeUpload: boolean;
   saveLocation: boolean;
@@ -45,10 +51,13 @@ export interface AppSettings {
   witnessOnSuccess: boolean;
 }
 
+const SCHEMA_VERSION = 2;
+
 const DEFAULT_SETTINGS: AppSettings = {
-  imageFormat: "jpeg",
-  videoFormat: "mp4",
+  schemaVersion: SCHEMA_VERSION,
+  videoCodec: "h264",
   videoQuality: "1080p",
+  saveToCameraRoll: true,
   uploadOnlyOnWifi: false,
   promptBeforeUpload: false,
   saveLocation: true,
@@ -82,6 +91,24 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const SETTINGS_KEY = "kkamera_settings";
 
+/**
+ * Upgrade a stored settings blob to the current schema.
+ * v1 → v2: the fake photo-format option (HEIC/PNG/WebP were only file-name
+ * extensions on JPEG bytes) and the rename-only video-format option are gone;
+ * a stored "hevc" video format becomes the real HEVC codec choice. Default zoom
+ * moved from mislabelled focal-length stops to normalised zoom (0 = true 1×).
+ */
+function migrateSettings(stored: Record<string, unknown>): AppSettings {
+  const legacy = stored.schemaVersion !== SCHEMA_VERSION;
+  const { imageFormat: _imageFormat, videoFormat, ...rest } = stored;
+  const next = { ...DEFAULT_SETTINGS, ...rest } as AppSettings;
+  if (legacy && videoFormat === "hevc" && stored.videoCodec == null) next.videoCodec = "hevc";
+  if (next.videoCodec !== "h264" && next.videoCodec !== "hevc") next.videoCodec = "h264";
+  next.defaultZoom = migrateStoredZoom(stored.defaultZoom ?? DEFAULT_ZOOM, legacy && "defaultZoom" in stored);
+  next.schemaVersion = SCHEMA_VERSION;
+  return next;
+}
+
 interface SettingsContextValue {
   settings: AppSettings;
   updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
@@ -100,7 +127,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     AsyncStorage.getItem(SETTINGS_KEY).then(stored => {
       if (stored) {
         try {
-          setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
+          const migrated = migrateSettings(JSON.parse(stored));
+          setSettings(migrated);
+          AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(migrated)).catch(() => {});
         } catch { /* use defaults */ }
       }
       setIsLoading(false);

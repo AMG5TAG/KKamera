@@ -109,3 +109,16 @@ test("rejects a missing username when the endpoint must be derived", () => {
   assert.throws(() => nextcloudDavUrl("https://cloud.example.com", ""), /username is required/);
   assert.throws(() => nextcloudDavUrl("https://cloud.example.com", null), /username is required/);
 });
+
+test("webdavBaseUrl applies the separate port field and defaults to https", async () => {
+  const { webdavBaseUrl } = await import("../src/lib/nextcloud.ts");
+  assert.equal(webdavBaseUrl("nas.example.com", 5006), "https://nas.example.com:5006");
+  assert.equal(webdavBaseUrl("https://nas.example.com/", 5006), "https://nas.example.com:5006");
+  assert.equal(webdavBaseUrl("https://nas.example.com/dav/home", 5006), "https://nas.example.com:5006/dav/home");
+  // An explicit port in the URL wins.
+  assert.equal(webdavBaseUrl("https://nas.example.com:8443/dav", 5006), "https://nas.example.com:8443/dav");
+  assert.equal(webdavBaseUrl("http://nas.example.com", 5005), "http://nas.example.com:5005");
+  assert.equal(webdavBaseUrl("https://nas.example.com", null), "https://nas.example.com");
+  assert.throws(() => webdavBaseUrl("", 5006), /required/);
+  assert.throws(() => webdavBaseUrl("ftp://nas.example.com", 5006), /https/);
+});

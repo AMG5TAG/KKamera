@@ -117,7 +117,7 @@ export function subscriptionCancelledEmail(name: string, accessUntil: string): {
 }
 
 export function coworkerInviteEmail(inviterName: string, referralCode: string): { subject: string; html: string } {
-  const link = `https://app.kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
+  const link = `https://app.kkamera.app/auth/register?ref=${encodeURIComponent(referralCode)}`;
   const safeName = escapeHtml(inviterName);
   const safeCode = escapeHtml(referralCode);
   // Strip CR/LF/tab from any user-derived value used in a header line, matching

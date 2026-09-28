@@ -1190,6 +1190,88 @@ export const useStartTrial = <
   return useMutation(getStartTrialMutationOptions(options));
 };
 
+/**
+ * Re-reads the caller's `pro` entitlement from the RevenueCat REST API and upserts the local mirror (upgrade-only). Called by the app after a purchase, a restore, and once after RevenueCat logIn. Rate-limited per user.
+ * @summary Reconcile the caller's subscription from RevenueCat
+ */
+export const getSyncSubscriptionUrl = () => {
+  return `/api/subscriptions/sync`;
+};
+
+export const syncSubscription = async (
+  options?: RequestInit,
+): Promise<Subscription> => {
+  return customFetch<Subscription>(getSyncSubscriptionUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getSyncSubscriptionMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof syncSubscription>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof syncSubscription>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["syncSubscription"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof syncSubscription>>,
+    void
+  > = () => {
+    return syncSubscription(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SyncSubscriptionMutationResult = NonNullable<
+  Awaited<ReturnType<typeof syncSubscription>>
+>;
+
+export type SyncSubscriptionMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Reconcile the caller's subscription from RevenueCat
+ */
+export const useSyncSubscription = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof syncSubscription>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof syncSubscription>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getSyncSubscriptionMutationOptions(options));
+};
+
 export const getGetAffiliateStatsUrl = () => {
   return `/api/affiliates/me`;
 };

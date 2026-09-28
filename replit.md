@@ -19,6 +19,8 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Optional env: `PAST_DUE_GRACE_DAYS` — days a past_due subscription keeps access past its last paid period before being blocked (default 14)
 - Optional env: OAuth provider creds `GOOGLE_*`/`ONEDRIVE_*`/`DROPBOX_CLIENT_ID|SECRET` for cloud connections
 - Required env (native IAP): `REVENUECAT_WEBHOOK_AUTH` (secret) — shared secret the RevenueCat dashboard sends in the webhook `Authorization` header. `POST /api/revenuecat/webhook` fails closed (503) if unset. This is what mirrors App Store / Play subscriptions into `subscriptionsTable`; without it native IAP subscribers get 402 on upload after their trial. The client must call `Purchases.logIn(userId)` (done in `lib/revenuecat.tsx`) so `app_user_id` maps to our numeric userId.
+- Optional env (native IAP): `REVENUECAT_SECRET_API_KEY` — RevenueCat secret (v1 REST) key used by `POST /api/subscriptions/sync` and TRANSFER-webhook reconciliation to read `GET /v1/subscribers/{userId}`. Sync returns 503 and TRANSFER events are logged-but-unreconciled if unset.
+- Optional env: `ALLOW_SANDBOX_IAP` — `true` lets RevenueCat SANDBOX purchases (TestFlight / Play test tracks) grant access; default off (sandbox webhook events are acked and ignored, sandbox entitlements are skipped by sync). Sandbox events never complete or reverse referrals either way. Never enable in production.
 
 ## Stack
 
@@ -42,14 +44,14 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 ## Architecture decisions
 
 - JWT-based auth (bcrypt passwords, optional TOTP 2FA via otplib, QR code via qrcode); a 401 from any request signals the client to clear its session
-- Cloud connection credentials stored AES-256-GCM encrypted in DB (key HKDF-derived from `SESSION_SECRET`, separate from the JWT secret); legacy raw-key GCM and CBC values still decrypt
+- Cloud connection credentials stored AES-256-GCM encrypted in DB (key HKDF-derived from `SESSION_SECRET`, separate from the JWT secret); legacy raw-key GCM values still decrypt (CBC support was removed)
 - OAuth connect flow uses stateless signed-JWT state with the PKCE verifier encrypted inside it (autoscale-safe, no in-memory store)
 - Express runs with `trust proxy` (required behind Replit's proxy for per-client rate limiting)
 
 ### Security model (don't regress)
-- **SSRF guard** (`lib/ssrf.ts` + `cloudUpload.ts`): user-supplied FTP/WebDAV/Nextcloud hosts are validated against private/loopback/link-local/IPv4-mapped-IPv6 ranges, the resolved IP is pinned (FTP) or re-validated at connect on every redirect (WebDAV agent). Keep this on any new outbound request to a user-controlled host.
+- **SSRF guard** (`lib/ssrf.ts` + `cloudUpload.ts`): user-supplied FTP/WebDAV/Nextcloud hosts are validated against private/loopback/link-local/IPv4-mapped-IPv6 ranges, the resolved IP is pinned (FTP, with TLS `servername` set to the original host) or re-validated on every socket by `SafeHttpAgent`/`SafeHttpsAgent` — IP-literal targets, resolved names and the connected `remoteAddress` are all checked, and each WebDAV client's agents are locked to its own host so cross-host redirects fail. Keep this on any new outbound request to a user-controlled host.
 - **RevenueCat webhook** (`routes/revenuecat.ts`): shared-secret authenticated (fails closed without `REVENUECAT_WEBHOOK_AUTH`); mirrors IAP entitlements into `subscriptionsTable`; referral milestones are idempotent + row-locked; period-end writes are forward-only (`GREATEST`); stale future-dated EXPIRATION events are ignored.
-- **CSP** is enabled and **CORS** allows only the app host (no cookies — bearer only). HTML interpolated into emails goes through `escapeHtml`; upload filenames through `sanitizeFileName`.
+- **Helmet** is on (CSP disabled — JSON-only API) and **CORS** allows only the app host (no cookies — bearer only). HTML interpolated into emails goes through `escapeHtml`; upload filenames through `sanitizeFileName`.
 - Security/billing pure logic is unit-tested (`artifacts/api-server/test/`) — extend the tests when changing it.
 - Production deployment is an API-only server (`/api`); the native apps ship via EAS and talk to it
 - Affiliate programme: 5 successful referral signups = 1 free year added to subscription

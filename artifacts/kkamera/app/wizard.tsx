@@ -32,7 +32,7 @@ const CLOUD_OPTIONS = [
   { type: "dropbox", label: "Dropbox", icon: "dropbox", color: "#0061FF", desc: "Connect via OAuth" },
   { type: "nextcloud", label: "Nextcloud", icon: "cloud-outline", color: "#0082C9", desc: "Enter server details" },
   { type: "webdav", label: "WebDAV", icon: "server", color: "#6B7280", desc: "Enter server details" },
-  { type: "ftp", label: "FTP / SFTP", icon: "folder-network", color: "#8B5CF6", desc: "Enter FTP details" },
+  { type: "ftp", label: "FTP / FTPS", icon: "folder-network", color: "#8B5CF6", desc: "Enter FTP details" },
 ];
 
 export default function WizardScreen() {
@@ -40,7 +40,6 @@ export default function WizardScreen() {
   const { user, completeWizard, updateUser } = useAuth();
   const updateMeMutation = useUpdateMe();
   const [step, setStep] = useState(0);
-  const [selectedStorage, setSelectedStorage] = useState<string | null>(null);
   const [profileName, setProfileName] = useState(user?.name ?? "");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
@@ -140,21 +139,22 @@ export default function WizardScreen() {
             <Text style={styles.bodyText}>
               Choose where your photos and videos will be saved. Connect multiple accounts to upload to all of them simultaneously.
             </Text>
+            {/* Informational list only — the provider is chosen on the Add Cloud
+                screen, which this button opens. */}
             {CLOUD_OPTIONS.map(opt => (
-              <TouchableOpacity
-                key={opt.type}
-                style={[styles.storageOption, selectedStorage === opt.type && styles.storageOptionSelected]}
-                onPress={() => setSelectedStorage(opt.type)}
-              >
-                <MaterialCommunityIcons name={opt.icon as any} size={28} color={selectedStorage === opt.type ? PRIMARY : "#fff"} />
+              <View key={opt.type} style={styles.storageOption}>
+                <MaterialCommunityIcons name={opt.icon as any} size={28} color="#fff" />
                 <View style={styles.storageText}>
                   <Text style={styles.storageLabel}>{opt.label}</Text>
                   <Text style={styles.storageDesc}>{opt.desc}</Text>
                 </View>
-                {selectedStorage === opt.type && <Ionicons name="checkmark-circle" size={22} color={PRIMARY} />}
-              </TouchableOpacity>
+              </View>
             ))}
-            <InfoCard icon="information-circle-outline" text="You can add and manage multiple connections in Settings → Upload at any time." />
+            <TouchableOpacity style={styles.connectBtn} onPress={() => router.push("/settings/add-cloud")}>
+              <Ionicons name="add-circle-outline" size={20} color={PRIMARY} />
+              <Text style={styles.connectBtnText}>Connect storage now</Text>
+            </TouchableOpacity>
+            <InfoCard icon="information-circle-outline" text="You can add and manage multiple connections in Settings → Cloud Connections at any time." />
           </View>
         )}
 
@@ -203,9 +203,9 @@ export default function WizardScreen() {
               Your 14-day free trial has already started. Enjoy full access to all KKamera features — no credit card required right now.
             </Text>
             <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during your trial." />
-            <InfoCard icon="calendar-outline" text="After 14 days: just $30/year to continue — less than 9¢ per day." />
-            <InfoCard icon="notifications-outline" text="We'll remind you 3 days before your trial ends." />
-            <InfoCard icon="close-circle-outline" text="Cancel anytime. No hidden fees, ever." />
+            <InfoCard icon="calendar-outline" text="After 14 days, an annual subscription keeps KKamera running — see Settings → Subscription for the price in your store." />
+            <InfoCard icon="notifications-outline" text="You'll see a reminder in the app before your trial ends." />
+            <InfoCard icon="close-circle-outline" text="Nothing is charged unless you choose to subscribe." />
           </View>
         )}
 
@@ -220,9 +220,9 @@ export default function WizardScreen() {
               <Text style={styles.referralCode}>{user?.referralCode ?? "—"}</Text>
               <Text style={styles.referralSub}>Share this code with friends.</Text>
             </View>
-            <InfoCard icon="people-outline" text="Every 5 friends who sign up with your code = 1 FREE year." />
+            <InfoCard icon="people-outline" text="Every 5 friends who use your code and start a paid subscription = 1 FREE year." />
             <InfoCard icon="infinite-outline" text="No limit — 25 referrals = 5 years free!" />
-            <InfoCard icon="stats-chart-outline" text="Track your referrals in Settings → Subscription → Refer & Earn." />
+            <InfoCard icon="stats-chart-outline" text="Track your referrals in Settings → Refer & Earn." />
           </View>
         )}
 
@@ -330,7 +330,12 @@ const styles = StyleSheet.create({
     backgroundColor: CARD, borderRadius: 12, padding: 14, marginBottom: 10,
     borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
   },
-  storageOptionSelected: { borderColor: PRIMARY, backgroundColor: "rgba(177,152,112,0.1)" },
+  connectBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
+    paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: PRIMARY,
+    backgroundColor: "rgba(177,152,112,0.1)", marginTop: 4, marginBottom: 12,
+  },
+  connectBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: PRIMARY },
   storageText: { flex: 1 },
   storageLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
   storageDesc: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular" },

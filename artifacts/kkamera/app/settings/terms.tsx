@@ -8,7 +8,8 @@ import { MailLink } from "@/components/MailLink";
 const BG = "#0d0b08";
 const PRIMARY = "#b19870";
 
-const EFFECTIVE_DATE = "13 May 2026";
+const LAST_UPDATED = "28 September 2026";
+const CONTACT = "development@koastal.com.au";
 
 export default function TermsScreen() {
   const insets = useSafeAreaInsets();
@@ -18,62 +19,68 @@ export default function TermsScreen() {
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
     </TouchableOpacity>
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
-      <Text style={styles.updated}>Effective: {EFFECTIVE_DATE}</Text>
+      <Text style={styles.updated}>Last updated: {LAST_UPDATED}</Text>
 
-      <Section title="1. Acceptance of Terms">
-        By downloading, installing, or using KKamera ("the App"), you agree to be bound by these Terms of Service. If you do not agree, do not use the App.
+      <Section title="1. About these terms">
+        These terms apply to your use of the KKamera app and service ("KKamera", "we", "us"), provided by Koastal (koastal.com.au). By creating an account or using KKamera you agree to them. If you don't agree, please don't use KKamera. Our Privacy Policy explains how we handle your information.
       </Section>
 
-      <Section title="2. Description of Service">
-        KKamera is a camera application that captures photos and videos on your device and uploads them directly to cloud storage accounts and/or servers you choose and configure. The App does not retain your media — it is uploaded to your chosen destination and deleted from the device.
+      <Section title="2. What KKamera does">
+        KKamera captures photos and videos on your device and uploads them, through our server, to the cloud storage accounts or servers you connect (such as Google Drive, OneDrive, Dropbox, FTP, WebDAV or Nextcloud). Our server passes files on and does not keep copies.{"\n\n"}
+        KKamera does not necessarily remove media from your device: captures can be saved to your photo library, and whether the app's working copy is deleted after upload depends on your settings. You are responsible for keeping your own backups.
       </Section>
 
-      <Section title="3. Subscription and Pricing">
-        <Bold>Free Trial:</Bold> New accounts receive a 14-day free trial with full access to all features. No credit card is required during the trial.{"\n\n"}
-        <Bold>Paid Subscription:</Bold> After the trial period, continued use requires a subscription at $30 USD per year (or local equivalent). Subscriptions auto-renew annually.{"\n\n"}
-        <Bold>Cancellation:</Bold> You may cancel at any time. Cancellation takes effect at the end of the current billing period. No refunds are provided for partial periods.{"\n\n"}
-        <Bold>Price Changes:</Bold> We will notify you at least 30 days before any price change.
+      <Section title="3. Your account">
+        You need an account to use KKamera. Please give accurate details, keep your password secure, and tell us if you think your account has been misused. We recommend turning on two-factor authentication. You are responsible for activity on your account.
       </Section>
 
-      <Section title="4. Affiliate Programme">
-        Users may participate in the KKamera Affiliate Programme. For every 5 users who sign up using your referral code and complete their trial, you earn 1 free year of KKamera. There is no limit on free years earned. We reserve the right to modify or discontinue the affiliate programme with 30 days' notice. Fraudulent referrals (self-referrals, fake accounts) will result in account termination.
+      <Section title="4. Free trial and subscription">
+        <Bold>Free trial:</Bold> when you create an account, KKamera gives you a 14-day free trial with full access. No payment details are needed for the trial, and it is available once per email address.{"\n\n"}
+        <Bold>Subscription:</Bold> after the trial, uploading requires a paid subscription, bought as an in-app purchase through the Apple App Store or Google Play. The price is shown in the app and in the store before you buy.{"\n\n"}
+        <Bold>Auto-renewal:</Bold> subscriptions renew automatically at the end of each period and are charged to your store account unless you cancel at least 24 hours before the renewal date.{"\n\n"}
+        <Bold>Cancelling:</Bold> manage or cancel your subscription in your App Store or Google Play account settings. Deleting the app or your KKamera account does not cancel it. After cancelling, you keep access until the end of the period you have paid for.{"\n\n"}
+        <Bold>Refunds:</Bold> refunds are handled by Apple or Google under their policies, and nothing in these terms excludes rights you have under the Australian Consumer Law or other applicable consumer law.{"\n\n"}
+        <Bold>Price changes:</Bold> if the price changes, Apple or Google will notify you as their rules require before the new price applies.
       </Section>
 
-      <Section title="5. User Responsibilities">
-        You are responsible for:{"\n"}
-        — The security and accuracy of your cloud storage credentials{"\n"}
-        — Ensuring you have rights to upload the content you capture{"\n"}
-        — Complying with applicable local laws regarding photography and recording{"\n"}
-        — Maintaining adequate storage space in your connected cloud accounts{"\n\n"}
-        You must not use KKamera to capture or upload illegal content, including material that violates third-party rights or local law.
+      <Section title="5. Referral programme">
+        You can invite friends with your referral code. A referral counts when a friend who signed up with your code starts their first paid subscription. For every 5 referrals that count, we add one free year of KKamera access to your account.{"\n\n"}
+        We may void a referral — and remove free time it earned — if the friend's subscription is refunded, or if we reasonably believe the referral involves self-referral, fake or duplicate accounts, or other abuse. Referral rewards have no cash value and can't be transferred. A free year extends your KKamera access; it does not change billing for any store subscription you have, which you manage with Apple or Google. We may change or end the programme, but won't take away free years already earned fairly.
       </Section>
 
-      <Section title="6. Data and Media">
-        Your photos and videos are your property. We do not claim any rights over your media. By using the App, you authorise KKamera to transmit your media to the storage services you configure. We do not retain copies of your media on our servers.
+      <Section title="6. Your content">
+        Your photos and videos belong to you. You give us only the permission needed to receive your files and deliver them to the destinations you choose. Once delivered, files are stored by your chosen provider under their terms.{"\n\n"}
+        You are responsible for the credentials you connect, for having enough space in your storage accounts, and for checking that uploads have arrived where you expect.
       </Section>
 
-      <Section title="7. Availability">
-        We aim to maintain 99.9% uptime but cannot guarantee uninterrupted service. Scheduled maintenance will be announced in advance. We are not liable for any loss resulting from service interruptions.
+      <Section title="7. Using the camera and location responsibly">
+        You must use KKamera lawfully and respect other people's privacy. In particular, you must not use it to record people covertly or without any consent the law requires, to capture or share illegal content, or to infringe anyone else's rights. Laws about photography, audio recording and location data vary by place — you are responsible for following those that apply to you.{"\n\n"}
+        Location embedding, photo stamps and witness notifications are optional features. Only turn them on when you are entitled to share that information, and only add a witness email address with that person's agreement.
       </Section>
 
-      <Section title="8. Limitation of Liability">
-        To the maximum extent permitted by law, KKamera shall not be liable for any indirect, incidental, special, or consequential damages, including loss of data, revenue, or profits. Our maximum liability is limited to the amount you paid in the 12 months preceding the claim.
+      <Section title="8. Service availability">
+        We work to keep KKamera running reliably, but we can't promise it will always be available or error-free. Uploads also depend on your network, your devices and third-party services (such as your cloud providers and the app stores) that we don't control. We may change, suspend or discontinue features, and will give reasonable notice of significant changes where we can.
       </Section>
 
-      <Section title="9. Termination">
-        We reserve the right to terminate or suspend accounts that violate these Terms. You may delete your account at any time through the App settings.
+      <Section title="9. Liability">
+        Nothing in these terms excludes, restricts or modifies any guarantee, right or remedy you have under the Australian Consumer Law or other laws that cannot be excluded.{"\n\n"}
+        Subject to that, and to the extent the law allows: KKamera is provided "as is"; we are not liable for indirect or consequential loss, or for loss of data or content that was not delivered, was deleted from your device in line with your settings, or was lost by a third-party service; and our total liability to you is limited to the amount you paid for KKamera in the 12 months before the claim (or, where the law allows, to supplying the service again).
       </Section>
 
-      <Section title="10. Governing Law">
-        These Terms are governed by the laws of England and Wales. Any disputes shall be subject to the exclusive jurisdiction of the courts of England and Wales.
+      <Section title="10. Suspension and closing your account">
+        You can delete your account at any time in Settings → Privacy & Security → Delete Account. We may suspend or close an account that seriously or repeatedly breaches these terms, that is used unlawfully, or where we are required to by law. Where reasonable, we will tell you first.
       </Section>
 
-      <Section title="11. Changes to Terms">
-        We may update these Terms from time to time. We will notify you of significant changes via email or in-app notification at least 14 days in advance. Continued use after notification constitutes acceptance.
+      <Section title="11. Governing law">
+        These terms are governed by the laws of England and Wales. Any disputes shall be subject to the exclusive jurisdiction of the courts of England and Wales. This does not take away consumer protections you have under the laws of the country where you live.
       </Section>
 
-      <Section title="12. Contact">
-        For legal enquiries: <MailLink address="development@koastal.com.au" subject="KKamera — legal enquiry" />
+      <Section title="12. Changes to these terms">
+        We may update these terms. If a change is significant, we will tell you in the app or by email before it takes effect. If you keep using KKamera after that, the updated terms apply; if you don't agree, you can stop using KKamera and delete your account.
+      </Section>
+
+      <Section title="13. Contact">
+        Questions about these terms: <MailLink address={CONTACT} subject="KKamera — terms enquiry" />
       </Section>
     </ScrollView>
     </View>

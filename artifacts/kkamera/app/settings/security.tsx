@@ -1,15 +1,27 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, Alert, Platform, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, Alert, Platform, ActivityIndicator, Linking, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSetup2FA, useVerify2FA, useDisable2FA, useGetMe, getGetMeQueryKey } from "@workspace/api-client-react";
+import { useSetup2FA, useVerify2FA, useDisable2FA, getGetMeQueryKey, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
+
+/** Same URI the server encodes in the QR code (otplib `authenticator.keyuri`). */
+function buildOtpAuthUri(email: string, secret: string): string {
+  const issuer = "KKamera";
+  const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(email)}`;
+  return `otpauth://totp/${label}?secret=${encodeURIComponent(secret)}&period=30&digits=6&algorithm=SHA1&issuer=${encodeURIComponent(issuer)}`;
+}
+
+/** Strip spaces/dashes and uppercase — backup codes are 8 hex chars, compared uppercase by the server. */
+function normaliseCode(input: string): string {
+  return input.replace(/[\s-]/g, "").toUpperCase();
+}
 
 export default function SecurityScreen() {
   const insets = useSafeAreaInsets();
@@ -29,38 +41,67 @@ export default function SecurityScreen() {
       const result = await setup2FAMutation.mutateAsync();
       setSetupData(result);
       setMode("setup");
-    } catch {
-      Alert.alert("Error", "Could not start 2FA setup. Please try again.");
+    } catch (e) {
+      Alert.alert("Error", getUserFacingMessage(e, "Could not start 2FA setup. Please try again."));
     }
   };
 
   const handleVerify = async () => {
-    if (code.length !== 6) { Alert.alert("Error", "Please enter the 6-digit code from your authenticator app."); return; }
+    const trimmed = code.trim();
+    if (!/^\d{6}$/.test(trimmed)) { Alert.alert("Error", "Please enter the 6-digit code from your authenticator app."); return; }
     try {
-      await verify2FAMutation.mutateAsync({ data: { code } });
+      await verify2FAMutation.mutateAsync({ data: { code: trimmed } });
       if (user) updateUser({ ...user, twoFAEnabled: true });
       queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
       setMode("idle");
       setCode("");
       setSetupData(null);
       Alert.alert("2FA Enabled", "Two-factor authentication is now active on your account.");
-    } catch {
-      Alert.alert("Error", "Invalid code. Please try again.");
+    } catch (e) {
+      Alert.alert("Error", getUserFacingMessage(e, "Invalid code. Please try again."));
     }
   };
 
   const handleDisable = async () => {
-    if (code.length !== 6) { Alert.alert("Error", "Please enter your current 6-digit authenticator code to disable 2FA."); return; }
+    const normalised = normaliseCode(code);
+    if (!/^\d{6}$/.test(normalised) && !/^[0-9A-F]{8}$/.test(normalised)) {
+      Alert.alert("Error", "Enter the 6-digit code from your authenticator app, or a backup code.");
+      return;
+    }
     try {
-      await disable2FAMutation.mutateAsync({ data: { code } });
+      await disable2FAMutation.mutateAsync({ data: { code: normalised } });
       if (user) updateUser({ ...user, twoFAEnabled: false });
       queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
       setMode("idle");
       setCode("");
       Alert.alert("2FA Disabled", "Two-factor authentication has been removed from your account.");
-    } catch {
-      Alert.alert("Error", "Invalid code. Could not disable 2FA.");
+    } catch (e) {
+      Alert.alert("Error", getUserFacingMessage(e, "Invalid code. Could not disable 2FA."));
     }
+  };
+
+  const handleOpenAuthenticator = async () => {
+    if (!setupData || !user) return;
+    try {
+      await Linking.openURL(buildOtpAuthUri(user.email, setupData.secret));
+    } catch {
+      Alert.alert(
+        "No authenticator app found",
+        "Install an authenticator app (such as Google Authenticator, Microsoft Authenticator or 1Password), or enter the key manually.",
+      );
+    }
+  };
+
+  const handleShareSecret = () => {
+    if (!setupData) return;
+    void Share.share({ message: setupData.secret }).catch(() => {});
+  };
+
+  const handleShareBackupCodes = () => {
+    if (!setupData) return;
+    void Share.share({
+      message: `KKamera backup codes${user ? ` for ${user.email}` : ""} (each can be used once):\n\n${setupData.backupCodes.join("\n")}`,
+    }).catch(() => {});
   };
 
   const is2FAEnabled = user?.twoFAEnabled ?? false;
@@ -118,15 +159,30 @@ export default function SecurityScreen() {
           <View style={styles.qrWrap}>
             <Image source={{ uri: setupData.qrCodeUrl }} style={styles.qrCode} resizeMode="contain" accessibilityLabel="Two-factor authentication QR code" />
           </View>
-          <Text style={styles.manualSecret}>Or enter manually: <Text style={{ color: PRIMARY, fontFamily: "Inter_600SemiBold" }}>{setupData.secret}</Text></Text>
+          {Platform.OS !== "web" && (
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => void handleOpenAuthenticator()}>
+              <Ionicons name="open-outline" size={16} color={PRIMARY} />
+              <Text style={styles.secondaryBtnText}>Open in authenticator app</Text>
+            </TouchableOpacity>
+          )}
+          <Text style={styles.manualSecret}>Or enter this key manually (press and hold to copy):</Text>
+          <Text selectable style={styles.secretText}>{setupData.secret}</Text>
+          <TouchableOpacity style={styles.linkBtn} onPress={handleShareSecret}>
+            <Ionicons name="share-outline" size={14} color={PRIMARY} />
+            <Text style={styles.linkBtnText}>Copy / share key</Text>
+          </TouchableOpacity>
 
           <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Step 2: Save Backup Codes</Text>
-          <Text style={styles.bodyText}>⚠️ Store these codes safely. They let you access your account if you lose your phone:</Text>
+          <Text style={styles.bodyText}>Store these codes somewhere safe, such as a password manager. Each one can be used once to sign in or turn off 2FA if you lose your phone. They won't be shown again.</Text>
           <View style={styles.backupGrid}>
             {setupData.backupCodes.map((c, i) => (
-              <View key={i} style={styles.backupCode}><Text style={styles.backupCodeText}>{c}</Text></View>
+              <View key={i} style={styles.backupCode}><Text selectable style={styles.backupCodeText}>{c}</Text></View>
             ))}
           </View>
+          <TouchableOpacity style={styles.secondaryBtn} onPress={handleShareBackupCodes}>
+            <Ionicons name="share-outline" size={16} color={PRIMARY} />
+            <Text style={styles.secondaryBtnText}>Save / share backup codes</Text>
+          </TouchableOpacity>
 
           <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Step 3: Verify</Text>
           <Text style={styles.bodyText}>Enter the 6-digit code from your authenticator app to confirm setup:</Text>
@@ -158,13 +214,17 @@ export default function SecurityScreen() {
       {is2FAEnabled && mode === "idle" && (
         <>
           <Text style={styles.sectionTitle}>Manage 2FA</Text>
-          <Text style={styles.bodyText}>To disable two-factor authentication, enter your current authenticator code:</Text>
+          <Text style={styles.bodyText}>To disable two-factor authentication, enter the 6-digit code from your authenticator app, or a backup code:</Text>
           <TextInput
             style={styles.codeInput}
             placeholder="000000"
             placeholderTextColor="#555"
-            keyboardType="number-pad"
-            maxLength={6}
+            keyboardType="default"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            autoComplete="one-time-code"
+            textContentType="oneTimeCode"
+            maxLength={10}
             value={code}
             onChangeText={setCode}
           />
@@ -196,7 +256,12 @@ const styles = StyleSheet.create({
   bodyText: { fontSize: 14, color: "#aaa", fontFamily: "Inter_400Regular", lineHeight: 20, marginBottom: 12 },
   qrWrap: { alignItems: "center", backgroundColor: "white", borderRadius: 12, padding: 16, marginBottom: 12, alignSelf: "center" },
   qrCode: { width: 180, height: 180 },
-  manualSecret: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 8 },
+  manualSecret: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 6 },
+  secretText: { fontSize: 14, color: PRIMARY, fontFamily: "Inter_600SemiBold", textAlign: "center", letterSpacing: 1, marginBottom: 6 },
+  secondaryBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.35)", marginBottom: 12 },
+  secondaryBtnText: { fontSize: 14, fontFamily: "Inter_500Medium", color: PRIMARY },
+  linkBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 6, marginBottom: 8 },
+  linkBtnText: { fontSize: 13, fontFamily: "Inter_500Medium", color: PRIMARY },
   backupGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
   backupCode: { backgroundColor: "#1e1c15", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: "rgba(177,152,112,0.15)" },
   backupCodeText: { fontSize: 12, fontFamily: "Inter_600SemiBold", color: PRIMARY, letterSpacing: 1 },

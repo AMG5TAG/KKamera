@@ -56,3 +56,8 @@ test("none / expired / unknown statuses deny", () => {
     assert.equal(evaluateAccess(sub({ status: s }), now).allow, false, s);
   }
 });
+
+test("expired status denies; an expiry that kept a referral year (cancelled + future end) still allows", () => {
+  assert.equal(evaluateAccess(sub({ status: "expired", currentPeriodEnd: future }), now).allow, false);
+  assert.equal(evaluateAccess(sub({ status: "cancelled", currentPeriodEnd: future }), now).allow, true);
+});

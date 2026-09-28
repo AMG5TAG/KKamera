@@ -11,6 +11,7 @@ import {
   useListUploads, useDeleteUpload, useClearUploads, getListUploadsQueryKey,
 } from "@workspace/api-client-react";
 import { useSettings } from "@/contexts/SettingsContext";
+import { useUpload, type QueuedUpload } from "@/contexts/UploadContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -55,6 +56,7 @@ export default function HistoryScreen() {
   const clearMutation = useClearUploads();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [isClearing, setIsClearing] = useState(false);
+  const { queuedItems, retryItem, discardItem } = useUpload();
 
   const sorted = [...(uploads ?? [])].sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -101,12 +103,74 @@ export default function HistoryScreen() {
     );
   }, [sorted.length, queryClient, clearMutation]);
 
+  const handleDiscard = (item: QueuedUpload) => {
+    Alert.alert(
+      "Discard Capture",
+      `"${item.fileName}" hasn't been uploaded. Discarding deletes the only copy on this device. This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Discard", style: "destructive", onPress: () => { void discardItem(item.id); } },
+      ]
+    );
+  };
+
+  const renderQueuedItem = (item: QueuedUpload) => {
+    const cfg = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.queued;
+    const uploading = item.status === "uploading";
+    return (
+      <View key={item.id} style={styles.card}>
+        <View style={[styles.typeIcon, { backgroundColor: cfg.color + "22" }]}>
+          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} />
+        </View>
+        <View style={styles.cardBody}>
+          <Text style={styles.fileName} numberOfLines={1}>{item.fileName}</Text>
+          <View style={styles.metaRow}>
+            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} />
+            <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+            <Text style={styles.dotSep}>·</Text>
+            <Text style={styles.dateText}>{formatDate(new Date(item.createdAt).toISOString())}</Text>
+          </View>
+          {!!item.error && (
+            <Text
+              style={item.status === "failed" || item.status === "partial" ? styles.errorText : styles.queueNote}
+              numberOfLines={2}
+            >
+              {item.error}
+            </Text>
+          )}
+        </View>
+        {uploading ? (
+          <ActivityIndicator size="small" color={PRIMARY} style={styles.deleteBtn} />
+        ) : (
+          <>
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => retryItem(item.id)} accessibilityLabel="Retry upload">
+              <Ionicons name="refresh-outline" size={18} color={PRIMARY} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDiscard(item)} accessibilityLabel="Discard capture">
+              <Ionicons name="trash-outline" size={18} color="#ef4444" />
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+    );
+  };
+
+  const deviceSection = queuedItems.length > 0 ? (
+    <View style={styles.deviceSection}>
+      <Text style={styles.countText}>
+        On this device · {queuedItems.length} not uploaded
+      </Text>
+      {queuedItems.map(renderQueuedItem)}
+    </View>
+  ) : null;
+
   if (!settings.recordHistory) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
+        {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
         <View style={styles.center}>
           <Ionicons name="eye-off-outline" size={48} color="#333" />
           <Text style={styles.emptyTitle}>History is disabled</Text>
@@ -180,15 +244,23 @@ export default function HistoryScreen() {
       </View>
 
       {isLoading ? (
-        <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
+        <>
+          {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
+          <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
+        </>
       ) : (
         <FlatList
           data={sorted}
           keyExtractor={item => String(item.id)}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={PRIMARY} />}
-          ListHeaderComponent={sorted.length > 0 ? (
-            <Text style={styles.countText}>{sorted.length} record{sorted.length !== 1 ? "s" : ""}</Text>
+          ListHeaderComponent={(deviceSection || sorted.length > 0) ? (
+            <>
+              {deviceSection}
+              {sorted.length > 0 && (
+                <Text style={styles.countText}>{sorted.length} record{sorted.length !== 1 ? "s" : ""}</Text>
+              )}
+            </>
           ) : null}
           ListEmptyComponent={(
             <View style={styles.emptyWrap}>
@@ -240,6 +312,8 @@ const styles = StyleSheet.create({
   dateText: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
   errorText: { fontSize: 11, color: "#ef444488", fontFamily: "Inter_400Regular", marginTop: 2 },
   deleteBtn: { padding: 8 },
+  deviceSection: { gap: 10, marginBottom: 20 },
+  queueNote: { fontSize: 11, color: "#888", fontFamily: "Inter_400Regular", marginTop: 2 },
   emptyWrap: { alignItems: "center", paddingVertical: 60, paddingHorizontal: 32 },
   emptyTitle: { fontSize: 20, fontFamily: "Inter_600SemiBold", color: "#555", marginTop: 16, marginBottom: 8 },
   emptyText: { fontSize: 14, color: "#444", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20, marginBottom: 24 },

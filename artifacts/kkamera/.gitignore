@@ -18,6 +18,10 @@ android/
 *.p12
 *.key
 *.mobileprovision
+*.keystore
+
+# Store submission credentials (EAS submit)
+play-service-account.json
 
 # Metro
 .metro-health-check*

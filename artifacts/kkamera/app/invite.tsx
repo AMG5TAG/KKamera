@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useGetAffiliateStats, useInviteCoworkers } from "@workspace/api-client-react";
+import { inviteMessage } from "@/lib/shareInvite";
 
 const PRIMARY = "#b19870";
 const SECONDARY = "#c3b091";
@@ -17,7 +18,7 @@ const CARD = "#1a1710";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const BENEFITS = [
-  { icon: "gift-outline", title: "Earn free years", text: "Every 5 co-workers who subscribe adds 1 free year to your plan — no limit." },
+  { icon: "gift-outline", title: "Earn free years", text: "Every 5 co-workers who start a paid subscription adds 1 free year to your plan — no limit." },
   { icon: "time-outline", title: "They start free", text: "Everyone you invite gets a full 14-day trial. No credit card needed." },
   { icon: "cloud-done-outline", title: "Same workflow, whole team", text: "Shots upload straight to each person's own cloud storage — nothing left on devices." },
 ];
@@ -47,7 +48,6 @@ export default function InviteScreen() {
 
   const canPickContacts = Platform.OS === "web" && !!(navigator as any)?.contacts?.select;
   const referralCode = stats?.referralCode ?? "";
-  const referralLink = referralCode ? `https://app.kkamera.app/register?ref=${referralCode}` : "";
 
   const addEmail = useCallback((raw: string) => {
     const e = raw.trim().toLowerCase();
@@ -93,7 +93,7 @@ export default function InviteScreen() {
     if (!referralCode) return;
     try {
       await Share.share({
-        message: `Join me on KKamera — the privacy-first camera app that uploads photos & videos straight to your own cloud storage.\n\nSign up with my invite for a free 14-day trial:\n${referralLink}\n\nOr use code: ${referralCode}`,
+        message: inviteMessage(referralCode),
       });
     } catch { /* user dismissed */ }
   };
@@ -153,7 +153,7 @@ export default function InviteScreen() {
           <View style={styles.sentCard}>
             <Ionicons name="paper-plane" size={20} color="#22c55e" />
             <Text style={styles.sentText}>
-              Invites sent to {sentCount} contact{sentCount !== 1 ? "s" : ""}! You'll see them in your affiliate dashboard once they sign up.
+              Invites sent to {sentCount} contact{sentCount !== 1 ? "s" : ""}! They'll appear in Refer & Earn once they sign up, and count toward your free year when they start a paid subscription.
             </Text>
           </View>
         )}

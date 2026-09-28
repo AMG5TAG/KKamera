@@ -165,6 +165,8 @@ async function exchangeCode(
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
+    // Bound the provider call so a stalled token endpoint can't hang the request.
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {
@@ -388,6 +390,7 @@ router.post("/oauth/:provider/refresh/:connectionId", requireAuth, async (req, r
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),
+      signal: AbortSignal.timeout(20_000),
     });
 
     if (!tokenRes.ok) { res.status(502).json({ message: "Token refresh failed" }); return; }

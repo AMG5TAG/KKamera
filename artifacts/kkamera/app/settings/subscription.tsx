@@ -7,20 +7,47 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useGetSubscription } from "@workspace/api-client-react";
-import { useSubscription } from "@/lib/revenuecat";
+import { STORE_NAME, openManageSubscriptions, useSubscription } from "@/lib/revenuecat";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 
+// Only claims the app can actually back up — no unverifiable marketing copy.
 const FEATURES = [
-  { icon: "infinite-outline", text: "Unlimited photo & video uploads" },
-  { icon: "cloud-upload-outline", text: "Upload to multiple clouds simultaneously" },
-  { icon: "lock-closed-outline", text: "End-to-end encrypted transfers" },
+  { icon: "cloud-upload-outline", text: "Photos & videos upload directly to your own cloud" },
+  { icon: "server-outline", text: "FTP / WebDAV / Nextcloud / Google Drive / OneDrive / Dropbox" },
+  { icon: "git-branch-outline", text: "Upload to multiple destinations at once" },
   { icon: "wifi-outline", text: "Offline queue — uploads when back online" },
-  { icon: "people-outline", text: "Affiliate program — earn free years" },
-  { icon: "film-outline", text: "4K video, slow motion, all formats" },
+  { icon: "document-text-outline", text: "Document scanning" },
+  { icon: "images-outline", text: "Panorama capture" },
 ];
+
+type Period = { unit: string; adverb: string; length: string };
+
+/** Billing period of a RevenueCat package, for the price and auto-renew disclosure. */
+function periodOf(pkg: any): Period {
+  const byType: Record<string, Period> = {
+    ANNUAL: { unit: "year", adverb: "annually", length: "1 year" },
+    SIX_MONTH: { unit: "6 months", adverb: "every 6 months", length: "6 months" },
+    THREE_MONTH: { unit: "3 months", adverb: "every 3 months", length: "3 months" },
+    TWO_MONTH: { unit: "2 months", adverb: "every 2 months", length: "2 months" },
+    MONTHLY: { unit: "month", adverb: "monthly", length: "1 month" },
+    WEEKLY: { unit: "week", adverb: "weekly", length: "1 week" },
+  };
+  if (pkg?.packageType && byType[pkg.packageType]) return byType[pkg.packageType];
+  const iso: string | null | undefined = pkg?.product?.subscriptionPeriod;
+  const m = iso ? /^P(\d+)([YMWD])$/.exec(iso) : null;
+  if (m) {
+    const n = Number(m[1]);
+    const word = { Y: "year", M: "month", W: "week", D: "day" }[m[2] as "Y" | "M" | "W" | "D"];
+    if (n === 1) return { unit: word, adverb: `every ${word}`, length: `1 ${word}` };
+    return { unit: `${n} ${word}s`, adverb: `every ${n} ${word}s`, length: `${n} ${word}s` };
+  }
+  return byType.ANNUAL;
+}
+
+const fmtDate = (d: string | Date | null | undefined) => (d ? new Date(d).toLocaleDateString() : "—");
 
 export default function SubscriptionScreen() {
   const insets = useSafeAreaInsets();
@@ -33,16 +60,29 @@ export default function SubscriptionScreen() {
 
   // RevenueCat is the source of truth for an active subscription.
   const isRcSubscribed = rcSub.isSubscribed;
+  const entitlement = rcSub.customerInfo?.entitlements.active?.["pro"];
+  const managementURL = rcSub.customerInfo?.managementURL ?? null;
 
   const status = sub?.status ?? "none";
   const trialEnd = sub?.trialEnd ? new Date(sub.trialEnd) : null;
   const daysLeft = trialEnd ? Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000)) : 0;
+  const periodEnd = sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
+  const cancelledButActive = status === "cancelled" && !!periodEnd && periodEnd.getTime() > Date.now();
 
   const currentOffering = rcSub.offerings?.current;
   const annualPackage = currentOffering?.availablePackages.find(
     (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual"
   ) ?? currentOffering?.availablePackages[0];
-  const priceString = annualPackage?.product.priceString ?? "$30.00";
+  // Never fall back to a hard-coded price: the store price is the only one we may show.
+  const priceString: string | null = annualPackage?.product.priceString ?? null;
+  const period = periodOf(annualPackage);
+  const purchasesAvailable = rcSub.isReady && !!annualPackage;
+
+  const openManage = () => {
+    openManageSubscriptions(managementURL).catch(() => {
+      Alert.alert("Couldn't open store", `Open your ${STORE_NAME} account settings to manage your subscription.`);
+    });
+  };
 
   const handleNativePurchase = () => {
     if (!annualPackage) return;
@@ -86,40 +126,70 @@ export default function SubscriptionScreen() {
   };
 
   const isPurchasing = rcSub.isPurchasing;
+  const priceLine = priceString ? `${priceString} / ${period.unit}` : "Subscribed";
+
+  const Badge = ({ label, color, bg }: { label: string; color: string; bg: string }) => (
+    <View style={[styles.statusBadge, { backgroundColor: bg }]}>
+      <Text style={[styles.statusBadgeText, { color }]}>{label}</Text>
+    </View>
+  );
 
   const renderStatusCard = () => {
+    const billingIssue = !!entitlement?.billingIssueDetectedAt || status === "past_due";
+    if (billingIssue) {
+      return (
+        <View style={[styles.statusCard, { borderColor: "rgba(239,68,68,0.3)" }]}>
+          <Badge label="BILLING PROBLEM" color="#ef4444" bg="rgba(239,68,68,0.15)" />
+          <Text style={styles.statusTitle}>Payment failed</Text>
+          <Text style={[styles.statusSub, { textAlign: "center" }]}>
+            {STORE_NAME} couldn't charge your payment method. Update it in your {STORE_NAME} account to keep your subscription.
+          </Text>
+        </View>
+      );
+    }
     if (isRcSubscribed) {
-      const exp = rcSub.customerInfo?.entitlements.active?.["pro"]?.expirationDate;
+      const exp = entitlement?.expirationDate;
+      if (entitlement?.willRenew) {
+        return (
+          <View style={styles.statusCard}>
+            <Badge label="ACTIVE" color="#22c55e" bg="rgba(34,197,94,0.2)" />
+            <Text style={styles.statusTitle}>{priceLine}</Text>
+            {exp ? <Text style={styles.statusSub}>Renews {fmtDate(exp)}</Text> : null}
+          </View>
+        );
+      }
       return (
         <View style={styles.statusCard}>
-          <View style={[styles.statusBadge, { backgroundColor: "rgba(34,197,94,0.2)" }]}>
-            <Text style={[styles.statusBadgeText, { color: "#22c55e" }]}>ACTIVE</Text>
-          </View>
-          <Text style={styles.statusTitle}>{priceString} / year</Text>
-          {exp ? <Text style={styles.statusSub}>Renews {new Date(exp).toLocaleDateString()}</Text> : null}
+          <Badge label="ACTIVE — DOESN'T RENEW" color="#22c55e" bg="rgba(34,197,94,0.2)" />
+          <Text style={styles.statusTitle}>Active</Text>
+          <Text style={styles.statusSub}>{exp ? `Access until ${fmtDate(exp)}` : "Auto-renew is off"}</Text>
+        </View>
+      );
+    }
+    if (cancelledButActive) {
+      return (
+        <View style={styles.statusCard}>
+          <Badge label="ACTIVE — DOESN'T RENEW" color="#22c55e" bg="rgba(34,197,94,0.2)" />
+          <Text style={styles.statusTitle}>Active</Text>
+          <Text style={styles.statusSub}>Access until {fmtDate(periodEnd)}</Text>
         </View>
       );
     }
     if (status === "active") {
+      // The server can't tell us whether the store will renew — only claim
+      // "Renews" when RevenueCat says willRenew (handled above).
       return (
         <View style={styles.statusCard}>
-          <View style={[styles.statusBadge, { backgroundColor: "rgba(34,197,94,0.2)" }]}>
-            <Text style={[styles.statusBadgeText, { color: "#22c55e" }]}>ACTIVE</Text>
-          </View>
-          {/* Use the live store price, never a hardcoded one — a literal here
-              contradicted the price card below whenever the store's configured
-              price differed from what the code assumed. */}
-          <Text style={styles.statusTitle}>{priceString} / year</Text>
-          <Text style={styles.statusSub}>Renews {sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd).toLocaleDateString() : "—"}</Text>
+          <Badge label="ACTIVE" color="#22c55e" bg="rgba(34,197,94,0.2)" />
+          <Text style={styles.statusTitle}>{priceLine}</Text>
+          <Text style={styles.statusSub}>Current period ends {fmtDate(periodEnd)}</Text>
         </View>
       );
     }
     if (status === "trial") {
       return (
         <View style={styles.statusCard}>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusBadgeText}>TRIAL</Text>
-          </View>
+          <Badge label="TRIAL" color={PRIMARY} bg="rgba(177,152,112,0.2)" />
           <Text style={styles.statusTitle}>{daysLeft} days remaining</Text>
           <Text style={styles.statusSub}>Free trial ends {trialEnd?.toLocaleDateString() ?? "soon"}</Text>
         </View>
@@ -127,16 +197,19 @@ export default function SubscriptionScreen() {
     }
     return (
       <View style={styles.statusCard}>
-        <View style={[styles.statusBadge, { backgroundColor: "rgba(107,114,128,0.2)" }]}>
-          <Text style={[styles.statusBadgeText, { color: "#9ca3af" }]}>INACTIVE</Text>
-        </View>
+        <Badge label={status === "cancelled" ? "CANCELLED" : status === "expired" ? "EXPIRED" : "INACTIVE"} color="#9ca3af" bg="rgba(107,114,128,0.2)" />
         <Text style={styles.statusTitle}>No active subscription</Text>
         <Text style={styles.statusSub}>Subscribe to continue using KKamera</Text>
       </View>
     );
   };
 
-  const showSubscribeButton = !isRcSubscribed && (status === "none" || status === "trial" || status === "cancelled" || status === "expired");
+  const hasSubscription = isRcSubscribed || status === "active" || status === "past_due" || cancelledButActive;
+  const showSubscribeButton = !hasSubscription;
+
+  const disclosure = priceString
+    ? `KKamera subscription: ${priceString} per ${period.unit}, billed ${period.adverb}. Subscription length: ${period.length}. `
+    : "";
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -149,6 +222,13 @@ export default function SubscriptionScreen() {
     >
       {renderStatusCard()}
 
+      {hasSubscription && (
+        <TouchableOpacity style={styles.manageBtn} onPress={openManage}>
+          <Ionicons name="settings-outline" size={18} color={PRIMARY} />
+          <Text style={styles.manageBtnText}>Manage Subscription</Text>
+        </TouchableOpacity>
+      )}
+
       <Text style={styles.sectionTitle}>What's included</Text>
       {FEATURES.map((f, i) => (
         <View key={i} style={styles.featureRow}>
@@ -157,28 +237,44 @@ export default function SubscriptionScreen() {
         </View>
       ))}
 
-      <View style={styles.priceCard}>
-        <Text style={styles.priceAmount}>{priceString}</Text>
-        <Text style={styles.pricePer}>per year</Text>
-        <Text style={styles.priceSub}>Less than 9¢ per day · Cancel anytime</Text>
-      </View>
-
       {showSubscribeButton && (
-        <TouchableOpacity
-          style={[styles.subscribeBtn, isPurchasing && styles.btnDisabled]}
-          onPress={handleNativePurchase}
-          disabled={isPurchasing}
-        >
-          {isPurchasing
-            ? <ActivityIndicator color="white" />
-            : <>
-                <Ionicons name="bag-outline" size={18} color="white" />
-                <Text style={styles.subscribeBtnText}>
-                  {`Subscribe — ${priceString}/year`}
-                </Text>
-              </>
-          }
-        </TouchableOpacity>
+        rcSub.isReady && rcSub.isLoading ? (
+          <View style={styles.unavailableCard}>
+            <ActivityIndicator color={PRIMARY} />
+          </View>
+        ) : !purchasesAvailable ? (
+          <View style={styles.unavailableCard}>
+            <Ionicons name="alert-circle-outline" size={22} color="#9ca3af" />
+            <Text style={styles.unavailableTitle}>Purchases unavailable on this build</Text>
+            <Text style={styles.unavailableText}>
+              In-app purchases can't be made here. Install KKamera from the {STORE_NAME} to subscribe, or use Restore Purchases if you've already subscribed.
+            </Text>
+          </View>
+        ) : (
+          <>
+            <View style={styles.priceCard}>
+              <Text style={styles.priceAmount}>{priceString}</Text>
+              <Text style={styles.pricePer}>per {period.unit}</Text>
+              <Text style={styles.priceSub}>Auto-renews {period.adverb} · Cancel anytime</Text>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.subscribeBtn, isPurchasing && styles.btnDisabled]}
+              onPress={handleNativePurchase}
+              disabled={isPurchasing}
+            >
+              {isPurchasing
+                ? <ActivityIndicator color="white" />
+                : <>
+                    <Ionicons name="bag-outline" size={18} color="white" />
+                    <Text style={styles.subscribeBtnText}>
+                      {`Subscribe — ${priceString}/${period.unit}`}
+                    </Text>
+                  </>
+              }
+            </TouchableOpacity>
+          </>
+        )
       )}
 
       <TouchableOpacity
@@ -193,8 +289,24 @@ export default function SubscriptionScreen() {
       </TouchableOpacity>
 
       <Text style={styles.footnote}>
-        Subscriptions are billed annually and auto-renew. Manage in your device's App Store settings.
+        {disclosure}
+        Payment is charged to your {STORE_NAME} account at confirmation of purchase. Subscription renews automatically unless cancelled at least 24 hours before the end of the current period. Manage or cancel in your {STORE_NAME} account settings.
       </Text>
+
+      <View style={styles.legalRow}>
+        <Text style={styles.legalLink} onPress={() => router.push("/settings/terms")}>Terms of Use</Text>
+        <Text style={styles.legalSep}>·</Text>
+        <Text style={styles.legalLink} onPress={() => router.push("/settings/privacy")}>Privacy Policy</Text>
+      </View>
+
+      <TouchableOpacity style={styles.referRow} onPress={() => router.push("/settings/affiliate")}>
+        <Ionicons name="people-outline" size={18} color={PRIMARY} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.referTitle}>Refer & Earn</Text>
+          <Text style={styles.referSub}>Earn a free year for every 5 friends who subscribe</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color="#555" />
+      </TouchableOpacity>
 
       {/* Native purchase confirmation modal */}
       <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
@@ -202,11 +314,11 @@ export default function SubscriptionScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Confirm Purchase</Text>
             <Text style={styles.modalBody}>
-              Subscribe to KKamera for {priceString}/year?{"\n\n"}
-              This will be charged to your {Platform.OS === "ios" ? "Apple ID" : "Google Play"} account and auto-renews annually.
+              Subscribe to KKamera for {priceString} per {period.unit}?{"\n\n"}
+              Payment is charged to your {STORE_NAME} account and renews automatically {period.adverb} unless cancelled at least 24 hours before the end of the current period.
             </Text>
             <TouchableOpacity style={styles.modalConfirm} onPress={confirmPurchase}>
-              <Text style={styles.modalConfirmText}>Subscribe — {priceString}/yr</Text>
+              <Text style={styles.modalConfirmText}>Subscribe — {priceString}/{period.unit}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.modalCancel} onPress={() => setConfirmVisible(false)}>
               <Text style={styles.modalCancelText}>Cancel</Text>
@@ -225,7 +337,18 @@ const styles = StyleSheet.create({
   statusBadge: { backgroundColor: "rgba(177,152,112,0.2)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 20, marginBottom: 10 },
   statusBadgeText: { fontSize: 11, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 1.5 },
   statusTitle: { fontSize: 26, fontFamily: "Inter_700Bold", color: "white", marginBottom: 4 },
-  statusSub: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular" },
+  statusSub: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular", lineHeight: 20 },
+  manageBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: "rgba(177,152,112,0.35)", marginTop: -12, marginBottom: 24 },
+  manageBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: PRIMARY },
+  unavailableCard: { backgroundColor: CARD, borderRadius: 16, padding: 20, alignItems: "center", marginVertical: 24, gap: 8, borderWidth: 1, borderColor: "rgba(107,114,128,0.3)" },
+  unavailableTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", textAlign: "center" },
+  unavailableText: { fontSize: 13, color: "#888", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19 },
+  legalRow: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 12 },
+  legalLink: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium", textDecorationLine: "underline", paddingVertical: 6 },
+  legalSep: { fontSize: 13, color: "#555" },
+  referRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: CARD, borderRadius: 14, padding: 14, marginTop: 20, borderWidth: 1, borderColor: "rgba(177,152,112,0.15)" },
+  referTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
+  referSub: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", marginTop: 2 },
   sectionTitle: { fontSize: 11, color: "#666", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 14 },
   featureRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
   featureText: { fontSize: 14, color: "#ccc", fontFamily: "Inter_400Regular" },

@@ -3,14 +3,24 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Platform }
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import Constants from "expo-constants";
 import { useAuth } from "@/contexts/AuthContext";
-import { useGetSubscription, useGetMe } from "@workspace/api-client-react";
+import { useGetSubscription, useGetMe, getGetSubscriptionQueryKey, getGetMeQueryKey } from "@workspace/api-client-react";
 import { shareInvite } from "@/lib/shareInvite";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
+
+// App version from app.json; native build number when running a native build
+// (expo-application isn't installed, so read it from the embedded config).
+const APP_VERSION = Constants.expoConfig?.version ?? "—";
+const BUILD_NUMBER =
+  Platform.OS === "ios" ? Constants.expoConfig?.ios?.buildNumber :
+  Platform.OS === "android" ? Constants.expoConfig?.android?.versionCode?.toString() :
+  undefined;
+const VERSION_LABEL = `KKamera v${APP_VERSION}${BUILD_NUMBER ? ` (${BUILD_NUMBER})` : ""}`;
 
 function MenuRow({
   icon, iconSet = "ion", iconColor, label, hint, badge, value, onPress,
@@ -47,8 +57,8 @@ function MenuRow({
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
-  const { data: sub } = useGetSubscription({ query: { enabled: !!user, queryKey: [] as any } });
-  const { data: me } = useGetMe({ query: { enabled: !!user, queryKey: [] as any } });
+  const { data: sub } = useGetSubscription({ query: { enabled: !!user, queryKey: getGetSubscriptionQueryKey() } });
+  const { data: me } = useGetMe({ query: { enabled: !!user, queryKey: getGetMeQueryKey() } });
 
   const subStatus = sub?.status ?? "none";
   const subLabel =
@@ -173,12 +183,18 @@ export default function SettingsScreen() {
           <MenuRow
             icon="card-outline"
             label="Subscription"
-            hint="Plan, billing & referrals"
+            hint="Plan & billing"
             value={subLabel}
             badge={subBadge}
             onPress={() => router.push("/settings/subscription")}
           />
           <View style={styles.divider} />
+          <MenuRow
+            icon="people-outline"
+            label="Refer & Earn"
+            hint="Earn free years by inviting friends"
+            onPress={() => router.push("/settings/affiliate")}
+          />
           <View style={styles.divider} />
           <MenuRow
             icon="shield-checkmark-outline"
@@ -208,7 +224,7 @@ export default function SettingsScreen() {
 
         {/* Version */}
         <View style={styles.versionWrap}>
-          <Text style={styles.versionText}>KKamera v1.0.0</Text>
+          <Text style={styles.versionText}>{VERSION_LABEL}</Text>
           <Text style={styles.versionSub}>Cloud Based Photography</Text>
         </View>
 

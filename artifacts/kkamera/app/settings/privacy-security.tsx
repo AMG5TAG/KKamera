@@ -8,7 +8,10 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { hashPin } from "@/lib/appLock";
+import { useUpload } from "@/contexts/UploadContext";
+import {
+  authenticateWithDevice, clearPin, hasPin, isBiometricEnrolled, isDeviceAuthAvailable, savePin, RELOCK_GRACE_MS,
+} from "@/lib/appLock";
 import { API_BASE_URL } from "@/lib/config";
 
 const PRIMARY = "#b19870";
@@ -17,69 +20,107 @@ const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 const DANGER = "#ef4444";
 
-// Lazy-load expo-local-authentication so the module (and its native-only
-// dependency `invariant`) is never bundled/evaluated on web.
-async function getLocalAuth() {
-  const LocalAuthentication = await import("expo-local-authentication");
-  return LocalAuthentication;
-}
-
 export default function PrivacySecurityScreen() {
   const insets = useSafeAreaInsets();
   const { settings, updateSetting, resetSettings } = useSettings();
   const { logout, token } = useAuth();
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const { discardQueue } = useUpload();
+  const [deviceAuthAvailable, setDeviceAuthAvailable] = useState(false);
+  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
+  const [pinStored, setPinStored] = useState(false);
   const [pinEntry, setPinEntry] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [pinStep, setPinStep] = useState<"idle" | "enter" | "confirm">("idle");
+  const [savingPin, setSavingPin] = useState(false);
 
   useEffect(() => {
-    if (Platform.OS === "web") return;
     void (async () => {
-      try {
-        const LocalAuthentication = await getLocalAuth();
-        const has = await LocalAuthentication.hasHardwareAsync();
-        if (has) {
-          const enrolled = await LocalAuthentication.isEnrolledAsync();
-          setBiometricAvailable(enrolled);
-        }
-      } catch {
-        // ignore
-      }
+      const [device, bio, stored] = await Promise.all([
+        isDeviceAuthAvailable(),
+        isBiometricEnrolled(),
+        hasPin(settings.appPin),
+      ]);
+      setDeviceAuthAvailable(device);
+      setBiometricEnrolled(bio);
+      setPinStored(stored);
     })();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cancelPinSetup = () => {
+    setPinEntry(""); setConfirmPin(""); setPinStep("idle");
+  };
+
+  // Choosing biometric only takes effect after a successful prompt, so the lock
+  // can never be switched to a method this device can't satisfy.
+  const enableDeviceLock = async () => {
+    const result = await authenticateWithDevice("Confirm to use Face ID / Touch ID for KKamera");
+    if (result === "success") {
+      updateSetting("appLockType", "biometric");
+      updateSetting("appLockEnabled", true);
+      cancelPinSetup();
+    } else if (result === "unavailable") {
+      setDeviceAuthAvailable(false);
+      Alert.alert("Not available", "Biometric unlock isn't set up on this device. Set a PIN instead.");
+    }
+  };
 
   const handleToggleLock = (v: boolean) => {
     if (!v) {
       updateSetting("appLockEnabled", false);
+      cancelPinSetup();
       return;
     }
-    if (settings.appLockType === "biometric" && biometricAvailable) {
+    if (settings.appLockType === "pin" && pinStored) {
       updateSetting("appLockEnabled", true);
+    } else if (deviceAuthAvailable) {
+      void enableDeviceLock();
     } else {
+      // Nothing is enabled until a PIN has been entered, confirmed and saved.
       setPinStep("enter");
     }
   };
 
+  const handleSelectPin = () => {
+    if (pinStored && settings.appLockType !== "pin") {
+      updateSetting("appLockType", "pin");
+      return;
+    }
+    // No PIN yet (or re-tapping to change it): collect one first. The lock type
+    // only switches to "pin" once the new PIN is confirmed and saved.
+    setPinEntry(""); setConfirmPin(""); setPinStep("enter");
+  };
+
   const handlePinSubmit = async () => {
-    if (pinEntry.length !== 4) {
+    const value = pinStep === "enter" ? pinEntry : confirmPin;
+    if (!/^\d{4}$/.test(value)) {
       Alert.alert("Invalid PIN", "PIN must be exactly 4 digits.");
       return;
     }
     if (pinStep === "enter") {
       setPinStep("confirm");
-    } else {
-      if (pinEntry !== confirmPin) {
-        Alert.alert("PINs don't match", "Try again.");
-        setPinEntry(""); setConfirmPin(""); setPinStep("enter");
-        return;
-      }
-      // Store only a salted hash, never the cleartext PIN.
-      updateSetting("appPin", await hashPin(pinEntry));
-      updateSetting("appLockEnabled", true);
-      updateSetting("appLockType", "pin");
-      setPinEntry(""); setConfirmPin(""); setPinStep("idle");
+      return;
     }
+    if (pinEntry !== confirmPin) {
+      Alert.alert("PINs don't match", "Try again.");
+      setPinEntry(""); setConfirmPin(""); setPinStep("enter");
+      return;
+    }
+    setSavingPin(true);
+    try {
+      // Stored as a salted hash in the OS keystore, never in cleartext.
+      await savePin(pinEntry);
+    } catch {
+      Alert.alert("Couldn't save PIN", "Your PIN could not be stored securely on this device. App lock was not changed.");
+      return;
+    } finally {
+      setSavingPin(false);
+    }
+    // Drop any legacy copy kept in the (AsyncStorage-backed) settings.
+    if (settings.appPin) updateSetting("appPin", "");
+    setPinStored(true);
+    updateSetting("appLockType", "pin");
+    updateSetting("appLockEnabled", true);
+    cancelPinSetup();
   };
 
   const handlePanic = () => {
@@ -107,6 +148,9 @@ export default function PrivacySecurityScreen() {
             // Reset all local settings (clears the app-lock PIN too), as the
             // confirmation dialog promises, then sign out.
             await resetSettings();
+            await clearPin();
+            setPinStored(false);
+            await discardQueue();
             await logout();
           },
         },
@@ -136,7 +180,7 @@ export default function PrivacySecurityScreen() {
             </View>
             <View style={styles.rowBody}>
               <Text style={styles.rowLabel}>Require unlock on open</Text>
-              <Text style={styles.rowHint}>Biometric or PIN</Text>
+              <Text style={styles.rowHint}>Biometric or PIN · re-locks after {RELOCK_GRACE_MS / 1000}s in the background</Text>
             </View>
             <Switch
               value={settings.appLockEnabled}
@@ -150,17 +194,20 @@ export default function PrivacySecurityScreen() {
           {settings.appLockEnabled && (
             <>
               <View style={styles.divider} />
-              {biometricAvailable && Platform.OS !== "web" && (
+              {deviceAuthAvailable && Platform.OS !== "web" && (
                 <>
                   <TouchableOpacity
                     style={styles.row}
-                    onPress={() => updateSetting("appLockType", "biometric")}
+                    onPress={() => { if (settings.appLockType !== "biometric") void enableDeviceLock(); }}
                   >
                     <View style={styles.iconWrap}>
                       <Ionicons name="finger-print-outline" size={19} color={PRIMARY} />
                     </View>
                     <View style={styles.rowBody}>
-                      <Text style={styles.rowLabel}>Biometric (Face/Touch ID)</Text>
+                      <Text style={styles.rowLabel}>
+                        {biometricEnrolled ? "Biometric (Face/Touch ID)" : "Device passcode"}
+                      </Text>
+                      {pinStored && <Text style={styles.rowHint}>Your PIN also works as a fallback</Text>}
                     </View>
                     {settings.appLockType === "biometric" && (
                       <Ionicons name="checkmark-circle" size={20} color={PRIMARY} />
@@ -169,18 +216,17 @@ export default function PrivacySecurityScreen() {
                   <View style={styles.divider} />
                 </>
               )}
-              <TouchableOpacity
-                style={styles.row}
-                onPress={() => { updateSetting("appLockType", "pin"); setPinStep("enter"); }}
-              >
+              <TouchableOpacity style={styles.row} onPress={handleSelectPin}>
                 <View style={styles.iconWrap}>
                   <Ionicons name="keypad-outline" size={19} color={PRIMARY} />
                 </View>
                 <View style={styles.rowBody}>
                   <Text style={styles.rowLabel}>PIN Code</Text>
-                  <Text style={styles.rowHint}>{settings.appPin ? "PIN set" : "Not set"}</Text>
+                  <Text style={styles.rowHint}>
+                    {pinStored ? (settings.appLockType === "pin" ? "PIN set · tap to change" : "PIN set") : "Not set · tap to create"}
+                  </Text>
                 </View>
-                {settings.appLockType === "pin" && (
+                {settings.appLockType === "pin" && pinStored && (
                   <Ionicons name="checkmark-circle" size={20} color={PRIMARY} />
                 )}
               </TouchableOpacity>
@@ -190,23 +236,32 @@ export default function PrivacySecurityScreen() {
 
         {/* PIN setup */}
         {pinStep !== "idle" && (
-          <View style={styles.card}>
+          <View style={[styles.card, { marginTop: 12 }]}>
             <View style={{ padding: 16 }}>
               <Text style={styles.pinLabel}>
                 {pinStep === "enter" ? "Enter a 4-digit PIN" : "Confirm your PIN"}
               </Text>
               <TextInput
+                key={pinStep}
                 style={styles.pinInput}
                 keyboardType="number-pad"
                 maxLength={4}
                 secureTextEntry
+                autoFocus
                 value={pinStep === "enter" ? pinEntry : confirmPin}
-                onChangeText={pinStep === "enter" ? setPinEntry : setConfirmPin}
+                onChangeText={(t) => (pinStep === "enter" ? setPinEntry : setConfirmPin)(t.replace(/\D/g, ""))}
                 placeholder="••••"
                 placeholderTextColor="#444"
               />
-              <TouchableOpacity style={styles.pinBtn} onPress={handlePinSubmit}>
+              <TouchableOpacity
+                style={[styles.pinBtn, savingPin && { opacity: 0.6 }]}
+                onPress={() => void handlePinSubmit()}
+                disabled={savingPin}
+              >
                 <Text style={styles.pinBtnText}>{pinStep === "enter" ? "Next" : "Set PIN"}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.pinCancelBtn} onPress={cancelPinSetup} disabled={savingPin}>
+                <Text style={styles.pinCancelText}>Cancel</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -346,6 +401,8 @@ const styles = StyleSheet.create({
   },
   pinBtn: { backgroundColor: PRIMARY, borderRadius: 12, paddingVertical: 13, alignItems: "center" },
   pinBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
+  pinCancelBtn: { alignItems: "center", paddingVertical: 12, marginTop: 4 },
+  pinCancelText: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular" },
   inlineInput: {
     flex: 1, color: "white", fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 4,
   },

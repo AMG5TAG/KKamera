@@ -260,6 +260,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/Subscription"
 
+  /subscriptions/sync:
+    post:
+      operationId: syncSubscription
+      tags: [subscriptions]
+      summary: Reconcile the caller's subscription from RevenueCat
+      description: >-
+        Re-reads the caller's `pro` entitlement from the RevenueCat REST API and
+        upserts the local mirror (upgrade-only). Called by the app after a
+        purchase, a restore, and once after RevenueCat logIn. Rate-limited per user.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Subscription after reconciliation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Subscription"
+        "429":
+          description: Too many sync requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "503":
+          description: RevenueCat sync not configured or unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
   /affiliates/me:
     get:
       operationId: getAffiliateStats

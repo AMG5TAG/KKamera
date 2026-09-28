@@ -47,3 +47,29 @@ test("treats anything that isn't a valid IP as unsafe", () => {
     assert.equal(isPrivateIp(v), true, v);
   }
 });
+
+test("blocks the additional reserved IPv4 ranges", () => {
+  for (const ip of ["198.18.0.1", "198.19.255.255", "192.0.0.1", "192.0.0.170", "100.127.255.255"]) {
+    assert.equal(isPrivateIp(ip), true, ip);
+  }
+  for (const ip of ["198.17.255.255", "198.20.0.1", "192.0.1.1", "192.1.0.1"]) {
+    assert.equal(isPrivateIp(ip), false, ip);
+  }
+});
+
+test("blocks IPv6 multicast, Teredo and 6to4-wrapped private IPv4", () => {
+  for (const ip of [
+    "ff02::1", "ff05::2",       // multicast
+    "2001::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo 2001:0::/32
+    "2002:7f00:1::1",           // 6to4 → 127.0.0.1
+    "2002:a9fe:a9fe::1",        // 6to4 → 169.254.169.254
+    "2002:c0a8:0101::1",        // 6to4 → 192.168.1.1
+    "100::1",                   // discard-only
+  ]) {
+    assert.equal(isPrivateIp(ip), true, ip);
+  }
+  // 6to4 wrapping a public v4 and ordinary 2001:x (non-Teredo) stay allowed.
+  for (const ip of ["2002:0808:0808::1", "2001:db8:1::1", "2001:4860:4860::8844"]) {
+    assert.equal(isPrivateIp(ip), false, ip);
+  }
+});

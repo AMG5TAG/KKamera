@@ -1,6 +1,6 @@
 import fs from "fs";
 import os from "os";
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
@@ -12,6 +12,7 @@ import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { normalizeConnectionIds } from "../lib/connectionIds.js";
+import { MAX_UPLOAD_FILENAME_LENGTH, isAllowedMimeType, parseConnectionIdsField } from "../lib/cloudUploadPolicy.js";
 
 const router = Router();
 
@@ -31,16 +32,30 @@ const upload = multer({
 
 // Cap concurrent in-flight cloud uploads so peak memory (one Buffer per active
 // upload) stays bounded regardless of how many clients upload at once. Excess
-// requests wait for a slot rather than being rejected, so no capture is lost.
+// requests wait for a slot, but the wait queue itself is bounded too: once it is
+// full new uploads get 503 + Retry-After (the app's offline queue retries them),
+// instead of piling up temp files and open sockets without limit.
 const MAX_CONCURRENT_UPLOADS = 3;
+const MAX_UPLOAD_WAITERS = 20;
+// Per-user in-flight cap, so one account (or a stolen token) can't occupy every
+// global slot and starve everyone else.
+const MAX_UPLOADS_PER_USER = 2;
+const RETRY_AFTER_SECONDS = 30;
 let activeUploads = 0;
 const uploadWaiters: Array<() => void> = [];
+const userInFlight = new Map<number, number>();
 
-function acquireUploadSlot(): Promise<void> {
+function uploadQueueFull(): boolean {
+  return activeUploads >= MAX_CONCURRENT_UPLOADS && uploadWaiters.length >= MAX_UPLOAD_WAITERS;
+}
+
+/** Resolves when a slot is held; null when the wait queue is full (caller must not release). */
+function acquireUploadSlot(): Promise<void> | null {
   if (activeUploads < MAX_CONCURRENT_UPLOADS) {
     activeUploads += 1;
     return Promise.resolve();
   }
+  if (uploadWaiters.length >= MAX_UPLOAD_WAITERS) return null;
   // Inherit the releaser's slot (activeUploads stays at the cap) when resumed.
   return new Promise<void>(resolve => uploadWaiters.push(resolve));
 }
@@ -50,6 +65,53 @@ function releaseUploadSlot(): void {
   if (next) next(); // hand our slot straight to the next waiter
   else activeUploads -= 1;
 }
+
+function sendBusy(res: Response, status: 429 | 503, message: string): void {
+  res.setHeader("Retry-After", String(RETRY_AFTER_SECONDS));
+  res.status(status).json({ message });
+}
+
+/**
+ * Admission control for /uploads/execute, run *before* multer so a rejected
+ * request never writes its body to disk. Holds one of the user's in-flight
+ * slots until the handler finishes (res.locals.releaseUserUploadSlot), or until
+ * the response closes if the handler never ran (e.g. multer rejected the body).
+ */
+function uploadAdmission(req: Request, res: Response, next: NextFunction): void {
+  if (uploadQueueFull()) {
+    sendBusy(res, 503, "Upload server is busy. Please try again shortly.");
+    return;
+  }
+  const userId = req.userId!;
+  const inFlight = userInFlight.get(userId) ?? 0;
+  if (inFlight >= MAX_UPLOADS_PER_USER) {
+    sendBusy(res, 429, "Too many uploads in progress. Please wait for one to finish.");
+    return;
+  }
+  userInFlight.set(userId, inFlight + 1);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    const n = (userInFlight.get(userId) ?? 1) - 1;
+    if (n <= 0) userInFlight.delete(userId);
+    else userInFlight.set(userId, n);
+  };
+  res.locals["releaseUserUploadSlot"] = release;
+  res.once("close", () => { if (!res.locals["uploadHandlerStarted"]) release(); });
+  next();
+}
+
+// Per-user request rate on top of the concurrency cap (keyed by the
+// authenticated user, not IP — many users can share a carrier NAT).
+const executeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many uploads. Please try again shortly." },
+});
 
 const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -127,28 +189,47 @@ router.post(
   "/uploads/execute",
   requireAuth,
   requireSubscription,
+  executeLimiter,
+  uploadAdmission,
   upload.single("file"),
   async (req, res) => {
+    res.locals["uploadHandlerStarted"] = true;
+    const releaseUserSlot = res.locals["releaseUserUploadSlot"] as (() => void) | undefined;
     const tmpPath = req.file?.path;
     try {
       const file = req.file;
       if (!file) { res.status(400).json({ message: "No file provided" }); return; }
 
-      const fileName: string = (req.body.fileName as string) || file.originalname || `upload_${Date.now()}`;
-      const mimeType: string = (req.body.mimeType as string) || file.mimetype || "application/octet-stream";
-      const fileType: string = mimeType.startsWith("video/") ? "video" : "image";
-
-      let connectionIds: number[] | null = null;
-      if (req.body.connectionIds) {
-        try {
-          const parsed = JSON.parse(req.body.connectionIds);
-          if (Array.isArray(parsed) && parsed.every(n => typeof n === "number")) {
-            connectionIds = parsed;
-          }
-        } catch { /* ignore malformed input */ }
+      const rawName: unknown = req.body.fileName;
+      if (rawName !== undefined && typeof rawName !== "string") {
+        res.status(400).json({ message: "Invalid fileName" }); return;
+      }
+      const fileName: string = rawName || file.originalname || `upload_${Date.now()}`;
+      if (fileName.length > MAX_UPLOAD_FILENAME_LENGTH) {
+        res.status(400).json({ message: `fileName must be at most ${MAX_UPLOAD_FILENAME_LENGTH} characters` }); return;
       }
 
-      const connections = connectionIds?.length
+      // An explicit mimeType must be a plain image/* or video/* type — it is
+      // written into provider request bodies/headers (e.g. the Drive multipart
+      // part), so CR/LF or parameters are refused outright.
+      const rawMime: unknown = req.body.mimeType;
+      if (rawMime !== undefined && rawMime !== "" && !isAllowedMimeType(rawMime)) {
+        res.status(400).json({ message: "Unsupported mimeType (expected image/* or video/*)" }); return;
+      }
+      const mimeType: string = isAllowedMimeType(rawMime) ? rawMime
+        : isAllowedMimeType(file.mimetype) ? file.mimetype
+        : "application/octet-stream";
+      const fileType: string = mimeType.startsWith("video/") ? "video" : "image";
+
+      // Absent → all active connections. Present but malformed/empty → 400,
+      // never a silent fallback to uploading everywhere.
+      const idsField = parseConnectionIdsField(req.body.connectionIds);
+      if (!idsField.ok) {
+        res.status(400).json({ message: "connectionIds must be a non-empty JSON array of connection IDs" }); return;
+      }
+      const connectionIds = idsField.ids;
+
+      const connections = connectionIds
         ? await db.select().from(cloudConnectionsTable).where(
             and(
               eq(cloudConnectionsTable.userId, req.userId!),
@@ -180,16 +261,23 @@ router.post(
         return;
       }
 
-      const [uploadRecord] = await db.insert(uploadsTable).values({
-        userId: req.userId!, fileName, fileType, status: "uploading",
-        connectionIds: targets.map(c => c.id).join(","),
-      }).returning();
-
       // Read the file into memory (for uploadToCloud) only while holding a slot,
       // then release it before the DB write so we don't pin memory needlessly.
-      await acquireUploadSlot();
+      // Each provider upload carries its own deadline (see uploadToCloud), so a
+      // slot is always released even if a remote stalls.
+      const slot = acquireUploadSlot();
+      if (!slot) {
+        sendBusy(res, 503, "Upload server is busy. Please try again shortly.");
+        return;
+      }
+      await slot;
+      let uploadRecord: typeof uploadsTable.$inferSelect | undefined;
       let results;
       try {
+        [uploadRecord] = await db.insert(uploadsTable).values({
+          userId: req.userId!, fileName, fileType, status: "uploading",
+          connectionIds: targets.map(c => c.id).join(","),
+        }).returning();
         const buf = await fs.promises.readFile(file.path);
         results = await Promise.all(
           targets.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
@@ -201,6 +289,7 @@ router.post(
       const allOk = results.every(r => r.success);
       const anyOk = results.some(r => r.success);
       const finalStatus = allOk ? "done" : anyOk ? "partial" : "failed";
+      // uploadToCloud already maps errors to generic per-provider text.
       const errorMsg = results.filter(r => !r.success).map(r => r.error).join("; ");
 
       if (uploadRecord) {
@@ -214,10 +303,12 @@ router.post(
     } catch (err) {
       req.log.error({ err }, "Execute upload error");
       // Don't leak internal error details to the client; they're in the logs.
-      res.status(500).json({ message: "Upload failed" });
+      if (!res.headersSent) res.status(500).json({ message: "Upload failed" });
     } finally {
-      // Always remove the temp file, on every path (early return, success, error).
+      // Always remove the temp file and free the user's in-flight slot, on every
+      // path (validation 400, busy 503, success, error).
       if (tmpPath) fs.promises.unlink(tmpPath).catch(() => {});
+      releaseUserSlot?.();
     }
   }
 );

@@ -12,8 +12,8 @@ import { captureRef } from "react-native-view-shot";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import { useSettings } from "@/contexts/SettingsContext";
-import { useGetUploadTarget } from "@workspace/api-client-react";
-import { resolveUploadTarget } from "@/lib/uploadTarget";
+import { useUploadTargetResolver } from "@/lib/useUploadTargetResolver";
+import { saveToCameraRoll, deleteTempFile } from "@/lib/captureStorage";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -33,7 +33,7 @@ export default function MarkupScreen() {
   const { token } = useAuth();
   const { executeUpload } = useUpload();
   const { settings } = useSettings();
-  const { data: uploadTarget, refetch: refetchUploadTarget } = useGetUploadTarget();
+  const { getUploadTarget } = useUploadTargetResolver();
 
   const [paths, setPaths] = useState<DrawnPath[]>([]);
   const [currentPoints, setCurrentPoints] = useState<string>("");
@@ -92,27 +92,44 @@ export default function MarkupScreen() {
     setIsUploading(true);
     try {
       // Honour the user's upload-destination default (same as the camera), so a
-      // marked-up photo doesn't fan out to accounts they excluded.
-      let t = uploadTarget;
-      if (!t) { try { t = (await refetchUploadTarget()).data; } catch { /* offline */ } }
-      const target = resolveUploadTarget(t);
-      if (target.skip) { router.back(); return; }
-      const ids = target.ids;
+      // marked-up photo doesn't fan out to accounts they excluded. Offline, the
+      // last known target is used — never a silent widening to "all".
+      const target = await getUploadTarget();
+      const onDeleteLocal = settings.deleteLocalAfterUpload ? undefined : async () => {};
 
-      if (mode === "original" || mode === "both") {
-        await executeUpload(uri, fileName, "image", token, ids);
-      }
+      let markedUri: string | null = null;
       if (mode === "marked" || mode === "both") {
-        const markedUri = await captureMarked();
-        if (markedUri) {
-          const markedName = fileName.replace(/(\.[^.]+)$/, "_marked$1");
-          await executeUpload(markedUri, markedName, "image", token, ids);
-        } else {
-          Alert.alert("Markup Export Failed", "Could not capture the marked-up image. Uploading original instead.");
-          if (mode === "marked") {
-            await executeUpload(uri, fileName, "image", token, ids);
-          }
+        markedUri = await captureMarked();
+        if (!markedUri) {
+          Alert.alert("Markup Export Failed", "Could not capture the marked-up image. Keeping the original instead.");
+        } else if (markedUri.startsWith("/")) {
+          markedUri = `file://${markedUri}`;
         }
+      }
+      const markedName = fileName.replace(/(\.[^.]+)$/, "_marked$1");
+      // The camera already put the original in the photo library (when that's
+      // on); the annotated copy is new, so it goes there too.
+      const keepMarked = markedUri != null && (settings.saveToCameraRoll || target.skip);
+      const markedSaved = keepMarked ? (await saveToCameraRoll(markedUri!)) === "saved" : false;
+
+      if (target.skip) {
+        // "Don't upload": the photo library is the only destination.
+        if (markedUri && markedSaved) deleteTempFile(markedUri);
+        router.back();
+        return;
+      }
+
+      // The upload queue persists each capture and returns quickly; it also
+      // owns the Wi-Fi-only rule, so nothing here waits on the network.
+      const sendOriginal = mode === "original" || mode === "both" || (mode === "marked" && !markedUri);
+      if (sendOriginal) {
+        void executeUpload(uri, fileName, "image", token, target.ids, onDeleteLocal);
+      } else if (settings.deleteLocalAfterUpload) {
+        // Marked-only: the unannotated temp file isn't going anywhere.
+        deleteTempFile(uri);
+      }
+      if (markedUri) {
+        void executeUpload(markedUri, markedName, "image", token, target.ids, onDeleteLocal);
       }
       router.back();
     } catch (err: any) {
@@ -120,7 +137,7 @@ export default function MarkupScreen() {
     } finally {
       setIsUploading(false);
     }
-  }, [uri, fileName, token, executeUpload, uploadTarget, refetchUploadTarget]);
+  }, [uri, fileName, token, executeUpload, getUploadTarget, settings.deleteLocalAfterUpload, settings.saveToCameraRoll]);
 
   const defaultMode = settings.markupUploadMode;
 

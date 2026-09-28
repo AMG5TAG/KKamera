@@ -157,6 +157,26 @@ export const StartTrialResponse = zod.object({
   createdAt: zod.string(),
 });
 
+/**
+ * Re-reads the caller's `pro` entitlement from the RevenueCat REST API and upserts the local mirror (upgrade-only). Called by the app after a purchase, a restore, and once after RevenueCat logIn. Rate-limited per user.
+ * @summary Reconcile the caller's subscription from RevenueCat
+ */
+export const SyncSubscriptionResponse = zod.object({
+  id: zod.number(),
+  userId: zod.number(),
+  status: zod.enum([
+    "trial",
+    "active",
+    "cancelled",
+    "expired",
+    "past_due",
+    "none",
+  ]),
+  trialEnd: zod.string().nullish(),
+  currentPeriodEnd: zod.string().nullish(),
+  createdAt: zod.string(),
+});
+
 export const GetAffiliateStatsResponse = zod.object({
   referralCode: zod.string(),
   totalReferrals: zod.number(),
