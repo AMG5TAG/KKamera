@@ -8,6 +8,7 @@ import { usersTable, passwordResetTokensTable } from "@workspace/db";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { newPasswordSchema, normalizedEmailSchema } from "../lib/accountRules.js";
 
 const router = Router();
 
@@ -35,12 +36,13 @@ const GENERIC_FORGOT_RESPONSE = "If an account with that email exists, a reset l
 const forgotSchema = z.object({
   // Match the normalisation applied at register/login so a reset lookup finds
   // the account regardless of the case/whitespace the user types.
-  email: z.string().email("Invalid email address").transform(e => e.trim().toLowerCase()),
+  email: normalizedEmailSchema,
 });
 
 const resetSchema = z.object({
   token: z.string().min(1, "Token is required"),
-  password: z.string().min(8, "Password must be at least 8 characters").max(72, "Password must be at most 72 characters"),
+  // Shared rule: min 8 chars, max 72 BYTES (bcrypt's truncation limit).
+  password: newPasswordSchema,
 });
 
 function hashToken(token: string): string {
@@ -108,32 +110,37 @@ router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
   const tokenHash = hashToken(token);
 
   try {
-    const [record] = await db
-      .select()
-      .from(passwordResetTokensTable)
-      .where(
-        and(
-          eq(passwordResetTokensTable.tokenHash, tokenHash),
-          isNull(passwordResetTokensTable.usedAt),
-          gt(passwordResetTokensTable.expiresAt, new Date())
-        )
-      )
-      .limit(1);
+    // Hash first so the transaction below stays short (bcrypt is ~250ms).
+    const passwordHash = await bcryptjs.hash(password, 12);
 
-    if (!record) {
+    // Consume the token atomically: a single conditional UPDATE ... RETURNING
+    // means two concurrent requests with the same token can't both succeed, and
+    // the password write commits (or rolls back) together with the consumption.
+    const userId = await db.transaction(async (tx) => {
+      const now = new Date();
+      const [consumed] = await tx
+        .update(passwordResetTokensTable)
+        .set({ usedAt: now })
+        .where(
+          and(
+            eq(passwordResetTokensTable.tokenHash, tokenHash),
+            isNull(passwordResetTokensTable.usedAt),
+            gt(passwordResetTokensTable.expiresAt, now)
+          )
+        )
+        .returning({ userId: passwordResetTokensTable.userId });
+      if (!consumed) return null;
+
+      await tx.update(usersTable)
+        .set({ passwordHash, passwordChangedAt: now })
+        .where(eq(usersTable.id, consumed.userId));
+      return consumed.userId;
+    });
+
+    if (userId === null) {
       res.status(400).json({ message: "Reset link is invalid or has expired. Request a new one." });
       return;
     }
-
-    const passwordHash = await bcryptjs.hash(password, 12);
-
-    await Promise.all([
-      db.update(usersTable).set({ passwordHash, passwordChangedAt: new Date() }).where(eq(usersTable.id, record.userId)),
-      db
-        .update(passwordResetTokensTable)
-        .set({ usedAt: new Date() })
-        .where(eq(passwordResetTokensTable.id, record.id)),
-    ]);
 
     res.json({ message: "Password updated successfully. You can now sign in." });
   } catch (err: any) {

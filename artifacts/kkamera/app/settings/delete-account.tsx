@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity, TextInput, Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -8,6 +8,9 @@ import { router } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_BASE_URL } from "@/lib/config";
 import { useUpload } from "@/contexts/UploadContext";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { useSettings } from "@/contexts/SettingsContext";
+import { clearPin } from "@/lib/appLock";
 import { STORE_NAME, openManageSubscriptions, useSubscription } from "@/lib/revenuecat";
 
 const PRIMARY = "#b19870";
@@ -22,6 +25,7 @@ export default function DeleteAccountScreen() {
   const { token, logout } = useAuth();
   const { customerInfo, isSubscribed } = useSubscription();
   const { discardQueue } = useUpload();
+  const { resetSettings } = useSettings();
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -38,7 +42,11 @@ export default function DeleteAccountScreen() {
       });
       if (!res.ok) throw new Error("Delete failed");
       await discardQueue();
-      await logout();
+      // The account is gone — don't let the next person on this device inherit
+      // its app-lock PIN, witness email or other device settings.
+      await clearPin().catch(() => {});
+      await resetSettings().catch(() => {});
+      await logout(); // the root routing guard then shows the login screen
     } catch {
       Alert.alert("Error", "Could not delete account. Please contact development@koastal.com.au.");
     } finally {
@@ -52,7 +60,11 @@ export default function DeleteAccountScreen() {
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 24 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         <View style={styles.iconWrap}>
           <Ionicons name="warning-outline" size={48} color={DANGER} />
         </View>
@@ -114,7 +126,7 @@ export default function DeleteAccountScreen() {
           <Ionicons name="trash-outline" size={18} color="white" />
           <Text style={styles.deleteBtnText}>{loading ? "Deleting..." : "Delete My Account"}</Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

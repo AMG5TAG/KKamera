@@ -4,11 +4,12 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc, inArray, isNull } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
 import { fetchAccountIdentity } from "../lib/cloudIdentity.js";
+import { DEFAULT_UPLOAD_PATH, hasParentSegment, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
 
 const router = Router();
 
@@ -108,6 +109,23 @@ function verifyState(state: string): OAuthState | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Platform hint from a state token that failed verification (expired, wrong
+ * signature, garbled). Read WITHOUT verifying: it only picks which surface the
+ * error page opens on, and a forged value just sends the forger's own browser
+ * somewhere harmless. Anything unreadable defaults to the native deep link —
+ * the web app loads fine from a kkamera:// miss far less often than a native
+ * user gets stranded inside the in-app auth browser on a web page.
+ */
+function statePlatformHint(state: string | undefined): "web" | "native" {
+  if (!state) return "native";
+  try {
+    const d = jwt.decode(state);
+    if (d && typeof d === "object" && (d as Record<string, unknown>)["pf"] === "web") return "web";
+  } catch { /* fall through */ }
+  return "native";
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -212,12 +230,18 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
     const parsedBody = z.object({
       name: z.string().trim().min(1).max(100).optional(),
       platform: z.enum(["web", "native"]).optional(),
-      uploadPath: z.string().trim().max(500).optional(),
+      uploadPath: z.string().trim().max(500)
+        .refine((p) => !hasParentSegment(p), { message: 'Upload folder must not contain ".."' })
+        .optional(),
     }).safeParse(req.body ?? {});
-    if (!parsedBody.success) { res.status(400).json({ message: "Invalid request" }); return; }
+    if (!parsedBody.success) {
+      const issue = parsedBody.error.errors[0];
+      res.status(400).json({ message: issue?.path[0] === "uploadPath" ? issue.message : "Invalid request" });
+      return;
+    }
     const name = parsedBody.data.name ?? cfg.label;
     const platform = parsedBody.data.platform ?? "native";
-    const uploadPath = parsedBody.data.uploadPath ?? "/KKamera";
+    const uploadPath = normalizeUploadPath(parsedBody.data.uploadPath || DEFAULT_UPLOAD_PATH);
 
     const verifier = generateVerifier();
     const challenge = generateChallenge(verifier);
@@ -252,10 +276,13 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   // the native app got stuck inside the in-app auth browser (the kkamera:// return
   // scheme never matched) instead of handing control back with a reason.
   const entry = state ? verifyState(state) : null;
+  // When the state can't be verified (expired after 10 min, tampered, missing)
+  // fall back to an unverified read of its platform, defaulting to native.
+  const platform = entry?.platform ?? statePlatformHint(state);
 
   const errorRedirect = (msg: string) => {
     const qs = `error=${encodeURIComponent(msg)}&provider=${encodeURIComponent(provider)}`;
-    res.redirect(entry?.platform === "native" ? `kkamera://oauth-error?${qs}` : `/oauth-error?${qs}`);
+    res.redirect(platform === "native" ? `kkamera://oauth-error?${qs}` : `/oauth-error?${qs}`);
   };
 
   if (error) { errorRedirect(error); return; }
@@ -285,37 +312,45 @@ router.get("/oauth/:provider/callback", async (req, res) => {
 
     // Reconnecting the SAME account refreshes that connection in place (keeps its
     // id, so any saved upload-target selection stays valid) rather than stacking
-    // a duplicate. A different account of the same provider falls through to a
-    // fresh insert below.
-    if (identity.accountId) {
-      const [existing] = await db.select().from(cloudConnectionsTable).where(and(
+    // a duplicate. "Same account" is the provider's account id when the identity
+    // lookup worked; when it didn't, an unidentified connection of this provider
+    // with the same label/name. Any further matches are stale duplicates (e.g.
+    // rows the old code only deactivated, still holding live tokens) and are
+    // DELETED. Their grant is not revoked — it is the same account's grant the
+    // fresh tokens belong to. A different account falls through to an insert.
+    const sameAccount = identity.accountId
+      ? eq(cloudConnectionsTable.accountId, identity.accountId)
+      : and(
+          isNull(cloudConnectionsTable.accountId),
+          identity.accountLabel
+            ? eq(cloudConnectionsTable.accountLabel, identity.accountLabel)
+            : eq(cloudConnectionsTable.name, entry.name),
+        );
+    const matches = await db.select().from(cloudConnectionsTable).where(and(
+      eq(cloudConnectionsTable.userId, entry.userId),
+      eq(cloudConnectionsTable.type, provider),
+      sameAccount,
+    )).orderBy(desc(cloudConnectionsTable.active), desc(cloudConnectionsTable.createdAt));
+
+    const [existing, ...superseded] = matches;
+    if (existing) {
+      [conn] = await db.update(cloudConnectionsTable).set({
+        name: entry.name,
+        uploadPath: entry.uploadPath,
+        accessTokenEncrypted: encrypt(tokens.access_token),
+        // Keep the prior refresh token if the provider didn't return a new one.
+        refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : existing.refreshToken,
+        tokenExpiry: expiry,
+        accountId: identity.accountId ?? existing.accountId,
+        accountLabel: identity.accountLabel ?? existing.accountLabel,
+        active: true,
+      }).where(eq(cloudConnectionsTable.id, existing.id)).returning();
+    }
+    if (superseded.length > 0) {
+      await db.delete(cloudConnectionsTable).where(and(
         eq(cloudConnectionsTable.userId, entry.userId),
-        eq(cloudConnectionsTable.type, provider),
-        eq(cloudConnectionsTable.accountId, identity.accountId),
-      )).limit(1);
-      if (existing) {
-        [conn] = await db.update(cloudConnectionsTable).set({
-          name: entry.name,
-          uploadPath: entry.uploadPath,
-          accessTokenEncrypted: encrypt(tokens.access_token),
-          // Keep the prior refresh token if the provider didn't return a new one.
-          refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : existing.refreshToken,
-          tokenExpiry: expiry,
-          accountLabel: identity.accountLabel,
-          active: true,
-        }).where(eq(cloudConnectionsTable.id, existing.id)).returning();
-      }
-    } else {
-      // Identity unknown — fall back to name-based dedup so repeated reconnects
-      // of the same (unidentifiable) account don't pile up duplicate rows.
-      await db.update(cloudConnectionsTable)
-        .set({ active: false })
-        .where(and(
-          eq(cloudConnectionsTable.userId, entry.userId),
-          eq(cloudConnectionsTable.type, provider),
-          eq(cloudConnectionsTable.name, entry.name),
-          eq(cloudConnectionsTable.active, true),
-        ));
+        inArray(cloudConnectionsTable.id, superseded.map((c) => c.id)),
+      ));
     }
 
     if (!conn) {
@@ -364,53 +399,5 @@ router.get("/oauth/status", requireAuth, (_req, res) => {
   }
   res.json(status);
 });
-
-// POST /api/oauth/:provider/refresh — refresh an expired access token
-router.post("/oauth/:provider/refresh/:connectionId", requireAuth, async (req, res) => {
-  try {
-    const provider = String(req.params["provider"] ?? "");
-    const connectionId = parseInt(String(req.params["connectionId"] ?? "0"));
-    const cfg = PROVIDERS[provider];
-    if (!cfg) { res.status(400).json({ message: "Unknown provider" }); return; }
-
-    const [conn] = await db.select().from(cloudConnectionsTable)
-      .where(and(eq(cloudConnectionsTable.id, connectionId), eq(cloudConnectionsTable.userId, req.userId!)))
-      .limit(1);
-    if (!conn?.refreshToken) { res.status(404).json({ message: "No refresh token found" }); return; }
-
-    const decryptedRefresh = decryptToken(conn.refreshToken);
-    const body = new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: decryptedRefresh,
-      client_id: process.env[cfg.clientIdEnv] ?? "",
-      client_secret: process.env[cfg.clientSecretEnv] ?? "",
-    });
-
-    const tokenRes = await fetch(cfg.tokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-      signal: AbortSignal.timeout(20_000),
-    });
-
-    if (!tokenRes.ok) { res.status(502).json({ message: "Token refresh failed" }); return; }
-    const tokens = await tokenRes.json() as any;
-
-    await db.update(cloudConnectionsTable).set({
-      accessTokenEncrypted: encrypt(tokens.access_token),
-      tokenExpiry: tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null,
-      ...(tokens.refresh_token ? { refreshToken: encrypt(tokens.refresh_token) } : {}),
-    }).where(eq(cloudConnectionsTable.id, connectionId));
-
-    res.json({ success: true });
-  } catch (err) {
-    req.log.error({ err }, "OAuth refresh error");
-    res.status(500).json({ message: "Refresh failed" });
-  }
-});
-
-function decryptToken(enc: string): string {
-  return decrypt(enc);
-}
 
 export default router;

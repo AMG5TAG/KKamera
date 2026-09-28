@@ -1,16 +1,17 @@
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  TextInput, Platform, Alert, ActivityIndicator,
+  TextInput, Platform, Alert, ActivityIndicator, BackHandler,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AuthUser } from "@/contexts/AuthContext";
 import { useUpdateMe } from "@workspace/api-client-react";
+import { KeyboardAvoidingViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
 const SECONDARY = "#c3b091";
@@ -69,10 +70,24 @@ export default function WizardScreen() {
     }
   };
 
+  // Onboarding can only be left via Continue / Skip (the route also has
+  // gestureEnabled: false in app/_layout.tsx). Back steps through the wizard and
+  // does nothing on the first step.
   const goBack = () => {
-    if (step === 0) { router.back(); return; }
     setStep(s => Math.max(s - 1, 0));
   };
+
+  const stepRef = useRef(step);
+  useEffect(() => { stepRef.current = step; }, [step]);
+  // Only while the wizard is focused — it stays mounted under Add Cloud, whose
+  // own back navigation must keep working.
+  useFocusEffect(useCallback(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (stepRef.current > 0) setStep(s => Math.max(s - 1, 0));
+      return true;
+    });
+    return () => sub.remove();
+  }, []));
 
   const skipWizard = () => {
     completeWizard().then(() => router.replace("/camera"));
@@ -102,7 +117,8 @@ export default function WizardScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content} contentContainerStyle={styles.contentPad} showsVerticalScrollIndicator={false}>
+      <KeyboardAvoidingViewCompat style={styles.content}>
+      <ScrollView style={styles.content} contentContainerStyle={styles.contentPad} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={styles.iconWrap}>
           <Ionicons name={(STEPS[step]?.icon ?? "camera") as any} size={56} color={PRIMARY} />
         </View>
@@ -254,6 +270,7 @@ export default function WizardScreen() {
           )}
         </TouchableOpacity>
       </View>
+      </KeyboardAvoidingViewCompat>
     </View>
   );
 }

@@ -1,6 +1,8 @@
+import { createHash } from "crypto";
 import { Resend } from "resend";
 import { logger } from "./logger.js";
 import { escapeHtml } from "./escapeHtml.js";
+import { getPublicBaseUrl } from "./appUrl.js";
 export { escapeHtml };
 
 const FROM = process.env["EMAIL_FROM"] ?? "KKamera <noreply@kkamera.app>";
@@ -15,25 +17,42 @@ function getClient(): Resend | null {
   return client;
 }
 
+/**
+ * Log-safe recipient descriptor: the domain plus a short one-way hash (enough to
+ * correlate log lines for one address) — never the address itself.
+ */
+function recipientForLog(to: string): { toDomain: string; toHash: string } {
+  const normalized = to.trim().toLowerCase();
+  const at = normalized.lastIndexOf("@");
+  return {
+    toDomain: at >= 0 ? normalized.slice(at + 1) : "(invalid)",
+    toHash: createHash("sha256").update(normalized).digest("hex").slice(0, 12),
+  };
+}
+
+/** Send an email via Resend. Never throws; resolves true only if it was accepted. */
 export async function sendEmail(opts: {
   to: string;
   subject: string;
   html: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const resend = getClient();
   if (!resend) {
     logger.warn("Email not sent — Resend not configured (RESEND_API_KEY)");
-    return;
+    return false;
   }
+  const recipient = recipientForLog(opts.to);
   try {
     const { error } = await resend.emails.send({ from: FROM, ...opts });
     if (error) {
-      logger.error({ error, to: opts.to }, "Failed to send email");
-      return;
+      logger.error({ error, ...recipient }, "Failed to send email");
+      return false;
     }
-    logger.info({ to: opts.to, subject: opts.subject }, "Email sent");
+    logger.info({ ...recipient, subject: opts.subject }, "Email sent");
+    return true;
   } catch (err) {
-    logger.error({ err, to: opts.to }, "Failed to send email");
+    logger.error({ err, ...recipient }, "Failed to send email");
+    return false;
   }
 }
 
@@ -80,38 +99,17 @@ export function welcomeEmail(name: string): { subject: string; html: string } {
 }
 
 export function trialEndingEmail(name: string, daysLeft: number): { subject: string; html: string } {
+  const days = `${daysLeft} day${daysLeft !== 1 ? "s" : ""}`;
+  // No price here: it varies by App Store / Play storefront and country, so the
+  // store's own subscription sheet is the only accurate source.
   return {
-    subject: `Your KKamera trial ends in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`,
+    subject: `Your KKamera trial ends in ${days}`,
     html: wrap("Your trial is almost over", `
       <p>Hi ${escapeHtml(name)},</p>
-      <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.</p>
-      <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$30/year</strong>, less than 9¢ a day.</p>
-      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $30/year</a>
-      <p>Don't lose access to your camera uploads. Your existing cloud connections and settings will be preserved.</p>
-    `),
-  };
-}
-
-export function subscriptionActiveEmail(name: string): { subject: string; html: string } {
-  return {
-    subject: "KKamera subscription confirmed",
-    html: wrap("Subscription active", `
-      <p>Hi ${escapeHtml(name)},</p>
-      <p>Your KKamera subscription is now active. You have full access for the next 12 months.</p>
-      <p>Thank you for supporting KKamera — your subscription helps us keep the app ad-free and privacy-first.</p>
-      <a href="https://app.kkamera.app" class="btn">Open KKamera</a>
-    `),
-  };
-}
-
-export function subscriptionCancelledEmail(name: string, accessUntil: string): { subject: string; html: string } {
-  return {
-    subject: "KKamera subscription cancelled",
-    html: wrap("Subscription cancelled", `
-      <p>Hi ${escapeHtml(name)},</p>
-      <p>Your KKamera subscription has been cancelled. You'll retain full access until <strong style="color:#b19870">${escapeHtml(accessUntil)}</strong>.</p>
-      <p>If you change your mind, you can resubscribe anytime from Settings → Subscription.</p>
-      <a href="https://app.kkamera.app/settings/subscription" class="btn">Resubscribe</a>
+      <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${days}</strong>.</p>
+      <p>To keep uploading directly to your cloud storage, subscribe from <strong>Settings → Subscription</strong> in the KKamera app. You'll see the price for your country before you confirm.</p>
+      <a href="${getPublicBaseUrl()}/settings/subscription" class="btn">Open KKamera</a>
+      <p>Your cloud connections and settings are kept either way.</p>
     `),
   };
 }

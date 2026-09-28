@@ -117,7 +117,7 @@ export default function UploadScreen() {
           <ToggleRow
             icon="pencil-outline"
             label="Enable Photo Markup"
-            hint="Annotate photos before uploading"
+            hint="Annotate photos before uploading (burst shots upload unmarked)"
             value={settings.photoMarkup}
             onToggle={v => updateSetting("photoMarkup", v)}
           />

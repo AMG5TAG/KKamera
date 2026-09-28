@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { View, Text, StyleSheet, Animated, Easing } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
+import { getListCloudConnectionsQueryKey, useListCloudConnections } from "@workspace/api-client-react";
 import { Ionicons } from "@expo/vector-icons";
 
 const PRIMARY = "#b19870";
@@ -15,7 +15,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 export default function OAuthSuccessScreen() {
-  const { connectionId, name, provider, error } = useLocalSearchParams<{
+  const { connectionId, provider, error } = useLocalSearchParams<{
     connectionId?: string;
     name?: string;
     provider?: string;
@@ -27,7 +27,16 @@ export default function OAuthSuccessScreen() {
   const opacity = useRef(new Animated.Value(0)).current;
 
   const isError = !!error;
-  const providerLabel = PROVIDER_LABELS[provider ?? ""] ?? provider ?? "Cloud Storage";
+  // Only known providers get a label — the params arrive via a deep link anyone
+  // can craft, so nothing from them is echoed verbatim except the error text.
+  const providerLabel = PROVIDER_LABELS[provider ?? ""] ?? "Cloud Storage";
+
+  // The `name` param is spoofable; show a connection name only once the API
+  // confirms this user really has a connection with that id.
+  const { data: connections } = useListCloudConnections({
+    query: { enabled: !isError && !!connectionId, queryKey: getListCloudConnectionsQueryKey() },
+  });
+  const confirmed = connections?.find((c) => String(c.id) === connectionId);
 
   useEffect(() => {
     if (!isError && connectionId) {
@@ -66,8 +75,10 @@ export default function OAuthSuccessScreen() {
 
         <Text style={styles.subtitle}>
           {isError
-            ? `Could not connect to ${providerLabel}.\n${decodeURIComponent(error ?? "")}`
-            : `"${decodeURIComponent(name ?? providerLabel)}" has been added to your cloud connections.`}
+            ? `Could not connect to ${providerLabel}.\n${String(error).slice(0, 300)}`
+            : confirmed
+              ? `"${confirmed.name}" has been added to your cloud connections.`
+              : `Your ${providerLabel} account has been connected.`}
         </Text>
 
         <Text style={styles.redirecting}>

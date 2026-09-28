@@ -30,6 +30,8 @@ export const usersTable = pgTable("users", {
   // in-memory / per-IP limiter can be bypassed by rotating IPs.
   inviteWindowStart: timestamp("invite_window_start", { withTimezone: true }),
   inviteCount: integer("invite_count").notNull().default(0),
+  // When the "trial ending soon" email was sent, so it goes out at most once.
+  trialReminderSentAt: timestamp("trial_reminder_sent_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

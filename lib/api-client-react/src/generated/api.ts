@@ -19,9 +19,12 @@ import type {
 import type {
   AffiliateStats,
   AuthResponse,
+  ChangePasswordInput,
   CloudConnection,
   CloudConnectionInput,
   CloudConnectionUpdate,
+  ExecuteUploadInput,
+  ExecuteUploadResult,
   FeedbackInput,
   ForgotPasswordInput,
   HealthStatus,
@@ -36,7 +39,6 @@ import type {
   RegisterInput,
   ResetPasswordInput,
   Subscription,
-  SuccessResponse,
   TestResult,
   TwoFASetup,
   TwoFAVerifyInput,
@@ -528,6 +530,93 @@ export const useResetPassword = <
   TContext
 > => {
   return useMutation(getResetPasswordMutationOptions(options));
+};
+
+/**
+ * Verifies the current password (and a TOTP or backup code when 2FA is enabled), sets the new password, and signs out every other session. Returns a fresh token so the calling device stays signed in. Errors are 400 (never 401) so a mistyped password doesn't end the session.
+ * @summary Change the signed-in user's password
+ */
+export const getChangePasswordUrl = () => {
+  return `/api/auth/change-password`;
+};
+
+export const changePassword = async (
+  changePasswordInput: ChangePasswordInput,
+  options?: RequestInit,
+): Promise<AuthResponse> => {
+  return customFetch<AuthResponse>(getChangePasswordUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(changePasswordInput),
+  });
+};
+
+export const getChangePasswordMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof changePassword>>,
+    TError,
+    { data: BodyType<ChangePasswordInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof changePassword>>,
+  TError,
+  { data: BodyType<ChangePasswordInput> },
+  TContext
+> => {
+  const mutationKey = ["changePassword"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof changePassword>>,
+    { data: BodyType<ChangePasswordInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return changePassword(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ChangePasswordMutationResult = NonNullable<
+  Awaited<ReturnType<typeof changePassword>>
+>;
+export type ChangePasswordMutationBody = BodyType<ChangePasswordInput>;
+export type ChangePasswordMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Change the signed-in user's password
+ */
+export const useChangePassword = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof changePassword>>,
+    TError,
+    { data: BodyType<ChangePasswordInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof changePassword>>,
+  TError,
+  { data: BodyType<ChangePasswordInput> },
+  TContext
+> => {
+  return useMutation(getChangePasswordMutationOptions(options));
 };
 
 export const getSetup2FAUrl = () => {
@@ -2690,97 +2779,6 @@ export function useGetOAuthStatus<
 }
 
 /**
- * @summary Refresh an expired access token for a stored cloud connection
- */
-export const getRefreshOAuthTokenUrl = (
-  provider: "googledrive" | "onedrive" | "dropbox",
-  connectionId: number,
-) => {
-  return `/api/oauth/${provider}/refresh/${connectionId}`;
-};
-
-export const refreshOAuthToken = async (
-  provider: "googledrive" | "onedrive" | "dropbox",
-  connectionId: number,
-  options?: RequestInit,
-): Promise<SuccessResponse> => {
-  return customFetch<SuccessResponse>(
-    getRefreshOAuthTokenUrl(provider, connectionId),
-    {
-      ...options,
-      method: "POST",
-    },
-  );
-};
-
-export const getRefreshOAuthTokenMutationOptions = <
-  TError = ErrorType<MessageResponse>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof refreshOAuthToken>>,
-    TError,
-    { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationOptions<
-  Awaited<ReturnType<typeof refreshOAuthToken>>,
-  TError,
-  { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
-  TContext
-> => {
-  const mutationKey = ["refreshOAuthToken"];
-  const { mutation: mutationOptions, request: requestOptions } = options
-    ? options.mutation &&
-      "mutationKey" in options.mutation &&
-      options.mutation.mutationKey
-      ? options
-      : { ...options, mutation: { ...options.mutation, mutationKey } }
-    : { mutation: { mutationKey }, request: undefined };
-
-  const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof refreshOAuthToken>>,
-    { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number }
-  > = (props) => {
-    const { provider, connectionId } = props ?? {};
-
-    return refreshOAuthToken(provider, connectionId, requestOptions);
-  };
-
-  return { mutationFn, ...mutationOptions };
-};
-
-export type RefreshOAuthTokenMutationResult = NonNullable<
-  Awaited<ReturnType<typeof refreshOAuthToken>>
->;
-
-export type RefreshOAuthTokenMutationError = ErrorType<MessageResponse>;
-
-/**
- * @summary Refresh an expired access token for a stored cloud connection
- */
-export const useRefreshOAuthToken = <
-  TError = ErrorType<MessageResponse>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof refreshOAuthToken>>,
-    TError,
-    { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationResult<
-  Awaited<ReturnType<typeof refreshOAuthToken>>,
-  TError,
-  { provider: "googledrive" | "onedrive" | "dropbox"; connectionId: number },
-  TContext
-> => {
-  return useMutation(getRefreshOAuthTokenMutationOptions(options));
-};
-
-/**
  * @summary Export all personal data for the current user (GDPR)
  */
 export const getExportMyDataUrl = () => {
@@ -2854,6 +2852,108 @@ export function useExportMyData<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Requires an active subscription. Retries of the same capture are de-duplicated by `clientUploadId`: a capture that already finished returns its previous result without re-uploading, a capture another request is still uploading returns 409, and any other previous attempt (partial/failed/queued) is updated in place rather than duplicated. When retrying a partial upload, send only the failed `connectionIds`; the stored status combines both attempts.
+
+ * @summary Upload one capture to the user's active cloud connections
+ */
+export const getExecuteUploadUrl = () => {
+  return `/api/uploads/execute`;
+};
+
+export const executeUpload = async (
+  executeUploadInput: ExecuteUploadInput,
+  options?: RequestInit,
+): Promise<ExecuteUploadResult> => {
+  const formData = new FormData();
+  formData.append(`file`, executeUploadInput.file);
+  if (executeUploadInput.fileName !== undefined) {
+    formData.append(`fileName`, executeUploadInput.fileName);
+  }
+  if (executeUploadInput.mimeType !== undefined) {
+    formData.append(`mimeType`, executeUploadInput.mimeType);
+  }
+  if (executeUploadInput.connectionIds !== undefined) {
+    formData.append(`connectionIds`, executeUploadInput.connectionIds);
+  }
+  if (executeUploadInput.clientUploadId !== undefined) {
+    formData.append(`clientUploadId`, executeUploadInput.clientUploadId);
+  }
+
+  return customFetch<ExecuteUploadResult>(getExecuteUploadUrl(), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getExecuteUploadMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof executeUpload>>,
+    TError,
+    { data: BodyType<ExecuteUploadInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof executeUpload>>,
+  TError,
+  { data: BodyType<ExecuteUploadInput> },
+  TContext
+> => {
+  const mutationKey = ["executeUpload"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof executeUpload>>,
+    { data: BodyType<ExecuteUploadInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return executeUpload(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ExecuteUploadMutationResult = NonNullable<
+  Awaited<ReturnType<typeof executeUpload>>
+>;
+export type ExecuteUploadMutationBody = BodyType<ExecuteUploadInput>;
+export type ExecuteUploadMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Upload one capture to the user's active cloud connections
+ */
+export const useExecuteUpload = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof executeUpload>>,
+    TError,
+    { data: BodyType<ExecuteUploadInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof executeUpload>>,
+  TError,
+  { data: BodyType<ExecuteUploadInput> },
+  TContext
+> => {
+  return useMutation(getExecuteUploadMutationOptions(options));
+};
 
 /**
  * @summary Email a witness that a file was captured and uploaded

@@ -2,6 +2,7 @@ import { Client as FtpClient } from "basic-ftp";
 import { createClient as createWebdavClient } from "webdav";
 import { Readable } from "stream";
 import dns from "dns";
+import { randomUUID } from "crypto";
 import net from "net";
 import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import { db } from "@workspace/db";
@@ -14,16 +15,26 @@ import { sanitizeFileName } from "./fileNames.js";
 import { nextcloudDavUrl, webdavBaseUrl } from "./nextcloud.js";
 import {
   CONTROL_REQUEST_TIMEOUT_MS,
+  DRIVE_CHUNK_SIZE,
+  DRIVE_RESUMABLE_THRESHOLD,
   DROPBOX_CHUNK_SIZE,
   DROPBOX_SESSION_THRESHOLD,
+  ONEDRIVE_CHUNK_SIZE,
+  ONEDRIVE_SESSION_THRESHOLD,
   RemoteHttpError,
   chunkRanges,
+  driveFolderQuery,
+  driveNextOffset,
   dropboxApiArg,
   dropboxPath,
   isTlsCertError,
   isTlsUnsupportedError,
+  joinRemotePath,
+  normalizeUploadPath,
+  oneDriveItemPath,
   publicUploadError,
   uploadDeadlineMs,
+  uploadPathSegments,
 } from "./cloudUploadPolicy.js";
 
 // ─── SSRF guard ───────────────────────────────────────────────────────────────
@@ -282,9 +293,14 @@ async function withFtpClient<T>(timeoutMs: number, signal: AbortSignal, fn: (cli
 async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
   await withFtpClient(20_000, signal, async (client) => {
     await ftpConnect(client, conn);
-    const dir = conn.uploadPath ?? "/KKamera";
-    await client.ensureDir(dir);
-    await client.uploadFrom(Readable.from(buf), `${dir}/${fileName}`);
+    // ensureDir() walks (creating as needed) into the directory and LEAVES the
+    // session there, so the file is then stored by its bare name. Joining the
+    // directory onto the name again doubled relative paths ("dir/dir/file").
+    // "/dir" is absolute, "dir" is relative to the login's home, "" is home.
+    const dir = normalizeUploadPath(conn.uploadPath);
+    if (dir === "/") await client.cd("/");
+    else if (dir) await client.ensureDir(dir);
+    await client.uploadFrom(Readable.from(buf), fileName);
   });
 }
 
@@ -338,11 +354,12 @@ async function webdavClientFor(conn: CloudConn, baseUrl: string) {
 async function uploadWebdavTo(conn: CloudConn, baseUrl: string, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
   const { client, dispose } = await webdavClientFor(conn, baseUrl);
   try {
-    const dir = conn.uploadPath ?? "/KKamera";
-    if (!(await client.exists(dir, { signal: controlSignal(signal) }))) {
+    const segments = uploadPathSegments(conn.uploadPath);
+    const dir = "/" + segments.join("/");
+    if (segments.length > 0 && !(await client.exists(dir, { signal: controlSignal(signal) }))) {
       await client.createDirectory(dir, { recursive: true, signal: controlSignal(signal) });
     }
-    const ok = await client.putFileContents(`${dir}/${fileName}`, buf, { overwrite: true, signal });
+    const ok = await client.putFileContents(joinRemotePath(segments, fileName), buf, { overwrite: true, signal });
     if (ok === false) throw new Error("WebDAV server refused the upload");
   } finally {
     dispose();
@@ -364,7 +381,7 @@ async function testWebdavAt(
   try {
     const dav = await webdavClientFor(conn, baseUrl);
     dispose = dav.dispose;
-    const exists = await dav.client.exists(conn.uploadPath ?? "/", { signal: controlSignal() });
+    const exists = await dav.client.exists("/" + uploadPathSegments(conn.uploadPath).join("/"), { signal: controlSignal() });
     return {
       success: true,
       message: exists
@@ -424,42 +441,104 @@ async function testNextcloud(conn: CloudConn): Promise<{ success: boolean; messa
 
 // ─── Google Drive ─────────────────────────────────────────────────────────────
 
-async function ensureDriveFolder(token: string, folderName: string, signal: AbortSignal): Promise<string> {
-  // Escape single quotes and backslashes per Google Drive query syntax so the
-  // folder name can't break out of the quoted string in the `q` parameter.
-  const escaped = folderName.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const q = `name='${escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const search = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
-    { headers: { Authorization: `Bearer ${token}` }, signal: controlSignal(signal) }
-  );
-  if (!search.ok) await failResponse(search, "Drive folder lookup");
-  const data = await search.json() as any;
-  if (data.files?.length > 0) return data.files[0].id as string;
-  const create = await fetch("https://www.googleapis.com/drive/v3/files", {
+const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files";
+const DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
+/** How long a resolved folder id is reused before it is looked up again. */
+const DRIVE_FOLDER_TTL_MS = 10 * 60_000;
+
+/** `${connectionId}:${path}` → resolved folder id. */
+const driveFolderCache = new Map<string, { id: string; expires: number }>();
+/** Per-key tail of the in-flight folder resolutions (in-process mutex). */
+const driveFolderLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Run `fn` after every earlier call for the same `key` has settled. Two photos
+ * uploaded at once to a fresh connection would otherwise both miss the lookup
+ * and both create "KKamera".
+ */
+async function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = driveFolderLocks.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  driveFolderLocks.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (driveFolderLocks.get(key) === tail) driveFolderLocks.delete(key);
+  }
+}
+
+/** Oldest non-trashed folder named `name` directly under `parentId`, if any. */
+async function findDriveFolder(token: string, name: string, parentId: string, signal: AbortSignal): Promise<string | null> {
+  const qs = new URLSearchParams({
+    q: driveFolderQuery(name, parentId),
+    fields: "files(id,createdTime)",
+    orderBy: "createdTime",
+    pageSize: "10",
+    spaces: "drive",
+  });
+  const res = await fetch(`${DRIVE_API}?${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: controlSignal(signal),
+  });
+  if (!res.ok) await failResponse(res, "Drive folder lookup");
+  const data = await res.json() as { files?: Array<{ id?: string }> };
+  return data.files?.find((f) => typeof f.id === "string")?.id ?? null;
+}
+
+async function findOrCreateDriveFolder(token: string, name: string, parentId: string, signal: AbortSignal): Promise<string> {
+  const found = await findDriveFolder(token, name, parentId, signal);
+  if (found) return found;
+  const create = await fetch(`${DRIVE_API}?fields=id`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ name: folderName, mimeType: "application/vnd.google-apps.folder" }),
+    body: JSON.stringify({ name, mimeType: DRIVE_FOLDER_MIME, parents: [parentId] }),
     signal: controlSignal(signal),
   });
   if (!create.ok) await failResponse(create, "Drive folder create");
-  const folder = await create.json() as any;
-  if (!folder.id) throw new Error(`Could not create Drive folder: ${JSON.stringify(folder)}`);
-  return folder.id as string;
+  const folder = await create.json() as { id?: string };
+  if (!folder.id) throw new Error("Drive folder create returned no id");
+  // Another server instance may have raced us to the same folder. Settle on
+  // the oldest one so every later upload converges on a single folder.
+  const oldest = await findDriveFolder(token, name, parentId, signal).catch(() => null);
+  return oldest ?? folder.id;
 }
 
-async function uploadGoogleDrive(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string, signal: AbortSignal): Promise<void> {
-  const token = await getAccessToken(conn, signal);
-  const folderName = (conn.uploadPath ?? "/KKamera").replace(/^\/+/, "") || "KKamera";
-  const folderId = await ensureDriveFolder(token, folderName, signal);
-  const boundary = "kkamera_boundary_314159";
-  const meta = JSON.stringify({ name: fileName, parents: [folderId] });
+/**
+ * Resolve (creating as needed) the nested folder for `segments`, one level at
+ * a time from My Drive's root — "/Photos/KKamera" is a "KKamera" folder inside
+ * "Photos", not one folder with a slash in its name. Results are cached per
+ * connection + path for a short TTL, and resolution is serialised per key.
+ *
+ * With the drive.file scope Drive only lists folders this app created, so a
+ * "Photos" folder the user made by hand is not reused — a new one is created.
+ */
+async function resolveDriveFolder(connId: number, token: string, segments: string[], signal: AbortSignal): Promise<string> {
+  if (segments.length === 0) return "root";
+  const key = `${connId}:${segments.join("/")}`;
+  const hit = driveFolderCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.id;
+  return withKeyLock(key, async () => {
+    const again = driveFolderCache.get(key);
+    if (again && again.expires > Date.now()) return again.id;
+    let parentId = "root";
+    for (const name of segments) {
+      parentId = await findOrCreateDriveFolder(token, name, parentId, signal);
+    }
+    driveFolderCache.set(key, { id: parentId, expires: Date.now() + DRIVE_FOLDER_TTL_MS });
+    return parentId;
+  });
+}
+
+async function driveMultipartUpload(token: string, meta: object, buf: Buffer, mimeType: string, signal: AbortSignal): Promise<void> {
+  const boundary = `kkamera_${randomUUID()}`;
   const body = Buffer.concat([
-    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`),
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(meta)}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`),
     buf,
     Buffer.from(`\r\n--${boundary}--`),
   ]);
-  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+  const res = await fetch(`${DRIVE_UPLOAD}?uploadType=multipart&fields=id`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -469,6 +548,90 @@ async function uploadGoogleDrive(conn: CloudConn, buf: Buffer, fileName: string,
     signal,
   });
   if (!res.ok) await failResponse(res, "Google Drive upload");
+}
+
+/**
+ * Resumable upload: open a session, then PUT DRIVE_CHUNK_SIZE pieces with
+ * Content-Range. Each 308 "Resume Incomplete" reports how much Google has
+ * persisted (Range: bytes=0-N) and the next chunk starts there, so a partially
+ * accepted chunk is re-sent from the right offset rather than assumed done.
+ */
+async function driveResumableUpload(token: string, meta: object, buf: Buffer, mimeType: string, signal: AbortSignal): Promise<void> {
+  const total = buf.length;
+  const init = await fetch(`${DRIVE_UPLOAD}?uploadType=resumable&fields=id`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Type": mimeType,
+      "X-Upload-Content-Length": String(total),
+    },
+    body: JSON.stringify(meta),
+    signal: controlSignal(signal),
+  });
+  if (!init.ok) await failResponse(init, "Google Drive resumable start");
+  const sessionUrl = init.headers.get("location");
+  if (!sessionUrl || !sessionUrl.startsWith("https://www.googleapis.com/")) {
+    throw new Error("Google Drive did not return a resumable session URL");
+  }
+
+  let offset = 0;
+  let stalls = 0;
+  while (offset < total) {
+    const end = Math.min(total, offset + DRIVE_CHUNK_SIZE);
+    const res = await fetch(sessionUrl, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Range": `bytes ${offset}-${end - 1}/${total}`,
+      },
+      body: buf.subarray(offset, end),
+      // 308 here means "Resume Incomplete", not a redirect.
+      redirect: "manual",
+      signal,
+    });
+    if (res.status === 200 || res.status === 201) return;
+    if (res.status !== 308) await failResponse(res, "Google Drive resumable upload");
+    await res.body?.cancel().catch(() => undefined);
+    const next = driveNextOffset(res.headers.get("range"));
+    if (next <= offset) {
+      if (++stalls >= 3) throw new Error("Google Drive resumable upload made no progress");
+    } else {
+      stalls = 0;
+    }
+    offset = next;
+  }
+  // Every byte is persisted but the final 200/201 never arrived: ask for status.
+  const status = await fetch(sessionUrl, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Range": `bytes */${total}` },
+    redirect: "manual",
+    signal: controlSignal(signal),
+  });
+  if (status.status !== 200 && status.status !== 201) await failResponse(status, "Google Drive resumable finalize");
+}
+
+async function uploadGoogleDrive(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string, signal: AbortSignal): Promise<void> {
+  const token = await getAccessToken(conn, signal);
+  const segments = uploadPathSegments(conn.uploadPath);
+  const upload = async () => {
+    const folderId = await resolveDriveFolder(conn.id, token, segments, signal);
+    const meta = { name: fileName, parents: [folderId] };
+    if (buf.length > DRIVE_RESUMABLE_THRESHOLD) await driveResumableUpload(token, meta, buf, mimeType, signal);
+    else await driveMultipartUpload(token, meta, buf, mimeType, signal);
+  };
+  try {
+    await upload();
+  } catch (err) {
+    // A cached folder the user has since deleted makes Drive 404 the parent:
+    // drop the cached id and resolve the path again, once.
+    if (err instanceof RemoteHttpError && err.status === 404 && segments.length > 0) {
+      driveFolderCache.delete(`${conn.id}:${segments.join("/")}`);
+      await upload();
+      return;
+    }
+    throw err;
+  }
 }
 
 async function testGoogleDrive(conn: CloudConn): Promise<{ success: boolean; message: string }> {
@@ -490,17 +653,64 @@ async function testGoogleDrive(conn: CloudConn): Promise<{ success: boolean; mes
 
 // ─── OneDrive ─────────────────────────────────────────────────────────────────
 
+const GRAPH_DRIVE = "https://graph.microsoft.com/v1.0/me/drive";
+
+/**
+ * Small files: one PUT to the path-addressed item (parents are created by
+ * Graph). Larger ones: an upload session, PUT in ONEDRIVE_CHUNK_SIZE fragments.
+ * Every path segment and the file name are percent-encoded, and name clashes
+ * are auto-renamed ("photo 1.jpg") rather than overwriting an existing file.
+ */
 async function uploadOneDrive(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
   const token = await getAccessToken(conn, signal);
-  const dir = (conn.uploadPath ?? "/KKamera").replace(/^\/+/, "");
-  const url = `https://graph.microsoft.com/v1.0/me/drive/root:/${dir}/${fileName}:/content`;
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
-    body: buf,
-    signal,
+  const item = oneDriveItemPath(uploadPathSegments(conn.uploadPath), fileName);
+
+  if (buf.length <= ONEDRIVE_SESSION_THRESHOLD) {
+    const res = await fetch(`${GRAPH_DRIVE}/${item}/content?@microsoft.graph.conflictBehavior=rename`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
+      body: buf,
+      signal,
+    });
+    if (!res.ok) await failResponse(res, "OneDrive upload");
+    return;
+  }
+
+  const created = await fetch(`${GRAPH_DRIVE}/${item}/createUploadSession`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ item: { "@microsoft.graph.conflictBehavior": "rename" } }),
+    signal: controlSignal(signal),
   });
-  if (!res.ok) await failResponse(res, "OneDrive upload");
+  if (!created.ok) await failResponse(created, "OneDrive upload session");
+  const { uploadUrl } = await created.json() as { uploadUrl?: string };
+  if (!uploadUrl || !uploadUrl.startsWith("https://")) throw new Error("OneDrive did not return an upload URL");
+
+  try {
+    const total = buf.length;
+    for (const [start, end] of chunkRanges(total, ONEDRIVE_CHUNK_SIZE)) {
+      // The upload URL is pre-authenticated; Graph documents that sending the
+      // Authorization header to it can cause a 401.
+      const res = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Range": `bytes ${start}-${end - 1}/${total}`,
+        },
+        body: buf.subarray(start, end),
+        signal,
+      });
+      if (!res.ok) await failResponse(res, "OneDrive upload fragment");
+      // 202 = more fragments expected; 200/201 = file committed.
+      if (end === total && res.status !== 200 && res.status !== 201) {
+        throw new Error(`OneDrive upload did not complete (status ${res.status})`);
+      }
+      await res.body?.cancel().catch(() => undefined);
+    }
+  } catch (err) {
+    // Free the server-side temp file; best-effort, it also expires on its own.
+    await fetch(uploadUrl, { method: "DELETE", signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+    throw err;
+  }
 }
 
 async function testOneDrive(conn: CloudConn): Promise<{ success: boolean; message: string }> {
@@ -592,6 +802,71 @@ async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message
   } catch (err: any) {
     logger.warn({ err, connectionId: conn.id, type: conn.type }, "Cloud connection test failed");
     return { success: false, message: "Could not verify the connection. Please re-connect the account." };
+  }
+}
+
+// ─── Token revocation ─────────────────────────────────────────────────────────
+
+const REVOKE_TIMEOUT_MS = 10_000;
+
+/**
+ * Best-effort: revoke a connection's OAuth grant at the provider when the user
+ * disconnects it, so a leaked database row stops being useful. Never throws —
+ * the caller has already deleted the row and must not care.
+ *
+ *  - Google: POST the refresh token (or the access token) to /revoke; revoking
+ *    a refresh token also invalidates its access tokens.
+ *  - Dropbox: /2/auth/token/revoke disables the calling access token and the
+ *    refresh token behind it. An expired access token is refreshed first
+ *    (without persisting — the row is gone) so the call can authenticate.
+ *  - Microsoft Graph has no token-revocation endpoint for this flow; the
+ *    refresh token simply stops being used and expires. Skipped.
+ */
+export async function revokeProviderTokens(conn: CloudConn): Promise<void> {
+  try {
+    const access = decryptCredential(conn.accessTokenEncrypted);
+    const refresh = conn.refreshToken ? decryptCredential(conn.refreshToken) : "";
+    if (conn.type === "googledrive") {
+      const token = refresh || access;
+      if (!token) return;
+      const res = await fetch("https://oauth2.googleapis.com/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token }).toString(),
+        signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS),
+      });
+      if (!res.ok) logger.info({ connectionId: conn.id, status: res.status }, "Google token revoke not accepted");
+      return;
+    }
+    if (conn.type === "dropbox") {
+      let token = access;
+      const expired = conn.tokenExpiry != null && conn.tokenExpiry.getTime() < Date.now() + 60_000;
+      if ((!token || expired) && refresh) {
+        const cfg = OAUTH_CONFIG["dropbox"]!;
+        const res = await fetch(cfg.tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: refresh,
+            client_id: process.env[cfg.clientIdEnv] ?? "",
+            client_secret: process.env[cfg.clientSecretEnv] ?? "",
+          }).toString(),
+          signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS),
+        });
+        if (res.ok) token = ((await res.json()) as { access_token?: string }).access_token ?? token;
+      }
+      if (!token) return;
+      // No-arg RPC: POST with no body and no Content-Type.
+      const res = await fetch("https://api.dropboxapi.com/2/auth/token/revoke", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(REVOKE_TIMEOUT_MS),
+      });
+      if (!res.ok) logger.info({ connectionId: conn.id, status: res.status }, "Dropbox token revoke not accepted");
+    }
+  } catch (err) {
+    logger.info({ err, connectionId: conn.id, type: conn.type }, "Token revoke failed (ignored)");
   }
 }
 

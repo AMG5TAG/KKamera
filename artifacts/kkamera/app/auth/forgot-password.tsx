@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { router } from "expo-router";
 import { useForgotPassword } from "@workspace/api-client-react";
 
@@ -43,7 +43,12 @@ export default function ForgotPasswordScreen() {
         <Text style={styles.backBtnText}>Back to Sign In</Text>
       </TouchableOpacity>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         <View style={styles.iconWrap}>
           <Ionicons name="lock-closed-outline" size={48} color={PRIMARY} />
         </View>
@@ -96,7 +101,7 @@ export default function ForgotPasswordScreen() {
         <TouchableOpacity style={styles.backLink} onPress={() => router.replace("/auth/login")}>
           <Text style={styles.backLinkText}>Return to <Text style={{ color: PRIMARY }}>Sign In</Text></Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

@@ -201,7 +201,7 @@ export default function CameraScreen() {
           <SegmentRow<0 | 3 | 10>
             icon="timer-outline"
             label="Self-Timer"
-            hint="Countdown before each shot"
+            hint="Countdown before each shot — tap the shutter again to cancel"
             options={[
               { label: "Off",  value: 0 },
               { label: "3 s",  value: 3 },
@@ -253,14 +253,20 @@ export default function CameraScreen() {
             value={settings.screenFlashSelfie}
             onToggle={v => updateSetting("screenFlashSelfie", v)}
           />
-          <View style={styles.divider} />
-          <ToggleRow
-            icon="hardware-chip-outline"
-            label="Volume Keys Capture"
-            hint="Use volume keys / spacebar as shutter (web)"
-            value={settings.volumeKeyShutter}
-            onToggle={v => updateSetting("volumeKeyShutter", v)}
-          />
+          {/* Only the browser delivers key events to the app; the native
+              builds have no volume-key module, so the option isn't offered. */}
+          {Platform.OS === "web" && (
+            <>
+              <View style={styles.divider} />
+              <ToggleRow
+                icon="hardware-chip-outline"
+                label="Keyboard Shutter"
+                hint="Spacebar (and volume keys, where the browser passes them on) takes a photo"
+                value={settings.volumeKeyShutter}
+                onToggle={v => updateSetting("volumeKeyShutter", v)}
+              />
+            </>
+          )}
         </View>
 
         <SectionLabel title="Metadata & Stamps" />
@@ -284,7 +290,7 @@ export default function CameraScreen() {
           <ToggleRow
             icon="calendar-outline"
             label="Date / Time / Location Stamp"
-            hint="Apply a timestamp watermark to photos"
+            hint="Burn date, time and location into photos (incl. Interval frames)"
             value={settings.stampPhotos}
             onToggle={v => updateSetting("stampPhotos", v)}
           />

@@ -7,11 +7,12 @@ import { authenticator } from "@otplib/preset-default";
 import QRCode from "qrcode";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
-import { usersTable, subscriptionsTable, referralsTable, trialHistoryTable } from "@workspace/db";
-import { eq, and } from "drizzle-orm";
+import { usersTable, subscriptionsTable, referralsTable, trialHistoryTable, passwordResetTokensTable } from "@workspace/db";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { sendEmail, welcomeEmail } from "../lib/email.js";
 import { emailTrialHash } from "../lib/emailHash.js";
+import { newPasswordSchema, normalizedEmailSchema, normalizeReferralCode } from "../lib/accountRules.js";
 
 const router = Router();
 
@@ -44,24 +45,39 @@ const twoFactorLimiter = rateLimit({
   message: { message: "Too many 2FA attempts. Please try again in 15 minutes." },
 });
 
+// Change-password verifies the current password (and 2FA), so bound guesses per
+// account — not just per IP — so rotating IPs can't brute-force it.
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many password change attempts. Please try again in 15 minutes." },
+});
+
 // ─── Validation schemas ────────────────────────────────────────────────────────
 
 const registerSchema = z.object({
-  // Normalise so case/whitespace variants map to one account (email is stored
-  // and compared case-sensitively, and the DB uniqueness constraint is too).
-  email: z.string().email("Invalid email address").transform(e => e.trim().toLowerCase()),
-  // Cap length: bcrypt silently truncates at 72 bytes, so without a max two long
-  // passwords sharing a 72-byte prefix would collide (and it bounds hashing cost).
-  password: z.string().min(8, "Password must be at least 8 characters").max(72, "Password must be at most 72 characters"),
-  name: z.string().min(1, "Name is required").max(100),
+  // Normalise (trim + lowercase) BEFORE validating so case/whitespace variants
+  // map to one account and autofilled trailing spaces don't fail validation
+  // (email is stored and compared case-sensitively, and so is the DB unique key).
+  email: normalizedEmailSchema,
+  // Shared rule: min 8 chars, max 72 BYTES (bcrypt's truncation limit).
+  password: newPasswordSchema,
+  name: z.string().trim().min(1, "Name is required").max(100, "Name must be at most 100 characters"),
   referralCode: z.string().nullish(),
 });
 
 const loginSchema = z.object({
-  // Normalise so case/whitespace variants map to one account (email is stored
-  // and compared case-sensitively, and the DB uniqueness constraint is too).
-  email: z.string().email("Invalid email address").transform(e => e.trim().toLowerCase()),
+  email: normalizedEmailSchema,
   password: z.string().min(1, "Password is required"),
+  totpCode: z.string().nullish(),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required"),
+  newPassword: newPasswordSchema,
   totpCode: z.string().nullish(),
 });
 
@@ -90,6 +106,42 @@ function hashBackupCode(code: string): string {
 // time on the "user not found" path as on a real comparison, so response timing
 // doesn't reveal whether an email is registered.
 const DUMMY_BCRYPT_HASH = "$2b$12$.mHbRuuNFGfnrol8lmQ/sOUly9knVchhRMliScqUwz8h5lSb47iYe";
+
+/**
+ * Consume a single-use backup code atomically: re-read the codes under a row
+ * lock inside a transaction so two concurrent requests can't both spend the same
+ * code (or one resurrect an already-spent code).
+ */
+async function consumeBackupCode(userId: number, code: string): Promise<boolean> {
+  const inputHash = hashBackupCode(code.replace(/\s/g, "").toUpperCase());
+  return db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select({ codes: usersTable.twoFABackupCodes })
+      .from(usersTable)
+      .where(eq(usersTable.id, userId))
+      .for("update")
+      .limit(1);
+    const codes: string[] = locked?.codes ? JSON.parse(locked.codes) : [];
+    const idx = codes.indexOf(inputHash);
+    if (idx === -1) return false;
+    codes.splice(idx, 1);
+    await tx.update(usersTable)
+      .set({ twoFABackupCodes: JSON.stringify(codes) })
+      .where(eq(usersTable.id, userId));
+    return true;
+  });
+}
+
+/** Verify a TOTP code, falling back to (and consuming) a backup code — as login does. */
+async function verifySecondFactor(user: { id: number; twoFASecret: string }, code: string): Promise<boolean> {
+  const trimmed = code.trim();
+  if (authenticator.verify({ token: trimmed, secret: user.twoFASecret })) return true;
+  return consumeBackupCode(user.id, trimmed);
+}
+
+function issueToken(userId: number): string {
+  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "30d" });
+}
 
 function generateBackupCodes(): string[] {
   return Array.from({ length: 8 }, () => randomBytes(4).toString("hex").toUpperCase());
@@ -128,44 +180,51 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
     const myReferralCode = generateReferralCode(name);
 
     let referrerId: number | undefined;
-    if (referralCode) {
-      const referrer = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.referralCode, referralCode)).limit(1);
+    const normalizedReferral = normalizeReferralCode(referralCode);
+    if (normalizedReferral) {
+      const referrer = await db.select({ id: usersTable.id }).from(usersTable)
+        .where(sql`upper(${usersTable.referralCode}) = ${normalizedReferral}`).limit(1);
       if (referrer.length > 0) referrerId = referrer[0]!.id;
     }
-
-    const [user] = await db.insert(usersTable).values({
-      email, passwordHash, name, referralCode: myReferralCode,
-      referrerId: referrerId ?? null, twoFAEnabled: false,
-    }).returning();
-
-    if (!user) { res.status(500).json({ message: "Registration failed" }); return; }
 
     // Grant the 14-day trial only if this email has never had one. The
     // trial_history row (keyed by an HMAC of the email) outlives account deletion,
     // so deleting and re-registering the same address can't farm fresh trials.
     const emailHash = emailTrialHash(email);
-    const [priorTrial] = await db.select({ id: trialHistoryTable.id })
-      .from(trialHistoryTable).where(eq(trialHistoryTable.emailHash, emailHash)).limit(1);
 
-    if (priorTrial) {
-      await db.insert(subscriptionsTable).values({ userId: user.id, status: "none" });
-    } else {
-      const trialEnd = new Date();
-      trialEnd.setDate(trialEnd.getDate() + 14);
-      await db.insert(subscriptionsTable).values({
-        userId: user.id, status: "trial", trialStart: new Date(), trialEnd,
-      });
-      await db.insert(trialHistoryTable).values({ emailHash }).onConflictDoNothing();
-    }
+    // One transaction: a failure part-way must never leave a user without a
+    // subscription row (or a trial recorded for a user that doesn't exist).
+    const user = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(usersTable).values({
+        email, passwordHash, name, referralCode: myReferralCode,
+        referrerId: referrerId ?? null, twoFAEnabled: false,
+      }).returning();
+      if (!created) throw new Error("User insert returned no row");
 
-    if (referrerId) {
-      // Referral is "pending" until the referred user subscribes (completed via webhook)
-      await db.insert(referralsTable).values({
-        referrerId, referredId: user.id, referredName: name, status: "pending",
-      });
-    }
+      const [priorTrial] = await tx.select({ id: trialHistoryTable.id })
+        .from(trialHistoryTable).where(eq(trialHistoryTable.emailHash, emailHash)).limit(1);
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "30d" });
+      if (priorTrial) {
+        await tx.insert(subscriptionsTable).values({ userId: created.id, status: "none" });
+      } else {
+        const trialEnd = new Date();
+        trialEnd.setDate(trialEnd.getDate() + 14);
+        await tx.insert(subscriptionsTable).values({
+          userId: created.id, status: "trial", trialStart: new Date(), trialEnd,
+        });
+        await tx.insert(trialHistoryTable).values({ emailHash }).onConflictDoNothing();
+      }
+
+      if (referrerId) {
+        // Referral is "pending" until the referred user subscribes (completed via webhook)
+        await tx.insert(referralsTable).values({
+          referrerId, referredId: created.id, referredName: name, status: "pending",
+        });
+      }
+      return created;
+    });
+
+    const token = issueToken(user.id);
 
     // Fire and forget — never block the response
     const welcome = welcomeEmail(name);
@@ -173,6 +232,13 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
 
     res.status(201).json({ token, user: formatUser(user) });
   } catch (err) {
+    // Unique-violation race: another request registered this email between our
+    // existence check and the insert.
+    const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
+    if (pgErr?.code === "23505" && String(pgErr.constraint ?? "").includes("email")) {
+      res.status(400).json({ message: "Email already registered" });
+      return;
+    }
     req.log.error({ err }, "Register error");
     res.status(500).json({ message: "Registration failed" });
   }
@@ -203,37 +269,14 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
     if (user.twoFAEnabled && user.twoFASecret) {
       if (!totpCode) { res.status(200).json({ requires2FA: true }); return; }
 
-      // Try TOTP first, then backup codes
-      const isTotpValid = authenticator.verify({ token: totpCode, secret: user.twoFASecret });
-      if (!isTotpValid) {
-        const inputHash = hashBackupCode(totpCode.replace(/\s/g, "").toUpperCase());
-        // Consume the single-use backup code atomically: re-read the codes under
-        // a row lock inside a transaction so two concurrent logins can't both
-        // spend the same code (or one resurrect an already-spent code).
-        const consumed = await db.transaction(async (tx) => {
-          const [locked] = await tx
-            .select({ codes: usersTable.twoFABackupCodes })
-            .from(usersTable)
-            .where(eq(usersTable.id, user.id))
-            .for("update")
-            .limit(1);
-          const codes: string[] = locked?.codes ? JSON.parse(locked.codes) : [];
-          const idx = codes.indexOf(inputHash);
-          if (idx === -1) return false;
-          codes.splice(idx, 1);
-          await tx.update(usersTable)
-            .set({ twoFABackupCodes: JSON.stringify(codes) })
-            .where(eq(usersTable.id, user.id));
-          return true;
-        });
-        if (!consumed) {
-          res.status(401).json({ message: "Invalid 2FA code" });
-          return;
-        }
+      // Try TOTP first, then (single-use) backup codes
+      if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, totpCode))) {
+        res.status(401).json({ message: "Invalid 2FA code" });
+        return;
       }
     }
 
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "30d" });
+    const token = issueToken(user.id);
     res.json({ token, user: formatUser(user) });
   } catch (err) {
     req.log.error({ err }, "Login error");
@@ -246,6 +289,65 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
 router.post("/auth/logout", (_req, res) => {
   // JWT is stateless; client discards the token
   res.json({ message: "Logged out" });
+});
+
+// ─── Change password ──────────────────────────────────────────────────────────
+// Errors use 400 (not 401): the client treats any 401 as "session revoked" and
+// signs the user out, which a mistyped current password must not do.
+
+router.post("/auth/change-password", requireAuth, changePasswordLimiter, async (req, res) => {
+  try {
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { currentPassword, newPassword, totpCode } = parsed.data;
+
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
+    if (!user) { res.status(404).json({ message: "User not found" }); return; }
+
+    const valid = await bcryptjs.compare(currentPassword, user.passwordHash);
+    if (!valid) { res.status(400).json({ message: "Current password is incorrect" }); return; }
+
+    if (user.twoFAEnabled && user.twoFASecret) {
+      if (!totpCode?.trim()) {
+        res.status(400).json({ message: "Enter the code from your authenticator app, or a backup code." });
+        return;
+      }
+      if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, totpCode))) {
+        res.status(400).json({ message: "Invalid 2FA code" });
+        return;
+      }
+    }
+
+    if (await bcryptjs.compare(newPassword, user.passwordHash)) {
+      res.status(400).json({ message: "New password must be different from your current password" });
+      return;
+    }
+
+    const passwordHash = await bcryptjs.hash(newPassword, 12);
+    // Bumping passwordChangedAt makes requireAuth reject every token issued
+    // before now (other devices are signed out); this device gets a fresh token.
+    const changedAt = new Date();
+    const [updated] = await db.transaction(async (tx) => {
+      // Any outstanding reset link was issued for the old password — void it.
+      await tx.delete(passwordResetTokensTable).where(and(
+        eq(passwordResetTokensTable.userId, user.id),
+        isNull(passwordResetTokensTable.usedAt),
+      ));
+      return tx.update(usersTable)
+        .set({ passwordHash, passwordChangedAt: changedAt })
+        .where(eq(usersTable.id, user.id))
+        .returning();
+    });
+    if (!updated) { res.status(404).json({ message: "User not found" }); return; }
+
+    res.json({ token: issueToken(updated.id), user: formatUser(updated) });
+  } catch (err) {
+    req.log.error({ err }, "Change password error");
+    res.status(500).json({ message: "Failed to change password" });
+  }
 });
 
 // ─── 2FA Setup ────────────────────────────────────────────────────────────────

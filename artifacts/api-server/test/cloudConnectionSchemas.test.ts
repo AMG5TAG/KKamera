@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createConnectionSchema, updateConnectionSchema } from "../src/lib/cloudConnectionSchemas.ts";
+import { connectionUpdatePlan, createConnectionSchema, updateConnectionSchema } from "../src/lib/cloudConnectionSchemas.ts";
+import { hasParentSegment } from "../src/lib/cloudUploadPolicy.ts";
 import { CLOUD_PROVIDER } from "../src/lib/constants.ts";
 
 test("inlined provider list still matches the canonical constants (drift guard)", () => {
@@ -105,10 +106,55 @@ test("still enforces field bounds", () => {
   assert.equal(createConnectionSchema.safeParse(appBody({ host: "x".repeat(501) })).success, false);
 });
 
-test("update accepts nulls and the toggle the list screen sends", () => {
+test("update: the toggle the list screen sends", () => {
   assert.equal(updateConnectionSchema.safeParse({ active: false }).success, true);
-  assert.equal(updateConnectionSchema.safeParse({ name: null, active: null }).success, true);
-  assert.equal(updateConnectionSchema.safeParse({ uploadPath: null, password: null }).success, true);
+});
+
+test("update: absent = unchanged, null = clear", () => {
+  // Absent fields produce no change at all.
+  assert.deepEqual(connectionUpdatePlan(updateConnectionSchema.parse({})), {});
+  assert.deepEqual(connectionUpdatePlan(updateConnectionSchema.parse({ active: true })), { active: true });
+  // Explicit null clears the clearable fields.
+  const cleared = connectionUpdatePlan(updateConnectionSchema.parse({
+    password: null, port: null, username: null, uploadPath: null,
+  }));
+  assert.deepEqual(cleared, { password: null, port: null, username: null, uploadPath: null });
+  // Values are passed through; blank username / empty password clear too.
+  assert.deepEqual(
+    connectionUpdatePlan(updateConnectionSchema.parse({ password: "s3cret", port: 2121, username: "bob" })),
+    { password: "s3cret", port: 2121, username: "bob" },
+  );
+  assert.deepEqual(
+    connectionUpdatePlan(updateConnectionSchema.parse({ password: "", username: "  " })),
+    { password: null, username: null },
+  );
+});
+
+test("update: host must be non-blank and cannot be cleared; name/active are not nullable", () => {
+  for (const host of ["", "   ", null]) {
+    assert.equal(updateConnectionSchema.safeParse({ host }).success, false, JSON.stringify(host));
+  }
+  assert.equal(updateConnectionSchema.safeParse({ host: " ftp.example.com " }).success, true);
+  assert.equal(updateConnectionSchema.parse({ host: " ftp.example.com " }).host, "ftp.example.com");
+  assert.equal(updateConnectionSchema.safeParse({ name: null }).success, false);
+  assert.equal(updateConnectionSchema.safeParse({ active: null }).success, false);
+  assert.equal(updateConnectionSchema.safeParse({ name: "" }).success, false);
+  assert.equal(updateConnectionSchema.safeParse({ oauthCode: null }).success, false);
+});
+
+test("upload paths with '..' segments are rejected on create and update", () => {
+  for (const bad of ["..", "/..", "../etc", "/a/../b", "a\\..\\b", "/a/ .. /b"]) {
+    assert.equal(createConnectionSchema.safeParse(appBody({ uploadPath: bad })).success, false, bad);
+    assert.equal(updateConnectionSchema.safeParse({ uploadPath: bad }).success, false, bad);
+    // The inlined schema check agrees with the shared helper.
+    assert.equal(hasParentSegment(bad), true, bad);
+  }
+  for (const ok of ["/KKamera", "Photos/KKamera", "/a..b/c", "/...", "\\Photos\\2024", "/", ""]) {
+    assert.equal(createConnectionSchema.safeParse(appBody({ uploadPath: ok })).success, true, ok);
+    assert.equal(updateConnectionSchema.safeParse({ uploadPath: ok }).success, true, ok);
+    assert.equal(hasParentSegment(ok), false, ok);
+  }
+  assert.equal(updateConnectionSchema.safeParse({ uploadPath: "/a\nb" }).success, false);
 });
 
 test("update still rejects unknown keys", () => {

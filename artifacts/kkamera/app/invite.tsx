@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity,
   TextInput, Platform, Share, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -9,6 +9,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useGetAffiliateStats, useInviteCoworkers } from "@workspace/api-client-react";
 import { inviteMessage } from "@/lib/shareInvite";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
 const SECONDARY = "#c3b091";
@@ -113,9 +114,10 @@ export default function InviteScreen() {
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 40 }}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={80}
         showsVerticalScrollIndicator={false}
       >
         {celebrate === "1" && (
@@ -240,7 +242,7 @@ export default function InviteScreen() {
         <TouchableOpacity style={styles.skipBtn} onPress={() => (router.canGoBack() ? router.back() : router.replace("/camera"))}>
           <Text style={styles.skipBtnText}>Maybe later</Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

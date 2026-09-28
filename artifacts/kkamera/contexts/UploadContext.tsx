@@ -4,6 +4,10 @@ import React, {
 } from "react";
 import { AppState, Platform } from "react-native";
 import { File, Directory, Paths } from "expo-file-system";
+// The SDK 54 File/Directory API only offers synchronous copy/move, which blocks
+// the JS thread for the whole duration on a large video. The legacy module's
+// copyAsync/moveAsync run natively off the JS thread.
+import { copyAsync, moveAsync } from "expo-file-system/legacy";
 import * as Network from "expo-network";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "./AuthContext";
@@ -56,7 +60,9 @@ interface UploadContextValue {
     fileType: "image" | "video",
     token: string | null,
     connectionIds?: number[],
-    onDeleteLocal?: () => Promise<void>
+    onDeleteLocal?: () => Promise<void>,
+    /** Called once when this capture is confirmed uploaded everywhere (this app session only; not persisted). */
+    onUploaded?: () => void
   ) => Promise<void>;
   /** Wake every parked/waiting capture for the signed-in account and try now. */
   retryQueued: (token?: string | null) => void;
@@ -68,6 +74,8 @@ interface UploadContextValue {
   discardItem: (id: string) => Promise<void>;
   /** Drop every queued capture and delete its local copy (panic wipe, account deletion). */
   discardQueue: () => Promise<void>;
+  /** True while any of the signed-in account's captures is parked on a 402 (subscription required). */
+  subscriptionBlocked: boolean;
 }
 
 const UploadContext = createContext<UploadContextValue | null>(null);
@@ -101,9 +109,19 @@ interface QueuedItem {
   /** Caller supplied its own onDeleteLocal — survives persistence so a rehydrated item doesn't default-delete the original. */
   customDelete?: boolean;
   onDeleteLocal?: () => Promise<void>;
+  /**
+   * The server's last definitive answer was 402. Unlike parkReason this
+   * survives a wake() retry, so subscriptionBlocked doesn't flicker off each
+   * time the app is foregrounded; it clears on the next non-402 response.
+   */
+  subscriptionBlocked?: boolean;
+  /** In-memory only (not persisted): fired once when the capture reaches done. */
+  onUploaded?: () => void;
 }
 
 const offlineQueue: QueuedItem[] = [];
+/** Bumped by discardQueue so a capture still being copied into the queue during a wipe is dropped, not re-added. */
+let queueGeneration = 0;
 /** Ids currently being uploaded. In memory only — a persisted item is never "in flight" after a restart. */
 const inFlight = new Set<string>();
 
@@ -115,7 +133,8 @@ const BACKOFF_CAP_MS = 5 * 60_000;
 
 // Persist the offline queue so captures survive an app kill/restart. The
 // onDeleteLocal callback can't be serialised, so it's dropped on persist and
-// replaced by the `customDelete` flag.
+// replaced by the `customDelete` flag. onUploaded is likewise dropped (a
+// restored capture simply has no completion callback).
 const OFFLINE_QUEUE_KEY = "@kkamera/offline-upload-queue";
 
 // Set once the persisted queue has been read back. Until then persistQueue is a
@@ -126,7 +145,7 @@ let queueHydrated = false;
 async function persistQueue() {
   if (!queueHydrated) return;
   try {
-    const serialisable = offlineQueue.map(({ onDeleteLocal, ...rest }) => rest);
+    const serialisable = offlineQueue.map(({ onDeleteLocal, onUploaded, ...rest }) => rest);
     await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(serialisable));
   } catch { /* best-effort persistence */ }
 }
@@ -161,9 +180,18 @@ const BASE_URL = API_BASE_URL;
 
 /** Non-2xx response from the upload endpoint. */
 class UploadHttpError extends Error {
-  constructor(public httpStatus: number, message: string) {
+  constructor(public httpStatus: number, message: string, public retryAfterMs?: number) {
     super(message);
   }
+}
+
+/** Retry-After header (delta-seconds or HTTP date) → ms, or undefined. */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const secs = Number(value);
+  if (Number.isFinite(secs) && secs >= 0) return Math.min(BACKOFF_CAP_MS, secs * 1000);
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.min(BACKOFF_CAP_MS, Math.max(0, at - Date.now())) : undefined;
 }
 
 interface ExecuteResult {
@@ -217,7 +245,9 @@ function xhrUpload(
             const body = JSON.parse(xhr.responseText);
             if (body?.message) message = String(body.message);
           } catch { /* keep the generic message */ }
-          reject(new UploadHttpError(xhr.status, message));
+          let retryAfter: string | null = null;
+          try { retryAfter = xhr.getResponseHeader("Retry-After"); } catch { /* header not exposed */ }
+          reject(new UploadHttpError(xhr.status, message, parseRetryAfter(retryAfter)));
         }
       };
 
@@ -246,22 +276,49 @@ export async function deleteLocalFile(uri: string) {
 
 // Captures are written to the OS cache directory, which the system can purge
 // while an upload waits in the offline queue (especially across an app kill).
-// Copy every capture into the durable document directory before the first
+// Put every capture into the durable document directory before the first
 // attempt so a retry (possibly after an app kill) still has its bytes.
 const QUEUE_DIR = Platform.OS === "web" ? null : new Directory(Paths.document, "upload-queue");
 
-function persistForQueue(uri: string, id: string): string {
-  if (!QUEUE_DIR) return uri;
+function isAppCacheUri(uri: string): boolean {
+  try {
+    const cache = Paths.cache.uri;
+    return !!cache && uri.startsWith(cache.endsWith("/") ? cache : `${cache}/`);
+  } catch { return false; }
+}
+
+/**
+ * Put a capture into the durable queue directory without blocking the JS
+ * thread (the copy of a large video used to freeze the UI). When the caller
+ * doesn't need the original afterwards (`keepOriginal` false — the queue would
+ * delete it after upload anyway) and it lives in the app's own cache, it is
+ * MOVED (a cheap rename); otherwise it is copied. `moved` tells the caller the
+ * original URI no longer exists.
+ */
+async function persistForQueue(uri: string, id: string, keepOriginal: boolean): Promise<{ uri: string; moved: boolean }> {
+  if (!QUEUE_DIR) return { uri, moved: false };
+  let dest: File;
   try {
     if (!QUEUE_DIR.exists) QUEUE_DIR.create({ intermediates: true });
     const base = uri.split("?")[0] ?? uri;
     const ext = base.includes(".") ? base.split(".").pop() : undefined;
-    const dest = new File(QUEUE_DIR, ext ? `${id}.${ext}` : id);
+    dest = new File(QUEUE_DIR, ext ? `${id}.${ext}` : id);
     if (dest.exists) dest.delete();
-    new File(uri).copy(dest);
-    return dest.uri;
   } catch {
-    return uri; // couldn't copy — fall back to the original URI (no regression)
+    return { uri, moved: false }; // no queue dir — fall back to the original URI (no regression)
+  }
+  if (!keepOriginal && isAppCacheUri(uri)) {
+    try {
+      await moveAsync({ from: uri, to: dest.uri });
+      return { uri: dest.uri, moved: true };
+    } catch { /* fall through to a copy */ }
+  }
+  try {
+    await copyAsync({ from: uri, to: dest.uri });
+    return { uri: dest.uri, moved: false };
+  } catch {
+    try { if (dest.exists) dest.delete(); } catch { /* best-effort */ }
+    return { uri, moved: false }; // couldn't copy — fall back to the original URI (no regression)
   }
 }
 
@@ -282,7 +339,8 @@ async function deleteItemFiles(item: QueuedItem) {
 }
 
 function isRetryableHttp(status: number): boolean {
-  return status >= 500 || status === 408 || status === 429;
+  // 409: the server is still processing an earlier attempt of this same capture.
+  return status >= 500 || status === 408 || status === 409 || status === 429;
 }
 
 function newId(): string {
@@ -367,6 +425,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     };
 
     if (!localFileExists(item.uri)) {
+      item.subscriptionBlocked = false;
       item.state = "failed";
       item.error = "The file is no longer on this device";
       reflect(item, { status: "failed", error: item.error });
@@ -383,6 +442,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     } catch (err: any) {
       if (!stillQueued()) { finish(); return; } // discarded while in flight
       const httpStatus: number | undefined = err instanceof UploadHttpError ? err.httpStatus : undefined;
+      // A network error says nothing about the subscription; any HTTP answer does.
+      if (httpStatus != null) item.subscriptionBlocked = httpStatus === 402;
 
       if (httpStatus === 401) {
         // Token expired/revoked. Park until the same account signs back in, and
@@ -413,8 +474,10 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Network error, timeout, 5xx/408/429: retry indefinitely with backoff.
-      const delay = backoffMs(item.retries);
+      // Network error, timeout, 5xx/408/409/429: retry indefinitely with backoff,
+      // never sooner than the server's Retry-After.
+      const retryAfterMs = err instanceof UploadHttpError ? err.retryAfterMs : undefined;
+      const delay = Math.max(backoffMs(item.retries), retryAfterMs ?? 0);
       item.retries += 1;
       item.state = "waiting";
       item.nextRetryAt = Date.now() + delay;
@@ -425,6 +488,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     }
 
     if (!stillQueued()) { finish(); return; }
+    item.subscriptionBlocked = false;
     const status = result.status || "done";
     const results = Array.isArray(result.results) ? result.results : [];
 
@@ -432,6 +496,10 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       offlineQueue.splice(offlineQueue.indexOf(item), 1);
       await persistQueue();
       reflect(item, { status: "done", progress: 100, error: undefined });
+      // Exactly once: the item has left the queue, and the callback is cleared.
+      const onUploaded = item.onUploaded;
+      item.onUploaded = undefined;
+      try { onUploaded?.(); } catch { /* caller's problem, not the queue's */ }
       // Delete the original capture after confirmed upload (unless the caller
       // keeps it), then the durable queue copy.
       if (item.onDeleteLocal) {
@@ -564,16 +632,30 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     fileType: "image" | "video",
     token: string | null,
     connectionIds?: number[],
-    onDeleteLocal?: () => Promise<void>
+    onDeleteLocal?: () => Promise<void>,
+    onUploaded?: () => void
   ) => {
     const id = addUpload(fileName, fileType);
     if (token) tokenRef.current = token;
-    const queueUri = persistForQueue(uri, id);
+    const ownerId = userIdRef.current;
+    const createdAt = Date.now();
+    const generation = queueGeneration;
+    // A caller-supplied onDeleteLocal (even a no-op, meaning "keep it") owns the
+    // original, so it is copied; otherwise the queue deletes the original after
+    // upload anyway, so it may be moved instead.
+    const persisted = await persistForQueue(uri, id, onDeleteLocal != null);
+    if (generation !== queueGeneration) {
+      // The queue was wiped while this capture was being persisted — honour it.
+      if (isQueueUri(persisted.uri)) await deleteLocalFile(persisted.uri);
+      if (!persisted.moved && onDeleteLocal == null) await deleteLocalFile(uri);
+      setUploads(prev => prev.filter(u => u.id !== id));
+      return;
+    }
     const item: QueuedItem = {
-      id, uri: queueUri, originalUri: uri, fileName, fileType, connectionIds,
-      retries: 0, nextRetryAt: Date.now(), ownerId: userIdRef.current,
-      state: "waiting", createdAt: Date.now(),
-      customDelete: onDeleteLocal != null, onDeleteLocal,
+      id, uri: persisted.uri, originalUri: persisted.moved ? undefined : uri, fileName, fileType, connectionIds,
+      retries: 0, nextRetryAt: Date.now(), ownerId,
+      state: "waiting", createdAt,
+      customDelete: onDeleteLocal != null, onDeleteLocal, onUploaded,
     };
     offlineQueue.push(item);
     // Durable before the first network attempt (no-op until hydration, which
@@ -620,6 +702,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
   const discardQueue = useCallback(async () => {
     clearTimer();
+    queueGeneration += 1;
     const items = offlineQueue.splice(0, offlineQueue.length);
     await persistQueue();
     await Promise.all(items.map(deleteItemFiles));
@@ -756,13 +839,20 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     // queueVersion bumps whenever the module-level queue mutates.
   }, [queueVersion, userId, token]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const subscriptionBlocked = useMemo(() => {
+    if (userId == null) return false;
+    return offlineQueue.some(i =>
+      i.ownerId === userId && (i.subscriptionBlocked || (i.state === "parked" && i.parkReason === "subscription")));
+    // queueVersion bumps whenever the module-level queue mutates.
+  }, [queueVersion, userId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const lastUpload = uploads[0] ?? null;
 
   const value = useMemo<UploadContextValue>(() => ({
     uploads, lastUpload, addUpload, updateUpload, clearCompleted, executeUpload,
-    retryQueued, queuedItems, retryItem, discardItem, discardQueue,
+    retryQueued, queuedItems, retryItem, discardItem, discardQueue, subscriptionBlocked,
   }), [uploads, lastUpload, addUpload, updateUpload, clearCompleted, executeUpload,
-    retryQueued, queuedItems, retryItem, discardItem, discardQueue]);
+    retryQueued, queuedItems, retryItem, discardItem, discardQueue, subscriptionBlocked]);
 
   return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>;
 }

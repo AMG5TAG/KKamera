@@ -25,6 +25,18 @@ export interface CloudConnection {
    * @nullable
    */
   host?: string | null;
+  /**
+   * Explicit port for self-hosted types; null = protocol default.
+   * @nullable
+   */
+  port?: number | null;
+  /**
+   * Login for self-hosted types (never the password).
+   * @nullable
+   */
+  username?: string | null;
+  /** Whether a password is saved (the password itself is never returned). */
+  hasPassword?: boolean;
   /** @nullable */
   accountLabel?: string | null;
   hasCredentials: boolean;

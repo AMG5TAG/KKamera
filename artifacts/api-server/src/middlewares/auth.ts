@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { db, usersTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { maybeSendTrialReminder } from "../lib/trialReminder.js";
 
 declare global {
   namespace Express {
@@ -50,6 +51,9 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     }
 
     req.userId = payload.userId;
+    // Opportunistic "trial ending" email (no cron on autoscale). Throttled per
+    // process and fire-and-forget — never delays or fails this request.
+    maybeSendTrialReminder(payload.userId);
     next();
   } catch {
     res.status(401).json({ message: "Invalid token" });

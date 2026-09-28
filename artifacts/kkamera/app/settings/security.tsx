@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, Alert, Platform, ActivityIndicator, Linking, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, type Href } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSetup2FA, useVerify2FA, useDisable2FA, getGetMeQueryKey, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -123,6 +123,18 @@ export default function SecurityScreen() {
           }
         </Text>
       </View>
+
+      {/* Password */}
+      {mode === "idle" && (
+        <>
+          <Text style={styles.sectionTitle}>Password</Text>
+          <TouchableOpacity style={styles.rowCard} onPress={() => router.push("/settings/change-password" as Href)}>
+            <Ionicons name="lock-closed-outline" size={18} color={PRIMARY} />
+            <Text style={styles.rowCardText}>Change Password</Text>
+            <Ionicons name="chevron-forward" size={16} color="#555" />
+          </TouchableOpacity>
+        </>
+      )}
 
       {/* What is 2FA */}
       {!is2FAEnabled && mode === "idle" && (
@@ -274,4 +286,6 @@ const styles = StyleSheet.create({
   disableBtn: { alignItems: "center", justifyContent: "center", borderRadius: 14, paddingVertical: 15, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", marginBottom: 10 },
   disableBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: "#ef4444" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  rowCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, marginBottom: 24, borderWidth: 1, borderColor: "rgba(177,152,112,0.1)" },
+  rowCardText: { flex: 1, fontSize: 15, color: "white", fontFamily: "Inter_500Medium" },
 });

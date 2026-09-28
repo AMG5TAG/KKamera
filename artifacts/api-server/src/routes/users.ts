@@ -8,11 +8,13 @@ import {
 } from "@workspace/db";
 import { eq, and, ne, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { buildUserExport, parseTargetIds } from "../lib/accountRules.js";
 
 const router = Router();
 
 const updateMeSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
+  // Trimmed so a whitespace-only name is rejected; null (allowed by the spec) = no change.
+  name: z.string().trim().min(1, "Name is required").max(100, "Name must be at most 100 characters").nullish(),
   onboardingCompleted: z.boolean().optional(),
 }).strict();
 
@@ -20,14 +22,6 @@ const uploadTargetSchema = z.object({
   mode: z.enum(["all", "selected", "none"]),
   connectionIds: z.array(z.number().int().positive()).max(50).optional(),
 }).strict();
-
-/** Parse the stored CSV of connection ids into a positive-int array. */
-function parseTargetIds(csv: string | null): number[] {
-  if (!csv) return [];
-  return csv.split(",")
-    .map(s => parseInt(s.trim(), 10))
-    .filter(n => Number.isInteger(n) && n > 0);
-}
 
 router.get("/users/me", requireAuth, async (req, res) => {
   try {
@@ -53,8 +47,13 @@ router.patch("/users/me", requireAuth, async (req, res) => {
       return;
     }
     const updates: Partial<{ name: string; onboardingCompleted: boolean }> = {};
-    if (parsed.data.name) updates.name = parsed.data.name;
+    if (parsed.data.name != null) updates.name = parsed.data.name;
     if (parsed.data.onboardingCompleted !== undefined) updates.onboardingCompleted = parsed.data.onboardingCompleted;
+    // Drizzle throws "No values to set" on an empty SET — that's a client error.
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ message: "Nothing to update" });
+      return;
+    }
     const [user] = await db.update(usersTable).set(updates).where(eq(usersTable.id, req.userId!)).returning();
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
     res.json({
@@ -125,10 +124,34 @@ router.put("/users/upload-target", requireAuth, async (req, res) => {
 router.get("/users/me/export", requireAuth, async (req, res) => {
   try {
     const userId = req.userId!;
-    const [user, subscriptions, referrals, uploads, feedback] = await Promise.all([
-      db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1),
-      db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)),
-      db.select().from(referralsTable).where(eq(referralsTable.referrerId, userId)),
+    // Every query is scoped to this user, and only non-secret columns are
+    // selected (no password/TOTP hashes, tokens or encrypted credentials).
+    const [user, subscriptions, cloudConnections, referralsMade, referredBy, uploads, feedback] = await Promise.all([
+      db.select({
+        id: usersTable.id, email: usersTable.email, name: usersTable.name,
+        referralCode: usersTable.referralCode, twoFAEnabled: usersTable.twoFAEnabled,
+        onboardingCompleted: usersTable.onboardingCompleted,
+        uploadTargetMode: usersTable.uploadTargetMode, uploadTargetIds: usersTable.uploadTargetIds,
+        createdAt: usersTable.createdAt,
+      }).from(usersTable).where(eq(usersTable.id, userId)).limit(1),
+      db.select({
+        status: subscriptionsTable.status, trialStart: subscriptionsTable.trialStart,
+        trialEnd: subscriptionsTable.trialEnd, currentPeriodEnd: subscriptionsTable.currentPeriodEnd,
+        freeYearsAwarded: subscriptionsTable.freeYearsAwarded, createdAt: subscriptionsTable.createdAt,
+      }).from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1),
+      db.select({
+        id: cloudConnectionsTable.id, type: cloudConnectionsTable.type, provider: cloudConnectionsTable.provider,
+        name: cloudConnectionsTable.name, host: cloudConnectionsTable.host, port: cloudConnectionsTable.port,
+        username: cloudConnectionsTable.username, uploadPath: cloudConnectionsTable.uploadPath,
+        accountLabel: cloudConnectionsTable.accountLabel, active: cloudConnectionsTable.active,
+        createdAt: cloudConnectionsTable.createdAt,
+      }).from(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId)),
+      db.select({
+        id: referralsTable.id, referredName: referralsTable.referredName,
+        status: referralsTable.status, createdAt: referralsTable.createdAt,
+      }).from(referralsTable).where(eq(referralsTable.referrerId, userId)),
+      db.select({ id: referralsTable.id, status: referralsTable.status, createdAt: referralsTable.createdAt })
+        .from(referralsTable).where(eq(referralsTable.referredId, userId)),
       db.select({ id: uploadsTable.id, fileName: uploadsTable.fileName, fileType: uploadsTable.fileType, status: uploadsTable.status, createdAt: uploadsTable.createdAt })
         .from(uploadsTable).where(eq(uploadsTable.userId, userId)),
       db.select({ id: feedbackTable.id, type: feedbackTable.type, message: feedbackTable.message, createdAt: feedbackTable.createdAt })
@@ -138,18 +161,11 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
     const u = user[0];
     if (!u) { res.status(404).json({ message: "User not found" }); return; }
 
-    res.json({
-      exportedAt: new Date().toISOString(),
-      user: {
-        id: u.id, email: u.email, name: u.name,
-        referralCode: u.referralCode, twoFAEnabled: u.twoFAEnabled,
-        createdAt: u.createdAt.toISOString(),
-      },
+    res.json(buildUserExport({
+      user: u,
       subscription: subscriptions[0] ?? null,
-      referrals,
-      uploads,
-      feedback,
-    });
+      cloudConnections, referralsMade, referredBy, uploads, feedback,
+    }, new Date()));
   } catch (err) {
     req.log.error({ err }, "Export data error");
     res.status(500).json({ message: "Failed to export data" });

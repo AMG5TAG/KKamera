@@ -1,14 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   ScrollView, Platform, Alert, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
-import { useCreateCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage } from "@workspace/api-client-react";
+import {
+  useCreateCloudConnection, useUpdateCloudConnection, useListCloudConnections,
+  getListCloudConnectionsQueryKey, getUserFacingMessage,
+  type CloudConnectionUpdate,
+} from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_BASE_URL } from "@/lib/config";
 
@@ -106,6 +110,16 @@ export default function AddCloudScreen() {
   const queryClient = useQueryClient();
   const { token } = useAuth();
   const createMutation = useCreateCloudConnection();
+  const updateMutation = useUpdateCloudConnection();
+
+  // `?edit=<id>` opens this screen as the edit form for an existing connection.
+  const { edit } = useLocalSearchParams<{ edit?: string }>();
+  const editId = edit && /^\d+$/.test(edit) ? Number(edit) : null;
+  const { data: connections } = useListCloudConnections({
+    query: { enabled: editId != null, queryKey: getListCloudConnectionsQueryKey() },
+  });
+  const editing = editId != null ? connections?.find(c => c.id === editId) : undefined;
+  const prefilled = useRef(false);
 
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -117,6 +131,22 @@ export default function AddCloudScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthStatus, setOauthStatus] = useState<Record<string, boolean>>({});
+  // Edit mode: a blank password field keeps the saved one; this clears it.
+  const [clearPassword, setClearPassword] = useState(false);
+
+  useEffect(() => {
+    if (!editing || prefilled.current) return;
+    prefilled.current = true;
+    const cardType = CLOUD_TYPES.find(t => t.provider && t.provider === editing.provider)?.type ?? editing.type;
+    setSelectedType(cardType);
+    setName(editing.name);
+    setHost(editing.host ?? "");
+    setPort(editing.port != null ? String(editing.port) : "");
+    setUsername(editing.username ?? "");
+    setPassword("");
+    setClearPassword(false);
+    setUploadPath(editing.uploadPath ?? "/KKamera");
+  }, [editing]);
 
   const selected = CLOUD_TYPES.find(t => t.type === selectedType);
 
@@ -180,19 +210,22 @@ export default function AddCloudScreen() {
           // The server deep-links back to kkamera://oauth-success (with a
           // connectionId) on success, or kkamera://oauth-error (with an error) on
           // failure — both close the auth browser, so inspect which one we got.
+          // searchParams.get() already percent-decodes; decoding again threw
+          // URIError on a literal "%" in the message.
           const url = new URL(result.url);
           const connectionId = url.searchParams.get("connectionId");
           const errParam = url.searchParams.get("error");
-          const connName = url.searchParams.get("name");
           if (connectionId) {
             queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+            // Show the name the user typed here, not the deep link's `name`
+            // param (anything can open kkamera:// URLs).
             Alert.alert(
               "Connected!",
-              `"${decodeURIComponent(connName ?? selected?.label ?? "Connection")}" added successfully.`,
+              `"${name.trim() || selected?.label || "Connection"}" added successfully.`,
               [{ text: "Done", onPress: () => router.back() }]
             );
           } else if (errParam) {
-            Alert.alert("Connection Failed", decodeURIComponent(errParam));
+            Alert.alert("Connection Failed", errParam.slice(0, 300));
           } else {
             Alert.alert("Connection Failed", "The connection did not complete. Please try again.");
           }
@@ -246,6 +279,50 @@ export default function AddCloudScreen() {
     }
   };
 
+  const handleSaveEdit = async () => {
+    if (!editing || !selected) return;
+    if (!name.trim()) {
+      Alert.alert("Missing Info", "Please give the connection a name.");
+      return;
+    }
+    const data: CloudConnectionUpdate = {
+      name: name.trim(),
+      // Blank folder → null → the server resets it to the default folder.
+      uploadPath: uploadPath.trim() || null,
+    };
+    if (!selected.oAuth) {
+      if (!host.trim()) {
+        Alert.alert("Missing Info", "Please enter the server host / URL.");
+        return;
+      }
+      if (selected.requiresUsername && !username.trim()) {
+        Alert.alert("Missing Info", `Please enter your ${selected.label} username.`);
+        return;
+      }
+      const portNum = port.trim() ? parseInt(port, 10) : null;
+      if (portNum !== null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
+        Alert.alert("Invalid Port", "Port must be a number between 1 and 65535.");
+        return;
+      }
+      data.host = host.trim();
+      // Explicit null clears a saved port / username (the server treats a
+      // missing field as "unchanged" and null as "clear").
+      data.port = portNum;
+      data.username = username.trim() || null;
+      // Blank password = keep the saved one (field omitted); "Clear saved
+      // password" sends null; anything typed replaces it.
+      if (clearPassword) data.password = null;
+      else if (password) data.password = password;
+    }
+    try {
+      await updateMutation.mutateAsync({ id: editing.id, data });
+      queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+      Alert.alert("Connection Updated", `"${name.trim()}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
+    } catch (e: any) {
+      Alert.alert("Error", getUserFacingMessage(e, "Failed to update connection."));
+    }
+  };
+
   const isOAuthConfigured = selectedType ? oauthStatus[selectedType] !== false : true;
 
   return (
@@ -254,12 +331,17 @@ export default function AddCloudScreen() {
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Text style={styles.sectionTitle}>Choose Storage Type</Text>
+        <Text style={styles.sectionTitle}>{editId != null ? "Edit Connection" : "Choose Storage Type"}</Text>
 
-        {CLOUD_TYPES.map(opt => (
+        {editId != null && !editing && (
+          <ActivityIndicator color={PRIMARY} style={{ marginVertical: 24 }} />
+        )}
+
+        {CLOUD_TYPES.filter(opt => editId == null || opt.type === selectedType).map(opt => (
           <TouchableOpacity
             key={opt.type}
             style={[styles.typeCard, selectedType === opt.type && styles.typeCardSelected]}
+            disabled={editId != null}
             onPress={() => { setSelectedType(opt.type); setName(opt.label); setPort(opt.defaultPort ?? ""); }}
           >
             <View style={[styles.typeIcon, { backgroundColor: opt.color + "22" }]}>
@@ -304,6 +386,22 @@ export default function AddCloudScreen() {
             {/* ── OAuth providers ── */}
             {selected.oAuth && (
               <>
+                {editing && (
+                  <TouchableOpacity
+                    style={[styles.saveBtn, { marginBottom: 16 }, updateMutation.isPending && { opacity: 0.6 }]}
+                    onPress={handleSaveEdit}
+                    disabled={updateMutation.isPending}
+                  >
+                    {updateMutation.isPending
+                      ? <ActivityIndicator color="white" />
+                      : <>
+                          <Ionicons name="save-outline" size={18} color="white" />
+                          <Text style={styles.saveText}>Save Changes</Text>
+                        </>
+                    }
+                  </TouchableOpacity>
+                )}
+
                 {!isOAuthConfigured && (
                   <View style={styles.warnCard}>
                     <Ionicons name="warning-outline" size={18} color="#f59e0b" />
@@ -327,7 +425,7 @@ export default function AddCloudScreen() {
                           ? <MaterialCommunityIcons name={selected.icon as any} size={20} color="white" />
                           : <Ionicons name={selected.icon as any} size={20} color="white" />
                         }
-                        <Text style={styles.oauthBtnText}>Connect with {selected.label}</Text>
+                        <Text style={styles.oauthBtnText}>{editing ? "Reconnect" : "Connect with"} {selected.label}</Text>
                       </>
                   }
                 </TouchableOpacity>
@@ -374,8 +472,15 @@ export default function AddCloudScreen() {
                   <View style={styles.inputRow}>
                     <TextInput
                       style={[styles.input, { flex: 1, borderWidth: 0 }]}
-                      value={password} onChangeText={setPassword}
-                      placeholder="password" placeholderTextColor="#555"
+                      value={password}
+                      onChangeText={(v) => { setPassword(v); if (v) setClearPassword(false); }}
+                      editable={!clearPassword}
+                      placeholder={
+                        clearPassword ? "Saved password will be removed"
+                          : editing?.hasPassword ? "Leave blank to keep the saved password"
+                          : "password"
+                      }
+                      placeholderTextColor="#555"
                       secureTextEntry={!showPassword}
                       autoComplete="off"
                       textContentType="password"
@@ -389,21 +494,37 @@ export default function AddCloudScreen() {
                       <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                     </TouchableOpacity>
                   </View>
+                  {editing?.hasPassword && (
+                    <TouchableOpacity
+                      style={styles.clearPwBtn}
+                      onPress={() => { setClearPassword(v => !v); setPassword(""); }}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: clearPassword }}
+                    >
+                      <Ionicons name={clearPassword ? "checkbox" : "square-outline"} size={18} color={clearPassword ? "#ef4444" : "#888"} />
+                      <Text style={styles.clearPwText}>Clear saved password</Text>
+                    </TouchableOpacity>
+                  )}
                 </Field>
 
-                <TouchableOpacity
-                  style={[styles.saveBtn, createMutation.isPending && { opacity: 0.6 }]}
-                  onPress={handleSaveFtpWebdav}
-                  disabled={createMutation.isPending}
-                >
-                  {createMutation.isPending
-                    ? <ActivityIndicator color="white" />
-                    : <>
-                        <Ionicons name="cloud-upload-outline" size={18} color="white" />
-                        <Text style={styles.saveText}>Save Connection</Text>
-                      </>
-                  }
-                </TouchableOpacity>
+                {(() => {
+                  const pending = editing ? updateMutation.isPending : createMutation.isPending;
+                  return (
+                    <TouchableOpacity
+                      style={[styles.saveBtn, pending && { opacity: 0.6 }]}
+                      onPress={editing ? handleSaveEdit : handleSaveFtpWebdav}
+                      disabled={pending || (editId != null && !editing)}
+                    >
+                      {pending
+                        ? <ActivityIndicator color="white" />
+                        : <>
+                            <Ionicons name={editing ? "save-outline" : "cloud-upload-outline"} size={18} color="white" />
+                            <Text style={styles.saveText}>{editing ? "Save Changes" : "Save Connection"}</Text>
+                          </>
+                      }
+                    </TouchableOpacity>
+                  );
+                })()}
               </>
             )}
           </>
@@ -473,6 +594,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(177,152,112,0.18)", paddingHorizontal: 14,
   },
   eyeBtn: { paddingLeft: 8 },
+  clearPwBtn: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 },
+  clearPwText: { fontSize: 13, color: "#aaa", fontFamily: "Inter_400Regular" },
   saveBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 15, marginTop: 8,

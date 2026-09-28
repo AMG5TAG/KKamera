@@ -1,5 +1,5 @@
 import React from "react";
-import { Text, StyleSheet, Linking } from "react-native";
+import { Alert, Linking, Platform, Share, StyleSheet, Text } from "react-native";
 
 const PRIMARY = "#b19870";
 
@@ -15,9 +15,10 @@ export function MailLink({ address, subject }: { address: string; subject?: stri
     const url = subject
       ? `mailto:${address}?subject=${encodeURIComponent(subject)}`
       : `mailto:${address}`;
-    // Rejects when no mail client is registered (common on desktop web and on
-    // simulators) — swallow it rather than surface an unhandled rejection.
-    Linking.openURL(url).catch(() => {});
+    // Rejects when no mail client is registered (common on desktop web, on
+    // simulators and on devices without the Mail app) — show the address so the
+    // user can still reach us instead of the tap silently doing nothing.
+    Linking.openURL(url).catch(() => showAddress(address));
   };
 
   return (
@@ -30,6 +31,19 @@ export function MailLink({ address, subject }: { address: string; subject?: stri
       {address}
     </Text>
   );
+}
+
+function showAddress(address: string) {
+  if (Platform.OS === "web") {
+    // Alert is a no-op on react-native-web; a prompt shows the address selected
+    // and ready to copy.
+    if (typeof window !== "undefined") window.prompt("No email app found. Copy this address:", address);
+    return;
+  }
+  Alert.alert("No email app found", `You can reach us at:\n\n${address}`, [
+    { text: "Share / Copy", onPress: () => { Share.share({ message: address }).catch(() => {}); } },
+    { text: "OK", style: "cancel" },
+  ]);
 }
 
 const styles = StyleSheet.create({

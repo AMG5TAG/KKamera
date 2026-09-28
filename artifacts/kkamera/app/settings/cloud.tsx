@@ -148,6 +148,13 @@ export default function CloudScreen() {
                   }
                   <Text style={styles.actionText}>Test</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => router.push({ pathname: "/settings/add-cloud", params: { edit: String(item.id) } })}
+                >
+                  <Ionicons name="create-outline" size={16} color={PRIMARY} />
+                  <Text style={styles.actionText}>Edit</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={[styles.actionBtn, styles.actionDelete]} onPress={() => handleDelete(item.id, item.name)}>
                   <Ionicons name="trash-outline" size={16} color="#ef4444" />
                   <Text style={[styles.actionText, { color: "#ef4444" }]}>Remove</Text>

@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
   Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
-  useWindowDimensions, Linking,
+  useWindowDimensions, Linking, AppState,
 } from "react-native";
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
@@ -10,7 +10,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { runOnJS } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import * as Haptics from "expo-haptics";
 import {
   CameraView, CameraType, CameraMode, useCameraPermissions, useMicrophonePermissions,
@@ -24,15 +24,16 @@ import { useGetSubscription, useListCloudConnections } from "@workspace/api-clie
 import Svg, { Line, Rect, G } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
-import { API_BASE_URL } from "@/lib/config";
 import { resolveUploadTarget } from "@/lib/uploadTarget";
 import { useUploadTargetResolver } from "@/lib/useUploadTargetResolver";
 import {
   readCachedSubscription, writeCachedSubscription, subscriptionAllows, type SubscriptionSnapshot,
 } from "@/lib/offlineCache";
-import { saveToCameraRoll, deleteTempFile, extensionOf } from "@/lib/captureStorage";
 import {
-  accumulateSweep, panoLayout, type PanoLayout,
+  saveToCameraRoll, deleteTempFile, extensionOf, viewShotSize, notifyWitness as sendWitnessNotice,
+} from "@/lib/captureStorage";
+import {
+  accumulateSweep, directionFromPosition, panoLayout, type PanoLayout, type PanoDirection,
   PANO_STEP_DEG, PANO_MAX_SWEEP_DEG, PANO_MAX_FRAMES, PANO_MIN_FRAMES,
   PANO_FALLBACK_INTERVAL_MS,
 } from "@/lib/panorama";
@@ -86,16 +87,9 @@ function GridOverlay({ type }: { type: GridType }) {
 
 const PRIMARY = "#b19870";
 
-// Lazy import so expo-sensors is never loaded on web (import-time crash)
-async function getAccelerometer() {
-  if (Platform.OS === "web") return null;
-  const { Accelerometer } = await import("expo-sensors");
-  return Accelerometer;
-}
-
-// Yaw source for the panorama sweep. DeviceMotion carries an integrated
-// orientation (rotation.alpha), which is far steadier than the raw magnetometer
-// used for the compass badge.
+// Lazy import so expo-sensors is never loaded on web (import-time crash).
+// DeviceMotion drives both the level guide (gravity) and the panorama sweep
+// (gyro rate projected onto gravity, falling back to rotation.alpha).
 async function getDeviceMotion() {
   if (Platform.OS === "web") return null;
   const { DeviceMotion } = await import("expo-sensors");
@@ -112,6 +106,27 @@ async function getDocumentScanner() {
 
 // Tilt within this many degrees of horizontal counts as "level" → green guide.
 const LEVEL_TOLERANCE_DEG = 2;
+
+/**
+ * Spirit-level reading from an "up" vector in screen coordinates (x → right
+ * edge, y → top edge; any unit). `roll` is how far the device is rotated
+ * counter-clockwise from upright (degrees, -180..180). `base` snaps that to the
+ * nearest held orientation — 0 portrait, ±90 landscape, 180 upside-down — and
+ * `deviation` is the tilt away from it, which is what "level" is judged on.
+ * Returns null when the phone is lying flat (gravity is ~perpendicular to the
+ * screen), where a horizon angle is meaningless.
+ */
+function levelFromUp(ux: number, uy: number, uz: number) {
+  const planar = Math.hypot(ux, uy);
+  if (planar < 0.35 * Math.hypot(ux, uy, uz)) return null;
+  const roll = Math.atan2(ux, uy) * (180 / Math.PI);
+  let base = Math.round(roll / 90) * 90;
+  if (base === -180) base = 180;
+  let deviation = roll - base;
+  if (deviation > 180) deviation -= 360;
+  if (deviation < -180) deviation += 360;
+  return { roll, base, deviation };
+}
 
 type FlashMode = "off" | "on" | "auto";
 // "timelapse" is shown to the user as INTERVAL: it takes a photo every
@@ -183,12 +198,14 @@ const FILTERS: FilterDef[] = [
 ];
 
 
-// iOS Camera-style ordered strip: PANO · VIDEO · PHOTO · DOC · INTERVAL
+// iOS Camera-style ordered strip: PANO · VIDEO · PHOTO · DOC · INTERVAL.
+// DOC hands off to the OS document scanner (VisionKit / ML Kit), which only
+// exists on native — it is not offered on web.
 const STRIP_MODES: ModeConfig[] = [
   EXT_MODES.find(m => m.mode === "pano")!,
   EXT_MODES.find(m => m.mode === "video")!,
   EXT_MODES.find(m => m.mode === "photo")!,
-  EXT_MODES.find(m => m.mode === "scan")!,
+  ...(Platform.OS === "web" ? [] : [EXT_MODES.find(m => m.mode === "scan")!]),
   EXT_MODES.find(m => m.mode === "timelapse")!,
 ];
 const STRIP_LABEL: Partial<Record<ExtMode, string>> = {
@@ -208,19 +225,27 @@ interface BakeConfig {
   fs: number;
   stampLines: string[];
   overlay: { color: string; opacity: number } | null;
+  /** dp per output pixel — renderW/pad/fs are in px (see viewShotSize). */
+  dp: number;
+  capture: { width: number; height: number };
 }
 
-interface PanoFrame { uri: string; width: number; height: number }
+interface PanoFrame { uri: string; width: number; height: number; angle: number }
 
 // Offscreen strip composition for PANO, rasterised the same way as BakeConfig.
-interface PanoConfig extends PanoLayout { frames: PanoFrame[] }
+interface PanoConfig extends PanoLayout {
+  frames: PanoFrame[];
+  /** dp per output pixel (see viewShotSize). */
+  dp: number;
+  capture: { width: number; height: number };
+}
 
 export default function CameraScreen() {
   const insets = useSafeAreaInsets();
   const { width: screenW } = useWindowDimensions();
   const { token, user } = useAuth();
   const userId = user?.id ?? null;
-  const { lastUpload, executeUpload } = useUpload();
+  const { lastUpload, executeUpload, subscriptionBlocked } = useUpload();
   const { settings, updateSetting, isLoading: settingsLoading } = useSettings();
   const { data: sub, isLoading: subLoading, isError: subError } = useGetSubscription();
   const rcSub = useSubscription();
@@ -269,12 +294,14 @@ export default function CameraScreen() {
     ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
     : null;
 
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [micPermission, requestMicPermission] = useMicrophonePermissions();
+  const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
+  const [micPermission, requestMicPermission, getMicPermission] = useMicrophonePermissions();
 
   const [extMode, setExtMode] = useState<ExtMode>("photo");
   const [facing, setFacing] = useState<CameraType>("back");
-  const [flash, setFlash] = useState<FlashMode>("auto");
+  // Flash follows the saved preference: it starts from settings.flashMode and
+  // the top-bar toggle writes back to it, so the two can never disagree.
+  const flash: FlashMode = settings.flashMode;
   const [zoom, setZoom] = useState<number>(DEFAULT_ZOOM);
   const [isRecording, setIsRecording] = useState(false);
   const [selectedFilter, setSelectedFilter] = useState(0);
@@ -303,6 +330,7 @@ export default function CameraScreen() {
   const tlTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const tlPhotos = useRef<string[]>([]);
   const tlGrabbing = useRef(false);
+  const intervalRunning = useRef(false);
 
   // Recording timer
   const [recordSeconds, setRecordSeconds] = useState(0);
@@ -312,8 +340,6 @@ export default function CameraScreen() {
   const [scanUri, setScanUri] = useState<string | null>(null);
   const [scanFileName, setScanFileName] = useState("");
   const [showScanModal, setShowScanModal] = useState(false);
-  const [scanCropped, setScanCropped] = useState(false);
-  const [isProcessingScan, setIsProcessingScan] = useState(false);
 
   // Mode strip scroll ref
   const modeScrollRef = useRef<ScrollView>(null);
@@ -361,8 +387,14 @@ export default function CameraScreen() {
   // loop both run outside React's render cycle and need the live values.
   const panoActive = useRef(false);
   const panoFrames = useRef<PanoFrame[]>([]);
+  // Progress along the locked sweep direction (degrees, never decreases).
   const panoSweepRef = useRef(0);
+  // Signed net rotation since the sweep started (positive = turning left).
+  const panoPosition = useRef(0);
+  const panoDirection = useRef<PanoDirection | null>(null);
   const panoLastYaw = useRef<number | null>(null);
+  // Gyro integration state (native): last sample time in seconds.
+  const panoLastGyroT = useRef<number | null>(null);
   const panoNextCaptureAt = useRef(0);
   const panoGrabbing = useRef(false);
   const panoSensorSub = useRef<{ remove: () => void } | null>(null);
@@ -376,10 +408,41 @@ export default function CameraScreen() {
   const panoCaptured = useRef(false);
   const panoSettled = useRef(0);
 
+  // Only the camera is asked for up front; the microphone is requested when
+  // the user switches to VIDEO (see below), where it is actually needed.
   useEffect(() => {
-    if (!cameraPermission?.granted) requestCameraPermission();
-    if (!micPermission?.granted) requestMicPermission();
+    if (cameraPermission && !cameraPermission.granted && cameraPermission.canAskAgain) {
+      requestCameraPermission();
+    }
+  }, [cameraPermission?.granted, cameraPermission?.canAskAgain]);
+
+  // ── Focus / app-state gating ──────────────────────────────────────────────
+  // Stack screens stay mounted underneath pushed routes (settings, markup,
+  // history), so without this the camera, GPS, compass and motion sensors
+  // would keep running behind them. `screenActive` drives CameraView `active`
+  // (iOS) / mounting (Android, web) and every sensor subscription below.
+  const [isFocused, setIsFocused] = useState(true);
+  useFocusEffect(useCallback(() => {
+    setIsFocused(true);
+    return () => setIsFocused(false);
+  }, []));
+  // iOS reports "inactive" for transient overlays (permission prompts, the
+  // notification shade); only a real trip to the background pauses capture.
+  const [appActive, setAppActive] = useState(AppState.currentState !== "background");
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", st => setAppActive(st !== "background"));
+    return () => sub.remove();
   }, []);
+  const screenActive = isFocused && appActive;
+
+  // Coming back (e.g. from the system Settings page the permission screens
+  // link to) re-reads permissions, which the hooks don't do on their own.
+  useEffect(() => {
+    if (!screenActive) return;
+    getCameraPermission().catch(() => {});
+    getMicPermission().catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenActive]);
 
   // Apply the user's default zoom. Settings arrive asynchronously from
   // AsyncStorage, so the initial useState value is only the built-in default —
@@ -401,6 +464,9 @@ export default function CameraScreen() {
   useEffect(() => {
     if (settingsLoading) return;
     if (!settings.saveLocation) { lastFix.current = null; return; }
+    // Paused (not cleared) while another screen is on top or the app is in
+    // the background; the last fix stays usable until it ages out.
+    if (!screenActive) return;
     let cancelled = false;
     let watch: { remove: () => void } | null = null;
     (async () => {
@@ -421,7 +487,7 @@ export default function CameraScreen() {
       } catch { /* location services unavailable — capture without GPS */ }
     })();
     return () => { cancelled = true; watch?.remove(); };
-  }, [settingsLoading, settings.saveLocation]);
+  }, [settingsLoading, settings.saveLocation, screenActive]);
 
   // Compass bearing (badge, stamp and GPSImgDirection). Location's heading
   // API fuses magnetometer + gyro and gives a true-north heading when a fix
@@ -430,6 +496,7 @@ export default function CameraScreen() {
   const headingRef = useRef<{ deg: number; ref: "T" | "M" } | null>(null);
   useEffect(() => {
     if (!settings.compassMeta || Platform.OS === "web") { setHeading(null); headingRef.current = null; return; }
+    if (!screenActive) return;
     let sub: { remove: () => void } | null = null;
     let cancelled = false;
     (async () => {
@@ -447,31 +514,59 @@ export default function CameraScreen() {
       } catch { /* no compass on this device */ }
     })();
     return () => { cancelled = true; sub?.remove(); };
-  }, [settings.compassMeta, locationGranted]);
+  }, [settings.compassMeta, locationGranted, screenActive]);
 
-  // Spirit-level tilt (roll) — drives the on-screen level guide.
+  // Spirit-level — drives the on-screen level guide. `levelBase` is the held
+  // orientation (0 portrait, ±90 landscape, 180 upside-down; the UI itself is
+  // locked to portrait on native) and `levelRoll` the tilt away from it, so
+  // the guide reads correctly whichever way the phone is held.
   const [levelRoll, setLevelRoll] = useState(0);
-  const lastRoll = useRef(0);
+  const [levelBase, setLevelBase] = useState(0);
+  const [levelFlat, setLevelFlat] = useState(false);
+  const lastLevel = useRef({ roll: 0, base: 0, flat: false });
   useEffect(() => {
-    if (!settings.showLevelGuide) { setLevelRoll(0); lastRoll.current = 0; return; }
-    const pushRoll = (roll: number) => {
-      // Fold to the deviation from upright so "level" reads ~0° regardless of
-      // which way the device's Y axis points. Held upright to shoot, gravity
-      // gives atan2(x,y) ≈ ±180° at level on some platforms — without this fold
-      // the guide would never reach 0° and never turn green.
-      if (roll > 90) roll -= 180;
-      else if (roll < -90) roll += 180;
-      // Round to whole degrees and only re-render on a real change to avoid
-      // re-rendering the camera tree on every sensor tick.
-      const r = Math.round(roll);
-      if (r !== lastRoll.current) { lastRoll.current = r; setLevelRoll(r); }
+    const reset = () => {
+      lastLevel.current = { roll: 0, base: 0, flat: false };
+      setLevelRoll(0); setLevelBase(0); setLevelFlat(false);
+    };
+    if (!settings.showLevelGuide) { reset(); return; }
+    if (!screenActive) return;
+
+    // Low-pass the up vector so hand shake doesn't make the guide jitter.
+    const up = { x: 0, y: 1, z: 0, seeded: false };
+    const pushUp = (ux: number, uy: number, uz: number, screenAngle = 0) => {
+      if (!up.seeded) { up.x = ux; up.y = uy; up.z = uz; up.seeded = true; }
+      else {
+        const k = 0.3;
+        up.x += (ux - up.x) * k; up.y += (uy - up.y) * k; up.z += (uz - up.z) * k;
+      }
+      // Rotate into screen coordinates when the page itself has rotated (web).
+      const a = (screenAngle * Math.PI) / 180;
+      const sx = up.x * Math.cos(a) - up.y * Math.sin(a);
+      const sy = up.x * Math.sin(a) + up.y * Math.cos(a);
+      const lv = levelFromUp(sx, sy, up.z);
+      const next = lv
+        ? { roll: Math.round(lv.deviation), base: lv.base, flat: false }
+        : { roll: 0, base: lastLevel.current.base, flat: true };
+      // Only re-render on a real change — not on every sensor tick.
+      const prev = lastLevel.current;
+      if (next.roll === prev.roll && next.base === prev.base && next.flat === prev.flat) return;
+      lastLevel.current = next;
+      setLevelRoll(next.roll); setLevelBase(next.base); setLevelFlat(next.flat);
     };
 
     if (Platform.OS === "web") {
-      // gamma is the left↔right tilt of the device in degrees (0 = level).
+      // deviceorientation's beta/gamma (Z-X'-Y'' Euler angles) give the "up"
+      // vector in device coordinates; unlike raw devicemotion, its signs are
+      // consistent across browsers. The page rotates with the device on web,
+      // so compensate for the current screen angle.
       const handler = (e: any) => {
-        if (e?.gamma == null) return;
-        pushRoll(e.gamma);
+        if (e?.beta == null || e?.gamma == null) return;
+        const b = (e.beta * Math.PI) / 180;
+        const g = (e.gamma * Math.PI) / 180;
+        const w: any = typeof window !== "undefined" ? window : null;
+        const screenAngle = Number(w?.screen?.orientation?.angle ?? w?.orientation ?? 0) || 0;
+        pushUp(-Math.sin(g) * Math.cos(b), Math.sin(b), Math.cos(g) * Math.cos(b), screenAngle);
       };
       window.addEventListener("deviceorientation", handler);
       return () => window.removeEventListener("deviceorientation", handler);
@@ -481,32 +576,37 @@ export default function CameraScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const Accelerometer = await getAccelerometer();
-        if (!Accelerometer || cancelled) return;
-        const available = await Accelerometer.isAvailableAsync().catch(() => false);
+        const DeviceMotion = await getDeviceMotion();
+        if (!DeviceMotion || cancelled) return;
+        const available = await DeviceMotion.isAvailableAsync().catch(() => false);
         if (!available || cancelled) return;
-        Accelerometer.setUpdateInterval(100);
-        const created = Accelerometer.addListener(({ x, y }) => {
-          // Roll around the screen-normal axis; 0° when held upright/level.
-          pushRoll(Math.atan2(x, y) * (180 / Math.PI));
+        const perm = await DeviceMotion.requestPermissionsAsync().catch(() => null);
+        if ((perm && !perm.granted) || cancelled) return;
+        DeviceMotion.setUpdateInterval(60);
+        const created = DeviceMotion.addListener(({ accelerationIncludingGravity: g }) => {
+          // expo-sensors reports gravity pointing DOWN on both platforms (iOS
+          // natively; Android as accel − 2·gravity), in device axes (x → right
+          // edge, y → top edge). "Up" is its negation.
+          if (!g) return;
+          pushUp(-g.x, -g.y, -g.z);
         });
         if (cancelled) created.remove();
         else sub = created;
       } catch { /* sensor unavailable */ }
     })();
     return () => { cancelled = true; sub?.remove(); };
-  }, [settings.showLevelGuide]);
+  }, [settings.showLevelGuide, screenActive]);
 
   // Give a light haptic tick the moment the guide snaps to level.
   const wasLevel = useRef(false);
   useEffect(() => {
     if (!settings.showLevelGuide) { wasLevel.current = false; return; }
-    const level = Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG;
+    const level = !levelFlat && Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG;
     if (level && !wasLevel.current && Platform.OS !== "web") {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
     wasLevel.current = level;
-  }, [levelRoll, settings.showLevelGuide]);
+  }, [levelRoll, levelFlat, settings.showLevelGuide]);
 
   // Toggle the level guide. On iOS web, motion/orientation access must be
   // requested from inside a user gesture (this tap) before events will fire.
@@ -526,7 +626,7 @@ export default function CameraScreen() {
   // Web volume keys / spacebar shutter — use a ref so we don't re-bind every render
   const handleCaptureRef = useRef<() => void>(() => {});
   useEffect(() => {
-    if (Platform.OS !== "web" || !settings.volumeKeyShutter) return;
+    if (Platform.OS !== "web" || !settings.volumeKeyShutter || !screenActive) return;
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
@@ -537,7 +637,7 @@ export default function CameraScreen() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settings.volumeKeyShutter]);
+  }, [settings.volumeKeyShutter, screenActive]);
 
   // Mark the next scroll-settle as self-triggered so handleModeScrollEnd ignores
   // it. Auto-clears so a later genuine drag is never wrongly suppressed.
@@ -583,13 +683,15 @@ export default function CameraScreen() {
     });
   }, [settings.promptBeforeUpload]);
 
-  const notifyWitness = useCallback(async (fileName: string) => {
-    if (!settings.witnessOnSuccess || !settings.witnessEmail || !token) return;
-    fetch(`${API_BASE_URL}/api/uploads/witness-notify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ witnessEmail: settings.witnessEmail, fileName }),
-    }).catch(() => {});
+  // Witness mode fires only once a capture has REALLY been uploaded — it is
+  // passed to executeUpload as its onUploaded callback, never on queueing.
+  const notifyWitness = useCallback((fileName: string) => {
+    sendWitnessNotice({
+      enabled: settings.witnessOnSuccess,
+      witnessEmail: settings.witnessEmail,
+      token,
+      fileName,
+    });
   }, [settings.witnessOnSuccess, settings.witnessEmail, token]);
 
   /**
@@ -599,7 +701,12 @@ export default function CameraScreen() {
    * and the shutter must not. The queue persists the file, applies the
    * Wi-Fi-only rule itself and retries later, so nothing is dropped here.
    */
-  const doUpload = useCallback(async (uri: string, fileName: string, type: "image" | "video") => {
+  const doUpload = useCallback(async (
+    uri: string,
+    fileName: string,
+    type: "image" | "video",
+    opts?: { skipMarkup?: boolean },
+  ) => {
     try {
       const target = await getUploadTarget();
       const wantRoll = Platform.OS !== "web" && (settings.saveToCameraRoll || target.skip);
@@ -632,17 +739,15 @@ export default function CameraScreen() {
       // confirmed uploaded; a no-op keeps it when the user has turned that off.
       const onDeleteLocal = settings.deleteLocalAfterUpload ? undefined : async () => {};
 
-      if (type === "image" && settings.photoMarkup) {
+      if (type === "image" && settings.photoMarkup && !opts?.skipMarkup) {
+        // The markup screen performs the actual upload — and the witness
+        // notice, for whichever version it really uploads.
         router.push({ pathname: "/markup", params: { uri, fileName } });
-        // The markup screen performs the actual upload; still notify the witness
-        // here (fire-and-forget, same as the direct path) so marked-up captures
-        // aren't silently exempt from witness notifications.
-        notifyWitness(fileName);
       } else {
         // executeUpload persists the capture into the queue and returns
-        // quickly; the network transfer continues in the background.
-        executeUpload(uri, fileName, type, token, target.ids, onDeleteLocal)
-          .then(() => notifyWitness(fileName))
+        // quickly; the network transfer continues in the background. The
+        // witness is told only when this file has actually been uploaded.
+        executeUpload(uri, fileName, type, token, target.ids, onDeleteLocal, () => notifyWitness(fileName))
           .catch(() => {});
       }
     } catch (err: any) {
@@ -657,28 +762,59 @@ export default function CameraScreen() {
     ]).start();
   };
 
-  // Run a self-timer countdown (with optional voice/beep)
-  const runCountdown = useCallback(async (seconds: number) => {
-    for (let s = seconds; s > 0; s--) {
-      setCountdown(s);
-      if (settings.timerBeep) {
-        try {
-          if (Platform.OS === "web" && typeof window !== "undefined" && "speechSynthesis" in window) {
-            const u = new SpeechSynthesisUtterance(String(s));
-            u.rate = 1.4; u.volume = 1;
-            window.speechSynthesis.speak(u);
-          } else {
-            Speech.speak(String(s), { rate: 1.4 });
-          }
-        } catch { /* ignore tts errors */ }
+  // Self-timer countdown (with the optional voice countdown — the "Voice
+  // Countdown" setting, settings.timerBeep). Cancellable: tapping the shutter
+  // or the cancel button during it aborts the shot and silences the voice.
+  // Resolves true when it ran to zero, false when cancelled.
+  const countdownCancel = useRef<(() => void) | null>(null);
+  const stopSpeech = useCallback(() => {
+    try {
+      if (Platform.OS === "web") {
+        if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
+      } else {
+        Speech.stop().catch(() => {});
       }
-      if (Platform.OS !== "web") {
-        try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch { /* */ }
+    } catch { /* ignore tts errors */ }
+  }, []);
+  const cancelCountdown = useCallback(() => {
+    countdownCancel.current?.();
+  }, []);
+  const runCountdown = useCallback(async (seconds: number): Promise<boolean> => {
+    let cancelled = false;
+    let wake: (() => void) | null = null;
+    countdownCancel.current = () => {
+      cancelled = true;
+      stopSpeech();
+      wake?.();
+    };
+    try {
+      for (let s = seconds; s > 0 && !cancelled; s--) {
+        setCountdown(s);
+        if (settings.timerBeep) {
+          try {
+            if (Platform.OS === "web" && typeof window !== "undefined" && "speechSynthesis" in window) {
+              const u = new SpeechSynthesisUtterance(String(s));
+              u.rate = 1.4; u.volume = 1;
+              window.speechSynthesis.speak(u);
+            } else {
+              Speech.speak(String(s), { rate: 1.4 });
+            }
+          } catch { /* ignore tts errors */ }
+        }
+        if (Platform.OS !== "web") {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+        }
+        await new Promise<void>(r => {
+          const t = setTimeout(() => { wake = null; r(); }, 1000);
+          wake = () => { clearTimeout(t); wake = null; r(); };
+        });
       }
-      await new Promise(r => setTimeout(r, 1000));
+    } finally {
+      countdownCancel.current = null;
+      setCountdown(null);
     }
-    setCountdown(null);
-  }, [settings.timerBeep]);
+    return !cancelled;
+  }, [settings.timerBeep, stopSpeech]);
 
   // Selfie screen flash: a full-white overlay that lights the subject. It must
   // stay up for the whole exposure, so it's raised before takePictureAsync and
@@ -715,18 +851,21 @@ export default function CameraScreen() {
     stampLines: string[];
     overlay: { color: string; opacity: number } | null;
   }): Promise<string | null> => {
-    // Cap the composition's long edge so the offscreen render stays within a
-    // sane memory/time budget. Tradeoff: very high-res photos are downscaled to
-    // ~2048px on their long edge when a stamp/filter is baked in.
-    const MAX_EDGE = 2048;
+    // Cap the composition's long edge (in output pixels) so the offscreen
+    // render stays within a sane memory/time budget. A typical 12 MP phone
+    // photo (4032 px) passes through at full size.
+    const MAX_EDGE = 4096;
     const w = opts.width > 0 ? opts.width : 1080;
     const h = opts.height > 0 ? opts.height : 1440;
     const long = Math.max(w, h);
     const scale = long > MAX_EDGE ? MAX_EDGE / long : 1;
     const renderW = Math.max(1, Math.round(w * scale));
     const renderH = Math.max(1, Math.round(h * scale));
+    const shot = viewShotSize(renderW, renderH);
     bakeCaptured.current = false;
     return new Promise((resolve) => {
+      // Never strand an earlier caller: a superseded bake keeps its original.
+      bakeResolver.current?.(null);
       bakeResolver.current = resolve;
       setBakeConfig({
         uri: opts.uri,
@@ -736,6 +875,8 @@ export default function CameraScreen() {
         fs: Math.round(renderW * 0.028),
         stampLines: opts.stampLines,
         overlay: opts.overlay,
+        dp: shot.dpPerPx,
+        capture: shot.capture,
       });
     });
   }, []);
@@ -759,8 +900,7 @@ export default function CameraScreen() {
         format: "jpg",
         quality: 0.92,
         result: "tmpfile",
-        width: bakeConfig.renderW,
-        height: bakeConfig.renderH,
+        ...bakeConfig.capture,
       });
       out = toFileUri(result);
     } catch { out = null; }
@@ -783,56 +923,82 @@ export default function CameraScreen() {
   }, [bakeConfig, abandonBake]);
 
   // ── Panorama ──────────────────────────────────────────────────────────────
-  // A sweep captures a frame every PANO_STEP_DEG of yaw, then composites the
-  // frames' centre strips into one wide image (see lib/panorama.ts).
+  // A sweep captures a frame every PANO_STEP_DEG of yaw (recording the angle
+  // each was actually taken at), then composites the frames' strips into one
+  // wide image in the order they sit in the scene (see lib/panorama.ts).
+
+  const panoAtEnd = useCallback(() =>
+    panoSweepRef.current >= PANO_MAX_SWEEP_DEG || panoFrames.current.length >= PANO_MAX_FRAMES, []);
+  const panoFinishing = useRef(false);
+  const panoGrabPromise = useRef<Promise<void> | null>(null);
 
   /** Grab one frame mid-sweep. Re-entrancy-guarded — the sensor can tick again
-   *  while takePictureAsync is still in flight. */
+   *  while takePictureAsync is still in flight (callers check panoGrabbing
+   *  first so a skipped grab never moves the next-capture threshold). */
   const panoGrabFrame = useCallback(async () => {
     if (!panoActive.current || panoGrabbing.current) return;
-    if (panoFrames.current.length >= PANO_MAX_FRAMES) return;
+    if (panoFrames.current.length >= PANO_MAX_FRAMES) { finishPanoRef.current(); return; }
     panoGrabbing.current = true;
-    try {
-      const photo = await cameraRef.current?.takePictureAsync({
-        quality: 0.8,
-        skipProcessing: true,
-        shutterSound: false,
-      });
-      // Re-check: the sweep may have been ended while the shot was in flight.
-      if (photo?.uri && panoActive.current) {
-        panoFrames.current.push({ uri: photo.uri, width: photo.width ?? 0, height: photo.height ?? 0 });
-        setPanoFrameCount(panoFrames.current.length);
-        if (Platform.OS !== "web") {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    // The exposure starts now, so this is where the frame points.
+    const angle = panoSweepRef.current;
+    const run = (async () => {
+      try {
+        // No skipProcessing: unprocessed frames keep the sensor's native
+        // orientation (sideways on most Android phones) and RN's <Image> does
+        // not apply EXIF rotation, so the strips would come out rotated.
+        const photo = await cameraRef.current?.takePictureAsync({
+          quality: 0.8,
+          shutterSound: false,
+        });
+        if (photo?.uri) {
+          if (panoActive.current) {
+            panoFrames.current.push({ uri: photo.uri, width: photo.width ?? 0, height: photo.height ?? 0, angle });
+            setPanoFrameCount(panoFrames.current.length);
+            if (Platform.OS !== "web") {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+            }
+          } else {
+            deleteTempFile(photo.uri);
+          }
         }
-      }
-    } catch { /* drop this frame and keep sweeping */ }
-    finally { panoGrabbing.current = false; }
-  }, []);
+      } catch { /* drop this frame and keep sweeping */ }
+      finally { panoGrabbing.current = false; }
+    })();
+    panoGrabPromise.current = run;
+    await run;
+    if (panoActive.current && !panoFinishing.current && panoAtEnd()) finishPanoRef.current();
+  }, [panoAtEnd]);
 
-  /** Fold a yaw reading into the sweep, capturing and finishing at thresholds. */
+  /** Fold the signed rotation since the start into sweep progress, capturing
+   *  a frame at every step and finishing at the limits. */
+  const panoOnPosition = useCallback((position: number) => {
+    if (!panoActive.current || panoFinishing.current) return;
+    panoPosition.current = position;
+    if (!panoDirection.current) {
+      const dir = directionFromPosition(position);
+      if (!dir) return;
+      panoDirection.current = dir;
+    }
+    // Progress along the locked direction; swinging back doesn't count.
+    const progress = panoDirection.current === "rtl" ? position : -position;
+    if (progress <= panoSweepRef.current) return;
+    panoSweepRef.current = progress;
+    setPanoSweep(Math.round(progress));
+
+    if (panoGrabbing.current) return; // the in-flight grab re-checks the end
+    if (progress >= panoNextCaptureAt.current || panoAtEnd()) {
+      panoNextCaptureAt.current = progress + PANO_STEP_DEG;
+      void panoGrabFrame();
+    }
+  }, [panoGrabFrame, panoAtEnd]);
+
+  /** Absolute yaw source (rotation.alpha / web alpha): fold into position. */
   const panoOnYaw = useCallback((yawDeg: number) => {
     if (!panoActive.current) return;
-    const { total, accepted } = accumulateSweep(panoLastYaw.current, yawDeg, panoSweepRef.current);
+    const { position, accepted } = accumulateSweep(panoLastYaw.current, yawDeg, panoPosition.current);
     panoLastYaw.current = yawDeg;
-    if (!accepted) return;
-    panoSweepRef.current = total;
-    setPanoSweep(Math.round(total));
-
-    const due = total >= panoNextCaptureAt.current;
-    if (due) panoNextCaptureAt.current = total + PANO_STEP_DEG;
-    const atEnd = total >= PANO_MAX_SWEEP_DEG || panoFrames.current.length >= PANO_MAX_FRAMES;
-
-    if (due) {
-      // Let the last frame land before closing the sweep. finishPano clears
-      // panoActive, and panoGrabFrame drops any shot still in flight when it
-      // does — so finishing first would silently lose the final strip.
-      const grab = panoGrabFrame();
-      if (atEnd) grab.then(() => finishPanoRef.current());
-      return;
-    }
-    if (atEnd) finishPanoRef.current();
-  }, [panoGrabFrame]);
+    if (accepted) panoOnPosition(position);
+  }, [panoOnPosition]);
 
   const panoStopSensor = useCallback(() => {
     panoSensorSub.current?.remove();
@@ -881,13 +1047,36 @@ export default function CameraScreen() {
       const perm = await DeviceMotion.requestPermissionsAsync().catch(() => null);
       if (perm && !perm.granted) return false;
       DeviceMotion.setUpdateInterval(60);
-      panoSensorSub.current = DeviceMotion.addListener(({ rotation }) => {
+      panoLastGyroT.current = null;
+      panoSensorSub.current = DeviceMotion.addListener(({ rotation, rotationRate, accelerationIncludingGravity: g }) => {
+        // Preferred: integrate the gyro rate about the gravity axis. Unlike
+        // the Euler yaw in rotation.alpha, this doesn't hit gimbal lock with
+        // the phone held upright, and works in portrait or landscape.
+        const gn = g ? Math.hypot(g.x, g.y, g.z) : 0;
+        if (rotationRate && gn > 1) {
+          // Device-axis angular velocity (deg/s, right-handed). expo-sensors
+          // maps the axes differently per platform: iOS alpha/beta/gamma =
+          // z/y/x, Android = x/y/z.
+          const [wx, wy, wz] = Platform.OS === "ios"
+            ? [rotationRate.gamma, rotationRate.beta, rotationRate.alpha]
+            : [rotationRate.alpha, rotationRate.beta, rotationRate.gamma];
+          // Gravity points down in expo-sensors' DeviceMotion on both platforms.
+          const yawRate = -(wx * g!.x + wy * g!.y + wz * g!.z) / gn;
+          const t = rotationRate.timestamp;
+          const last = panoLastGyroT.current;
+          panoLastGyroT.current = t;
+          if (last != null) {
+            const dt = t - last;
+            if (dt > 0 && dt < 0.5) panoOnPosition(panoPosition.current + yawRate * dt);
+          }
+          return;
+        }
         if (rotation?.alpha == null) return;
         panoOnYaw(rotation.alpha * (180 / Math.PI));
       });
       return true;
     } catch { return false; }
-  }, [panoOnYaw, panoStopSensor]);
+  }, [panoOnYaw, panoOnPosition, panoStopSensor]);
 
   const finishPanoCompose = useCallback((out: string | null) => {
     const resolve = panoResolver.current;
@@ -907,8 +1096,7 @@ export default function CameraScreen() {
         format: "jpg",
         quality: 0.92,
         result: "tmpfile",
-        width: panoConfig.outW,
-        height: panoConfig.outH,
+        ...panoConfig.capture,
       });
       out = toFileUri(result);
     } catch { out = null; }
@@ -926,44 +1114,54 @@ export default function CameraScreen() {
   /** Count frames in, and rasterise once they have all loaded. */
   const onPanoFrameLoaded = useCallback(() => {
     panoSettled.current += 1;
-    if (panoConfig && panoSettled.current >= panoConfig.frames.length) capturePanoView();
+    if (panoConfig && panoSettled.current >= panoConfig.slices.length) capturePanoView();
   }, [panoConfig, capturePanoView]);
 
   // Backstop in case an onLoad never fires. Scales with frame count so a long
   // sweep isn't cut off early.
   useEffect(() => {
     if (!panoConfig) return;
-    const t = setTimeout(abandonPanoCompose, 4000 + panoConfig.frames.length * 400);
+    const t = setTimeout(abandonPanoCompose, 4000 + panoConfig.slices.length * 500);
     return () => clearTimeout(t);
   }, [panoConfig, abandonPanoCompose]);
 
-  const composePano = useCallback((frames: PanoFrame[]): Promise<string | null> => {
-    const first = frames[0]!;
-    const layout = panoLayout({
-      frameW: first.width,
-      frameH: first.height,
-      frameCount: frames.length,
-    });
+  const composePano = useCallback((frames: PanoFrame[], direction: PanoDirection): Promise<string | null> => {
+    const layout = panoLayout({ frames, direction });
+    if (layout.slices.length === 0) return Promise.resolve(null);
+    const shot = viewShotSize(layout.outW, layout.outH);
     panoCaptured.current = false;
     panoSettled.current = 0;
     return new Promise((resolve) => {
+      panoResolver.current?.(null);
       panoResolver.current = resolve;
-      setPanoConfig({ ...layout, frames });
+      setPanoConfig({ ...layout, frames, dp: shot.dpPerPx, capture: shot.capture });
     });
   }, []);
 
   const finishPano = useCallback(async () => {
-    if (!panoActive.current) return;
-    panoActive.current = false;
+    if (!panoActive.current || panoFinishing.current) return;
+    panoFinishing.current = true;
     panoStopSensor();
+    // Let a frame that is already being exposed land — it is the sweep's
+    // final edge.
+    if (panoGrabPromise.current) await panoGrabPromise.current.catch(() => {});
+    panoActive.current = false;
+    panoFinishing.current = false;
+    panoGrabPromise.current = null;
     setIsPanoCapturing(false);
 
     const frames = [...panoFrames.current];
+    // No sensor direction (timed fallback, or barely moved): the on-screen
+    // hint asks for a left-to-right pan.
+    const direction: PanoDirection = panoDirection.current ?? "ltr";
     panoFrames.current = [];
     setPanoFrameCount(0);
     setPanoSweep(0);
     panoSweepRef.current = 0;
+    panoPosition.current = 0;
+    panoDirection.current = null;
     panoLastYaw.current = null;
+    panoLastGyroT.current = null;
 
     if (frames.length === 0) return;
 
@@ -971,7 +1169,7 @@ export default function CameraScreen() {
     let stitched = false;
     if (frames.length >= PANO_MIN_FRAMES) {
       setPanoComposing(true);
-      const composed = await composePano(frames);
+      const composed = await composePano(frames, direction);
       setPanoComposing(false);
       if (composed) {
         uri = composed;
@@ -984,8 +1182,7 @@ export default function CameraScreen() {
         );
       }
     } else {
-      // Below the minimum the composite would be narrower than one ordinary
-      // photo, so there is nothing to gain from stitching it.
+      // Too little movement for a panorama — save one ordinary frame.
       showToast("Sweep too short — saved a single frame", 2200);
     }
 
@@ -1004,8 +1201,12 @@ export default function CameraScreen() {
     if (panoActive.current) return;
     panoFrames.current = [];
     panoSweepRef.current = 0;
+    panoPosition.current = 0;
+    panoDirection.current = null;
     panoLastYaw.current = null;
+    panoLastGyroT.current = null;
     panoNextCaptureAt.current = PANO_STEP_DEG;
+    panoFinishing.current = false;
     panoActive.current = true;
     setPanoSweep(0);
     setPanoFrameCount(0);
@@ -1021,15 +1222,13 @@ export default function CameraScreen() {
     if (!hasSensor && panoActive.current) {
       // No usable yaw source (web without motion permission, or a device
       // lacking the sensor): fall back to a timed sweep. The user still pans;
-      // we just assume the nominal step per tick instead of measuring it.
+      // we assume the nominal step per tick instead of measuring it.
       panoTimer.current = setInterval(() => {
-        if (!panoActive.current) return;
+        if (!panoActive.current || panoFinishing.current) return;
         panoSweepRef.current += PANO_STEP_DEG;
         setPanoSweep(Math.round(panoSweepRef.current));
-        const grab = panoGrabFrame();
-        if (panoSweepRef.current >= PANO_MAX_SWEEP_DEG || panoFrames.current.length >= PANO_MAX_FRAMES) {
-          grab.then(() => finishPanoRef.current());
-        }
+        if (panoGrabbing.current) return; // the in-flight grab re-checks the end
+        void panoGrabFrame();
       }, PANO_FALLBACK_INTERVAL_MS);
     }
   }, [panoGrabFrame, panoStartSensor]);
@@ -1072,11 +1271,56 @@ export default function CameraScreen() {
     return Object.keys(exif).length > 0 ? exif : undefined;
   }, [settings.stripExif, settings.saveLocation, settings.compassMeta]);
 
+  /**
+   * Burn the stamp and/or the selected filter's tint into a freshly captured
+   * photo (native can only approximate a filter with a tint overlay — the same
+   * one shown in the live preview). Shared by PHOTO and INTERVAL. Returns the
+   * uri to keep: the baked copy (the raw frame is deleted) or, when there's
+   * nothing to bake or the bake failed, the original.
+   */
+  const bakeCapture = useCallback(async (photo: { uri: string; width?: number; height?: number }) => {
+    const wantStamp = settings.stampPhotos;
+    const filterOverlay = FILTERS[selectedFilter]?.overlay ?? null;
+
+    // Gather the stamp lines up front so the toast can honestly reflect what was
+    // actually burned in (matches the old web stamp: date/time, GPS, bearing).
+    const stampLines: string[] = [];
+    let stampedLocation = false;
+    if (wantStamp) {
+      stampLines.push(new Date().toLocaleString());
+      const fix = lastFix.current;
+      if (settings.saveLocation && fix && Date.now() - fix.timestamp <= MAX_FIX_AGE_MS) {
+        stampLines.push(`${fix.coords.latitude.toFixed(5)}, ${fix.coords.longitude.toFixed(5)}`);
+        stampedLocation = true;
+      }
+      if (heading != null) stampLines.push(`Bearing ${heading}°`);
+    }
+
+    let uri = photo.uri;
+    let baked = false;
+    if (wantStamp || filterOverlay) {
+      const outUri = await bakeImageNative({
+        uri: photo.uri,
+        width: photo.width ?? 0,
+        height: photo.height ?? 0,
+        stampLines,
+        overlay: filterOverlay,
+      });
+      if (outUri) {
+        // The raw frame is superseded by the baked copy.
+        deleteTempFile(photo.uri);
+        uri = outUri;
+        baked = true;
+      }
+    }
+    return { uri, baked, wantStamp, stampedLocation };
+  }, [settings.stampPhotos, settings.saveLocation, selectedFilter, heading, bakeImageNative]);
+
   // Single capture cycle (screen flash → snap → stamp/strip), then a
   // background hand-off to the photo library / upload queue. Resolves as soon
   // as the photo is on disk so the shutter is free for the next shot.
   // The self-timer runs once at the start of a burst, not on every shot.
-  const captureOne = useCallback(async (indexLabel?: string) => {
+  const captureOne = useCallback(async (indexLabel?: string, opts?: { skipMarkup?: boolean }) => {
     const flashUp = await screenFlashOn();
     pulseCaptureBtn();
     if (Platform.OS !== "web") {
@@ -1097,44 +1341,8 @@ export default function CameraScreen() {
       if (flashUp) screenFlashOff();
     }
     if (!photo?.uri) return;
-    let uri = photo.uri;
 
-    // Decide what needs baking: the stamp burn-in and/or the selected filter's
-    // tint (native can only approximate a filter with a tint overlay — the same
-    // one shown in the live preview).
-    const wantStamp = settings.stampPhotos;
-    const filterOverlay = FILTERS[selectedFilter]?.overlay ?? null;
-
-    // Gather the stamp lines up front so the toast can honestly reflect what was
-    // actually burned in (matches the old web stamp: date/time, GPS, bearing).
-    const stampLines: string[] = [];
-    let stampedLocation = false;
-    if (wantStamp) {
-      stampLines.push(new Date().toLocaleString());
-      const fix = lastFix.current;
-      if (settings.saveLocation && fix && Date.now() - fix.timestamp <= MAX_FIX_AGE_MS) {
-        stampLines.push(`${fix.coords.latitude.toFixed(5)}, ${fix.coords.longitude.toFixed(5)}`);
-        stampedLocation = true;
-      }
-      if (heading != null) stampLines.push(`Bearing ${heading}°`);
-    }
-
-    let baked = false;
-    if (wantStamp || filterOverlay) {
-      const outUri = await bakeImageNative({
-        uri: photo.uri,
-        width: photo.width ?? 0,
-        height: photo.height ?? 0,
-        stampLines,
-        overlay: filterOverlay,
-      });
-      if (outUri) {
-        // The raw frame is superseded by the baked copy.
-        deleteTempFile(photo.uri);
-        uri = outUri;
-        baked = true;
-      }
-    }
+    const { uri, baked, wantStamp, stampedLocation } = await bakeCapture(photo);
 
     // Only claim the stamp was applied when the bake actually succeeded.
     if (wantStamp) {
@@ -1146,17 +1354,33 @@ export default function CameraScreen() {
     const ext = extensionOf(uri, "jpg");
     const suffix = indexLabel ? `_${indexLabel}` : "";
     const fileName = `IMG_${Date.now()}${suffix}.${ext}`;
-    void doUpload(uri, fileName, "image");
-  }, [settings.stripExif, settings.stampPhotos, settings.saveLocation, screenFlashOn, screenFlashOff, buildGpsExif, bakeImageNative, selectedFilter, doUpload, heading, showToast]);
+    void doUpload(uri, fileName, "image", opts);
+  }, [settings.stripExif, screenFlashOn, screenFlashOff, buildGpsExif, bakeCapture, doUpload, heading, showToast]);
+
+  // Mirrors screenActive for async loops (burst) that outlive a render.
+  const screenActiveRef = useRef(screenActive);
+  useEffect(() => { screenActiveRef.current = screenActive; }, [screenActive]);
 
   const handlePhotoCapture = useCallback(async () => {
-    if (busyRef.current || recordingRef.current) return;
+    // A tap during the self-timer cancels it.
+    if (countdownCancel.current) { cancelCountdown(); return; }
+    // INTERVAL / PANO own the camera while running (the web keyboard shutter
+    // can reach here in any mode).
+    if (busyRef.current || recordingRef.current || intervalRunning.current || panoActive.current) return;
     busyRef.current = true;
     try {
-      if (settings.timerSeconds > 0) await runCountdown(settings.timerSeconds);
+      if (settings.timerSeconds > 0) {
+        const completed = await runCountdown(settings.timerSeconds);
+        if (!completed) return;
+      }
       const n = Math.max(1, settings.burstCount | 0);
+      // Markup opens one screen per photo; a burst would stack N of them. Burst
+      // frames skip markup and upload as shot.
+      const skipMarkup = n > 1 && settings.photoMarkup;
+      if (skipMarkup) showToast(`Burst: markup skipped — ${n} originals will upload`, 2600);
       for (let i = 0; i < n; i++) {
-        await captureOne(n > 1 ? String(i + 1).padStart(2, "0") : undefined);
+        if (!screenActiveRef.current) break; // left the camera mid-burst
+        await captureOne(n > 1 ? String(i + 1).padStart(2, "0") : undefined, { skipMarkup });
         if (n > 1 && i < n - 1) {
           await new Promise(r => setTimeout(r, Math.max(0, settings.burstDelay) * 1000));
         }
@@ -1164,7 +1388,7 @@ export default function CameraScreen() {
     } catch (err: any) {
       Alert.alert("Capture Failed", err?.message ?? "Could not take photo.");
     } finally { busyRef.current = false; }
-  }, [settings.burstCount, settings.burstDelay, settings.timerSeconds, runCountdown, captureOne]);
+  }, [settings.burstCount, settings.burstDelay, settings.timerSeconds, settings.photoMarkup, runCountdown, cancelCountdown, captureOne, showToast]);
 
   // Keep the keyboard-shutter ref pointed at the latest handler
   useEffect(() => { handleCaptureRef.current = () => { handlePhotoCapture(); }; }, [handlePhotoCapture]);
@@ -1249,8 +1473,57 @@ export default function CameraScreen() {
       for (const f of panoFrames.current) deleteTempFile(f.uri);
       panoFrames.current = [];
       try { cameraRef.current?.stopRecording(); } catch { /* already stopped */ }
+      countdownCancel.current?.();
     };
   }, []);
+
+  // Leaving the camera (another screen pushed on top, or the app sent to the
+  // background) must not silently cut a capture short or leave it running
+  // blind: a recording is stopped — its promise then resolves with the file,
+  // which is saved/queued as usual — a pano sweep is finished and stitched, a
+  // self-timer is cancelled. The INTERVAL series is stopped and offered for
+  // upload by an effect next to stopInterval.
+  useEffect(() => {
+    if (screenActive) return;
+    countdownCancel.current?.();
+    if (recordingRef.current && !recordStopping.current) {
+      recordStopping.current = true;
+      try { cameraRef.current?.stopRecording(); } catch { /* already stopped */ }
+    }
+    if (panoActive.current) finishPanoRef.current();
+  }, [screenActive]);
+
+  // VIDEO needs the microphone for sound. Ask when the user switches to it;
+  // if it's refused, record silently (CameraView `mute`) rather than failing —
+  // Android's recorder errors out when it can't open the mic — and say so once.
+  const micNoticeShown = useRef(false);
+  const micGranted = micPermission?.granted === true;
+  useEffect(() => {
+    if (extMode !== "video" || !micPermission || micPermission.granted) return;
+    let cancelled = false;
+    (async () => {
+      let perm = micPermission;
+      if (perm.canAskAgain) {
+        try { perm = await requestMicPermission(); } catch { /* treat as denied */ }
+      }
+      if (cancelled || perm.granted || micNoticeShown.current) return;
+      micNoticeShown.current = true;
+      const canOpenSettings = !perm.canAskAgain && Platform.OS !== "web";
+      Alert.alert(
+        "Videos Will Be Silent",
+        "Microphone access is off for KKamera, so videos will be recorded without sound.",
+        canOpenSettings
+          ? [
+            { text: "OK", style: "cancel" },
+            { text: "Open Settings", onPress: () => { Linking.openSettings().catch(() => {}); } },
+          ]
+          : [{ text: "OK" }],
+      );
+    })();
+    return () => { cancelled = true; };
+  // Only re-run on the mode switch / a real permission change, not every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extMode, micPermission?.granted, micPermission?.canAskAgain]);
 
   const handleScan = useCallback(async () => {
     if (busyRef.current) return;
@@ -1275,7 +1548,6 @@ export default function CameraScreen() {
       // Android can return a bare path; make sure it carries a file scheme.
       if (!/^[a-z]+:\/\//i.test(uri)) uri = `file://${uri}`;
       setScanUri(uri);
-      setScanCropped(true);
       setScanFileName(`SCAN_${Date.now()}.${extensionOf(uri, "jpg")}`);
       setShowScanModal(true);
     } catch (err: any) {
@@ -1290,43 +1562,64 @@ export default function CameraScreen() {
     setScanUri(null);
   }, [scanUri, scanFileName, doUpload]);
 
-  // Closing or retaking a scan throws the scanned page away.
+  // Closing a scan throws the scanned page away.
   const discardScan = useCallback(() => {
     setShowScanModal(false);
     deleteTempFile(scanUri);
     setScanUri(null);
   }, [scanUri]);
 
-  // INTERVAL (time-lapse) mode: a photo every INTERVAL_SECONDS until stopped,
-  // then the series is uploaded as individual photos (no video is made).
-  const handleTimelapse = useCallback(async () => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-    if (!isTimelapsing) {
-      setIsTimelapsing(true);
-      setTlCount(0);
-      tlPhotos.current = [];
-      tlTimer.current = setInterval(async () => {
-        if (tlGrabbing.current) return; // previous shot still in flight
-        tlGrabbing.current = true;
-        try {
-          const additionalExif = buildGpsExif();
-          const photo = await cameraRef.current?.takePictureAsync({
-            quality: 0.8,
-            exif: !settings.stripExif,
-            shutterSound: false,
-            ...(additionalExif ? { additionalExif } : {}),
-          });
-          if (photo?.uri) {
-            tlPhotos.current.push(photo.uri);
-            setTlCount(c => c + 1);
-          }
-        } catch { /* skip this shot and keep going */ }
-        finally { tlGrabbing.current = false; }
-      }, INTERVAL_SECONDS * 1000);
-      return;
-    }
+  // Retake: throw the page away and relaunch the OS scanner. The scanner
+  // presents its own full-screen UI, which iOS refuses to show while our modal
+  // is still animating out — so wait for the dismissal first.
+  const retakeScan = useCallback(() => {
+    discardScan();
+    setTimeout(() => { void handleScan(); }, 450);
+  }, [discardScan, handleScan]);
 
+  // INTERVAL (time-lapse) mode: a photo every INTERVAL_SECONDS until stopped,
+  // then the series is uploaded as individual photos (no video is made). Each
+  // frame gets the same stamp / filter bake as a normal photo.
+  const bakeCaptureRef = useRef(bakeCapture);
+  useEffect(() => { bakeCaptureRef.current = bakeCapture; }, [bakeCapture]);
+  const buildGpsExifRef = useRef(buildGpsExif);
+  useEffect(() => { buildGpsExifRef.current = buildGpsExif; }, [buildGpsExif]);
+
+  const startInterval = useCallback(() => {
+    if (intervalRunning.current) return;
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    intervalRunning.current = true;
+    setIsTimelapsing(true);
+    setTlCount(0);
+    tlPhotos.current = [];
+    tlTimer.current = setInterval(async () => {
+      if (tlGrabbing.current || !intervalRunning.current) return; // previous shot still in flight
+      tlGrabbing.current = true;
+      try {
+        const additionalExif = buildGpsExifRef.current();
+        const photo = await cameraRef.current?.takePictureAsync({
+          quality: 0.8,
+          exif: !settings.stripExif,
+          shutterSound: false,
+          ...(additionalExif ? { additionalExif } : {}),
+        });
+        if (photo?.uri) {
+          const { uri } = await bakeCaptureRef.current(photo);
+          tlPhotos.current.push(uri);
+          setTlCount(c => c + 1);
+        }
+      } catch { /* skip this shot and keep going */ }
+      finally { tlGrabbing.current = false; }
+    }, INTERVAL_SECONDS * 1000);
+  }, [settings.stripExif]);
+
+  const stopInterval = useCallback(async () => {
+    if (!intervalRunning.current) return;
+    intervalRunning.current = false;
+    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     if (tlTimer.current) { clearInterval(tlTimer.current); tlTimer.current = null; }
+    // Let a frame that's mid-capture/bake land in the series.
+    for (let i = 0; i < 40 && tlGrabbing.current; i++) await new Promise(r => setTimeout(r, 100));
     setIsTimelapsing(false);
     const photos = [...tlPhotos.current];
     tlPhotos.current = [];
@@ -1351,6 +1644,7 @@ export default function CameraScreen() {
       const onDeleteLocal = settings.deleteLocalAfterUpload ? undefined : async () => {};
       for (let i = 0; i < photos.length; i++) {
         const frameUri = photos[i]!;
+        // Library copy BEFORE queueing: the queue may move the file.
         if (settings.saveToCameraRoll && Platform.OS !== "web") await saveToCameraRoll(frameUri);
         const name = `INT_${stamp}_${String(i + 1).padStart(3, "0")}.${extensionOf(frameUri, "jpg")}`;
         void executeUpload(frameUri, name, "image", token, target.ids, onDeleteLocal);
@@ -1366,7 +1660,18 @@ export default function CameraScreen() {
       // Dismissing the dialog (Android back / tap outside) must not lose the series.
       { cancelable: false },
     );
-  }, [isTimelapsing, buildGpsExif, settings.stripExif, settings.deleteLocalAfterUpload, settings.saveToCameraRoll, getUploadTarget, executeUpload, token, showToast]);
+  }, [settings.deleteLocalAfterUpload, settings.saveToCameraRoll, getUploadTarget, executeUpload, token, showToast]);
+
+  const handleTimelapse = useCallback(() => {
+    if (intervalRunning.current) void stopInterval();
+    else startInterval();
+  }, [startInterval, stopInterval]);
+
+  // An INTERVAL series can't keep shooting with the camera paused, so leaving
+  // the screen ends it and offers the frames for upload.
+  useEffect(() => {
+    if (!screenActive && intervalRunning.current) void stopInterval();
+  }, [screenActive, stopInterval]);
 
   // Open the cloud account captures are being uploaded to — its app when
   // installed, otherwise its web UI. See lib/cloudApps.ts for why this attempts
@@ -1424,7 +1729,7 @@ export default function CameraScreen() {
 
   const cycleFlash = () => {
     const cycle: FlashMode[] = ["auto", "on", "off"];
-    setFlash(prev => cycle[(cycle.indexOf(prev) + 1) % 3]!);
+    updateSetting("flashMode", cycle[(cycle.indexOf(flash) + 1) % 3]!);
   };
 
   // Ultra-wide is a separate physical lens (iOS only), so it's offered as its
@@ -1498,12 +1803,25 @@ export default function CameraScreen() {
   if (!cameraPermission) return <View style={styles.container} />;
 
   if (!cameraPermission.granted) {
+    // Once the user has refused for good, the OS won't show the prompt again —
+    // the only way back is the app's page in system Settings.
+    const blocked = !cameraPermission.canAskAgain && Platform.OS !== "web";
     return (
       <View style={[styles.container, styles.centeredContainer]}>
         <Ionicons name="camera-outline" size={56} color={PRIMARY} />
-        <Text style={styles.permText}>Camera access is needed to take photos and videos.</Text>
-        <TouchableOpacity style={styles.permBtn} onPress={requestCameraPermission}>
-          <Text style={styles.permBtnText}>Grant Camera Access</Text>
+        <Text style={styles.permText}>
+          {blocked
+            ? "Camera access is turned off for KKamera. Turn it on in Settings to take photos and videos."
+            : "Camera access is needed to take photos and videos."}
+        </Text>
+        <TouchableOpacity
+          style={styles.permBtn}
+          onPress={() => {
+            if (blocked) Linking.openSettings().catch(() => {});
+            else requestCameraPermission();
+          }}
+        >
+          <Text style={styles.permBtnText}>{blocked ? "Open Settings" : "Grant Camera Access"}</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.permSkip} onPress={() => router.push("/settings")}>
           <Text style={styles.permSkipText}>Go to Settings instead</Text>
@@ -1528,6 +1846,10 @@ export default function CameraScreen() {
   }
 
   const isVideoMode = currentModeConfig.isVideo && extMode !== "timelapse";
+  // iOS pauses the session via `active`; elsewhere that prop is ignored, so
+  // the preview is unmounted while another screen is on top — but never
+  // mid-recording, which must be allowed to finalise its file first.
+  const cameraMounted = Platform.OS === "ios" || screenActive || isRecording;
   const captureIsActive = isRecording || isTimelapsing || isPanoCapturing || panoComposing;
 
   const handleModeScrollEnd = (e: any) => {
@@ -1544,26 +1866,42 @@ export default function CameraScreen() {
         <StatusBar barStyle="light-content" />
         {trialDaysLeft !== null && <TrialBanner daysLeft={trialDaysLeft} />}
 
-        <CameraView
-          ref={cameraRef}
-          style={[
-            StyleSheet.absoluteFill,
-            settings.flipPreview ? { transform: [{ rotate: "180deg" }] } : null,
-            // Web: real GPU colour-grade on the live preview.
-            filterCssWeb ? ({ filter: filterCssWeb } as any) : null,
-          ]}
-          facing={facing}
-          flash={flash}
-          zoom={zoom}
-          mode={cameraViewMode}
-          mirror={facing === "front" && settings.mirrorFrontCamera}
-          videoQuality={VIDEO_QUALITY[settings.videoQuality] ?? "1080p"}
-          // iOS: shoot landscape photos/videos when the phone is turned, even
-          // though the app UI is locked to portrait.
-          responsiveOrientationWhenOrientationLocked
-          selectedLens={onUltraWide ? ultraWideLens! : undefined}
-          onAvailableLensesChanged={handleAvailableLenses}
-        >
+        {cameraMounted && (
+          <CameraView
+            ref={cameraRef}
+            style={[
+              StyleSheet.absoluteFill,
+              settings.flipPreview ? { transform: [{ rotate: "180deg" }] } : null,
+              // Web: real GPU colour-grade on the live preview.
+              filterCssWeb ? ({ filter: filterCssWeb } as any) : null,
+            ]}
+            // iOS: pauses the capture session while another screen is on top
+            // or the app is backgrounded (other platforms unmount instead —
+            // see cameraMounted). Held on until a recording has finalised.
+            active={screenActive || isRecording}
+            facing={facing}
+            flash={flash}
+            // VIDEO with flash "on" keeps the torch lit (photo flash can't
+            // light a video). Rear camera only — the front has no torch.
+            enableTorch={isVideoMode && flash === "on" && facing === "back" && (screenActive || isRecording)}
+            // Without microphone access, record silently instead of failing.
+            mute={!micGranted}
+            zoom={zoom}
+            mode={cameraViewMode}
+            mirror={facing === "front" && settings.mirrorFrontCamera}
+            videoQuality={VIDEO_QUALITY[settings.videoQuality] ?? "1080p"}
+            // iOS: shoot landscape photos/videos when the phone is turned, even
+            // though the app UI is locked to portrait.
+            responsiveOrientationWhenOrientationLocked
+            selectedLens={onUltraWide ? ultraWideLens! : undefined}
+            onAvailableLensesChanged={handleAvailableLenses}
+          />
+        )}
+
+        {/* Preview overlays. expo-camera 17 doesn't support <CameraView>
+            children (it warns and can crash), so they are siblings layered on
+            top; pointerEvents="none" lets pinch-to-zoom reach the container. */}
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
           {/* Native preview approximation (web uses the CSS grade above) */}
           {filterOverlay && (
             <View
@@ -1575,23 +1913,30 @@ export default function CameraScreen() {
             />
           )}
 
-          {/* Level guide */}
+          {/* Level guide — the whole guide turns with the way the phone is
+              held (the UI is portrait-locked), the tilt line follows the true
+              horizon, and it snaps green within LEVEL_TOLERANCE_DEG. */}
           {settings.showLevelGuide && (
             <View style={[StyleSheet.absoluteFill, styles.levelContainer]} pointerEvents="none">
-              {/* Fixed reference line — goes green too when level */}
-              <View style={[
-                styles.levelRefLine,
-                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelRefLineActive,
-              ]} />
-              {/* Tilt line — rotates with the device, snaps green when level */}
-              <View style={[
-                styles.levelLine,
-                { transform: [{ rotate: `${-levelRoll}deg` }] },
-                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelLineActive,
-              ]} />
+              {!levelFlat && (
+                <>
+                  {/* Reference line — the held orientation's horizontal */}
+                  <View style={[
+                    styles.levelRefLine,
+                    { transform: [{ rotate: `${levelBase}deg` }] },
+                    Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelRefLineActive,
+                  ]} />
+                  {/* Horizon line — rotates against the device's tilt */}
+                  <View style={[
+                    styles.levelLine,
+                    { transform: [{ rotate: `${levelBase + levelRoll}deg` }] },
+                    Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelLineActive,
+                  ]} />
+                </>
+              )}
               <View style={[
                 styles.levelDot,
-                Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelDotActive,
+                !levelFlat && Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelDotActive,
               ]} />
             </View>
           )}
@@ -1647,7 +1992,7 @@ export default function CameraScreen() {
                 <Text style={styles.panoProgress}>Stitching panorama…</Text>
               ) : (
                 <Text style={styles.modeHint}>
-                  Tap the shutter, then pan slowly left to right
+                  Tap the shutter, then pan slowly left or right
                 </Text>
               )}
             </View>
@@ -1660,7 +2005,7 @@ export default function CameraScreen() {
               <Text style={styles.tlCountText}>{tlCount} photo{tlCount === 1 ? "" : "s"} · every {INTERVAL_SECONDS} s</Text>
             </View>
           )}
-        </CameraView>
+        </View>
 
         {/* ── Top Bar ─────────────────────────────────────────────────────── */}
         <View style={[styles.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 20 : 4) }]}>
@@ -1707,6 +2052,20 @@ export default function CameraScreen() {
           >
             <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} />
             <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* ── Subscription-blocked banner (uploads parked on HTTP 402) ───── */}
+        {subscriptionBlocked && (
+          <TouchableOpacity
+            style={[styles.subBanner, { top: insets.top + (Platform.OS === "web" ? 150 : 108) }]}
+            onPress={() => router.push("/settings/subscription")}
+            accessibilityRole="button"
+            accessibilityLabel="Uploads paused, subscription required. Open subscription settings."
+          >
+            <Ionicons name="pause-circle-outline" size={16} color="#f59e0b" />
+            <Text style={styles.subBannerText} numberOfLines={1}>Uploads paused — subscription required</Text>
+            <Ionicons name="chevron-forward" size={14} color="#f59e0b" />
           </TouchableOpacity>
         )}
 
@@ -1878,8 +2237,18 @@ export default function CameraScreen() {
 
         {/* ── Countdown overlay ───────────────────────────────────────────── */}
         {countdown != null && (
-          <View style={styles.countdownOverlay} pointerEvents="none">
-            <Text style={styles.countdownText}>{countdown}</Text>
+          <View style={styles.countdownOverlay} pointerEvents="box-none">
+            <Text style={styles.countdownText} pointerEvents="none">{countdown}</Text>
+            {/* The shutter also cancels; this makes it obvious. */}
+            <TouchableOpacity
+              style={styles.countdownCancel}
+              onPress={cancelCountdown}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel self-timer"
+            >
+              <Ionicons name="close" size={18} color="white" />
+              <Text style={styles.countdownCancelText}>Cancel</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -1899,13 +2268,6 @@ export default function CameraScreen() {
           </View>
         )}
 
-        {isProcessingScan && (
-          <View style={[styles.stampToast, { bottom: insets.bottom + 180 }]} pointerEvents="none">
-            <Ionicons name="scan-outline" size={13} color={PRIMARY} />
-            <Text style={styles.stampToastText}>Processing document…</Text>
-          </View>
-        )}
-
         {/* ── Scan result modal ───────────────────────────────────────────── */}
         <Modal visible={showScanModal} animationType="slide" onRequestClose={discardScan}>
           <View style={styles.scanModal}>
@@ -1916,19 +2278,11 @@ export default function CameraScreen() {
               <Text style={styles.scanModalTitle}>Document Scan</Text>
               <View style={{ width: 40 }} />
             </View>
-            {Platform.OS === "web" && (
-              <View style={styles.scanBadgeRow}>
-                <Ionicons name={scanCropped ? "scan-outline" : "color-wand-outline"} size={13} color={PRIMARY} />
-                <Text style={styles.scanBadgeText}>
-                  {scanCropped ? "Auto-cropped · Flattened · Enhanced" : "Enhanced (edges not detected — full frame kept)"}
-                </Text>
-              </View>
-            )}
             {scanUri && (
               <Image source={{ uri: scanUri }} style={styles.scanPreview} resizeMode="contain" accessibilityLabel="Document scan preview" />
             )}
             <View style={styles.scanModalFooter}>
-              <TouchableOpacity style={styles.scanRetakeBtn} onPress={discardScan}>
+              <TouchableOpacity style={styles.scanRetakeBtn} onPress={retakeScan}>
                 <Ionicons name="camera-outline" size={18} color={PRIMARY} />
                 <Text style={styles.scanRetakeText}>Retake</Text>
               </TouchableOpacity>
@@ -1946,11 +2300,14 @@ export default function CameraScreen() {
             ref={bakeViewRef}
             collapsable={false}
             pointerEvents="none"
-            style={{ position: "absolute", left: -100000, top: 0, width: bakeConfig.renderW, height: bakeConfig.renderH }}
+            style={{
+              position: "absolute", left: -100000, top: 0,
+              width: bakeConfig.renderW * bakeConfig.dp, height: bakeConfig.renderH * bakeConfig.dp,
+            }}
           >
             <Image
               source={{ uri: bakeConfig.uri }}
-              style={{ width: bakeConfig.renderW, height: bakeConfig.renderH }}
+              style={{ width: bakeConfig.renderW * bakeConfig.dp, height: bakeConfig.renderH * bakeConfig.dp }}
               resizeMode="cover"
               onLoad={captureBakedView}
               onError={abandonBake}
@@ -1965,15 +2322,15 @@ export default function CameraScreen() {
               />
             )}
             {bakeConfig.stampLines.length > 0 && (
-              <View style={{ position: "absolute", left: bakeConfig.pad, bottom: bakeConfig.pad }}>
+              <View style={{ position: "absolute", left: bakeConfig.pad * bakeConfig.dp, bottom: bakeConfig.pad * bakeConfig.dp }}>
                 {bakeConfig.stampLines.map((ln, i) => (
                   <Text
                     key={i}
                     style={{
                       color: PRIMARY,
-                      fontSize: bakeConfig.fs,
+                      fontSize: bakeConfig.fs * bakeConfig.dp,
                       fontFamily: "Inter_600SemiBold",
-                      lineHeight: Math.round(bakeConfig.fs * 1.25),
+                      lineHeight: bakeConfig.fs * bakeConfig.dp * 1.25,
                       textShadowColor: "rgba(0,0,0,0.85)",
                       textShadowRadius: 6,
                     }}
@@ -1992,32 +2349,38 @@ export default function CameraScreen() {
             pointerEvents="none"
             style={{
               position: "absolute", left: -100000, top: 0,
-              width: panoConfig.outW, height: panoConfig.outH,
+              width: panoConfig.outW * panoConfig.dp, height: panoConfig.outH * panoConfig.dp,
               flexDirection: "row", backgroundColor: "#000",
             }}
           >
-            {panoConfig.frames.map((f, i) => (
-              // Each frame contributes a centre strip: the image is rendered at
-              // full width inside a narrower clipping view and shifted left so
-              // its middle lands in the slice.
-              <View
-                key={`${f.uri}-${i}`}
-                style={{ width: panoConfig.sliceW, height: panoConfig.outH, overflow: "hidden" }}
-              >
-                <Image
-                  source={{ uri: f.uri }}
-                  style={{
-                    width: panoConfig.frameW,
-                    height: panoConfig.frameH,
-                    marginLeft: panoConfig.frameOffsetX,
-                  }}
-                  resizeMode="cover"
-                  fadeDuration={0}
-                  onLoad={onPanoFrameLoaded}
-                  onError={abandonPanoCompose}
-                />
-              </View>
-            ))}
+            {panoConfig.slices.map((sl, i) => {
+              const f = panoConfig.frames[sl.frameIndex]!;
+              // Each frame contributes one strip: the image is rendered at full
+              // width inside a narrower clipping view and shifted so the part
+              // of the scene this frame owns lands in the slice.
+              return (
+                <View
+                  key={`${f.uri}-${i}`}
+                  style={{ width: sl.sliceW * panoConfig.dp, height: panoConfig.outH * panoConfig.dp, overflow: "hidden" }}
+                >
+                  <Image
+                    source={{ uri: f.uri }}
+                    style={{
+                      width: panoConfig.frameW * panoConfig.dp,
+                      height: panoConfig.frameH * panoConfig.dp,
+                      marginLeft: sl.offsetX * panoConfig.dp,
+                    }}
+                    resizeMode="cover"
+                    // Decode at the rendered size (Android/Fresco), keeping the
+                    // whole composition inside the panorama memory budget.
+                    resizeMethod="resize"
+                    fadeDuration={0}
+                    onLoad={onPanoFrameLoaded}
+                    onError={abandonPanoCompose}
+                  />
+                </View>
+              );
+            })}
           </View>
         )}
 
@@ -2078,6 +2441,19 @@ const styles = StyleSheet.create({
     color: "white", fontSize: 140, fontFamily: "Inter_700Bold",
     textShadowColor: "rgba(0,0,0,0.6)", textShadowRadius: 18,
   },
+  countdownCancel: {
+    flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8,
+    paddingHorizontal: 16, paddingVertical: 9, borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.6)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)",
+  },
+  countdownCancelText: { color: "white", fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  subBanner: {
+    position: "absolute", left: 14, right: 14,
+    flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 12, paddingVertical: 9, borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.78)", borderWidth: 1, borderColor: "rgba(245,158,11,0.55)",
+  },
+  subBannerText: { flex: 1, color: "#f59e0b", fontSize: 12, fontFamily: "Inter_600SemiBold" },
   stampToast: {
     position: "absolute", alignSelf: "center",
     flexDirection: "row", alignItems: "center", gap: 6,
@@ -2211,11 +2587,6 @@ const styles = StyleSheet.create({
   },
   scanModalClose: { padding: 8 },
   scanModalTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
-  scanBadgeRow: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
-    paddingVertical: 6,
-  },
-  scanBadgeText: { color: PRIMARY, fontSize: 12, fontFamily: "Inter_500Medium" },
   scanPreview: { flex: 1, width: "100%" },
   scanModalFooter: {
     flexDirection: "row", gap: 12, padding: 20, paddingBottom: 40,

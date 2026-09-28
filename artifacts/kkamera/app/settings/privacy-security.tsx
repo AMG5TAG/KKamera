@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity,
   Switch, TextInput, Alert, Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -13,12 +13,19 @@ import {
   authenticateWithDevice, clearPin, hasPin, isBiometricEnrolled, isDeviceAuthAvailable, savePin, RELOCK_GRACE_MS,
 } from "@/lib/appLock";
 import { API_BASE_URL } from "@/lib/config";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 const DANGER = "#ef4444";
+
+// Alert isn't implemented by react-native-web, so web feedback uses the browser dialog.
+function notify(title: string, body: string) {
+  if (Platform.OS === "web") window.alert(`${title}\n\n${body}`);
+  else Alert.alert(title, body);
+}
 
 export default function PrivacySecurityScreen() {
   const insets = useSafeAreaInsets();
@@ -60,7 +67,7 @@ export default function PrivacySecurityScreen() {
       cancelPinSetup();
     } else if (result === "unavailable") {
       setDeviceAuthAvailable(false);
-      Alert.alert("Not available", "Biometric unlock isn't set up on this device. Set a PIN instead.");
+      notify("Not available", "Biometric unlock isn't set up on this device. Set a PIN instead.");
     }
   };
 
@@ -93,7 +100,7 @@ export default function PrivacySecurityScreen() {
   const handlePinSubmit = async () => {
     const value = pinStep === "enter" ? pinEntry : confirmPin;
     if (!/^\d{4}$/.test(value)) {
-      Alert.alert("Invalid PIN", "PIN must be exactly 4 digits.");
+      notify("Invalid PIN", "PIN must be exactly 4 digits.");
       return;
     }
     if (pinStep === "enter") {
@@ -101,7 +108,7 @@ export default function PrivacySecurityScreen() {
       return;
     }
     if (pinEntry !== confirmPin) {
-      Alert.alert("PINs don't match", "Try again.");
+      notify("PINs don't match", "Try again.");
       setPinEntry(""); setConfirmPin(""); setPinStep("enter");
       return;
     }
@@ -110,7 +117,7 @@ export default function PrivacySecurityScreen() {
       // Stored as a salted hash in the OS keystore, never in cleartext.
       await savePin(pinEntry);
     } catch {
-      Alert.alert("Couldn't save PIN", "Your PIN could not be stored securely on this device. App lock was not changed.");
+      notify("Couldn't save PIN", "Your PIN could not be stored securely on this device. App lock was not changed.");
       return;
     } finally {
       setSavingPin(false);
@@ -124,38 +131,38 @@ export default function PrivacySecurityScreen() {
   };
 
   const handlePanic = () => {
-    Alert.alert(
-      "Panic Wipe",
-      "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign you out\n• Reset all settings\n\nThis cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Wipe Everything",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // Use the in-memory auth token from context. Reading it from
-              // AsyncStorage broke on native, where the token lives in SecureStore
-              // — so the server-side wipe silently no-op'd on the exact platforms
-              // we ship. API_BASE_URL is "" on web (same-origin), a valid prefix.
-              if (token) {
-                await Promise.allSettled([
-                  fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
-                  fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
-                ]);
-              }
-            } catch { /* best effort */ }
-            // Reset all local settings (clears the app-lock PIN too), as the
-            // confirmation dialog promises, then sign out.
-            await resetSettings();
-            await clearPin();
-            setPinStored(false);
-            await discardQueue();
-            await logout();
-          },
-        },
-      ]
-    );
+    const message =
+      "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign you out\n• Reset all settings\n\nThis cannot be undone.";
+    const wipe = async () => {
+      try {
+        // Use the in-memory auth token from context. Reading it from
+        // AsyncStorage broke on native, where the token lives in SecureStore
+        // — so the server-side wipe silently no-op'd on the exact platforms
+        // we ship. API_BASE_URL is "" on web (same-origin), a valid prefix.
+        if (token) {
+          await Promise.allSettled([
+            fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+            fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+          ]);
+        }
+      } catch { /* best effort */ }
+      // Reset all local settings (clears the app-lock PIN too), as the
+      // confirmation dialog promises, then sign out.
+      await resetSettings();
+      await clearPin();
+      setPinStored(false);
+      await discardQueue();
+      await logout();
+    };
+    // Alert.alert is a no-op on react-native-web, so use the browser dialog there.
+    if (Platform.OS === "web") {
+      if (window.confirm(`Panic Wipe\n\n${message}`)) void wipe();
+      return;
+    }
+    Alert.alert("Panic Wipe", message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Wipe Everything", style: "destructive", onPress: () => { void wipe(); } },
+    ]);
   };
 
   return (
@@ -164,10 +171,12 @@ export default function PrivacySecurityScreen() {
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
 
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={120}
       >
         <Text style={styles.pageTitle}>Privacy & Security</Text>
 
@@ -368,7 +377,7 @@ export default function PrivacySecurityScreen() {
             <Ionicons name="chevron-forward" size={15} color="#444" />
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

@@ -114,6 +114,44 @@ paths:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
 
+  /auth/change-password:
+    post:
+      operationId: changePassword
+      tags: [auth]
+      summary: Change the signed-in user's password
+      description: >-
+        Verifies the current password (and a TOTP or backup code when 2FA is
+        enabled), sets the new password, and signs out every other session.
+        Returns a fresh token so the calling device stays signed in. Errors are
+        400 (never 401) so a mistyped password doesn't end the session.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordInput"
+      responses:
+        "200":
+          description: Password changed; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid input, wrong current password, or invalid 2FA code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
   /auth/2fa/setup:
     post:
       operationId: setup2FA
@@ -623,7 +661,9 @@ paths:
         "302":
           description: >-
             Redirect to the app success screen (/oauth-success), the native deep
-            link (kkamera://oauth-success), or the error screen (/oauth-error)
+            link (kkamera://oauth-success), or the error screen
+            (kkamera://oauth-error, or /oauth-error for web flows). When the
+            state cannot be verified, errors default to the native deep link.
 
   /oauth/status:
     get:
@@ -639,51 +679,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OAuthStatus"
-
-  /oauth/{provider}/refresh/{connectionId}:
-    post:
-      operationId: refreshOAuthToken
-      tags: [oauth]
-      summary: Refresh an expired access token for a stored cloud connection
-      security:
-        - BearerAuth: []
-      parameters:
-        - name: provider
-          in: path
-          required: true
-          schema:
-            type: string
-            enum: [googledrive, onedrive, dropbox]
-        - name: connectionId
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        "200":
-          description: Token refreshed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SuccessResponse"
-        "400":
-          description: Unknown provider
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-        "404":
-          description: No refresh token found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
-        "502":
-          description: Token refresh failed
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/MessageResponse"
 
   /users/me/export:
     get:
@@ -701,6 +696,89 @@ paths:
                 $ref: "#/components/schemas/UserDataExport"
         "404":
           description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /uploads/execute:
+    post:
+      operationId: executeUpload
+      tags: [uploads]
+      summary: Upload one capture to the user's active cloud connections
+      description: >
+        Requires an active subscription. Retries of the same capture are
+        de-duplicated by `clientUploadId`: a capture that already finished
+        returns its previous result without re-uploading, a capture another
+        request is still uploading returns 409, and any other previous attempt
+        (partial/failed/queued) is updated in place rather than duplicated.
+        When retrying a partial upload, send only the failed `connectionIds`;
+        the stored status combines both attempts.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ExecuteUploadInput"
+      responses:
+        "200":
+          description: Upload attempted (status done, partial or failed), or a duplicate of a finished capture
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteUploadResult"
+        "202":
+          description: Accepted but no active cloud connection — recorded as queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteUploadResult"
+        "400":
+          description: Missing file or invalid fileName, mimeType, connectionIds or clientUploadId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "402":
+          description: Active subscription required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "409":
+          description: This clientUploadId is currently being uploaded by another request; retry after the Retry-After delay
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "413":
+          description: File exceeds the 200 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many uploads for this user (rate or in-flight limit); honour Retry-After
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "503":
+          description: Upload server busy; honour Retry-After
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -820,28 +898,110 @@ components:
 
     UserDataExport:
       type: object
-      required: [exportedAt, user, referrals, uploads, feedback]
+      required: [exportedAt, user, uploadTarget, cloudConnections, referrals, referredBy, uploads, feedback]
       properties:
         exportedAt:
           type: string
         user:
           $ref: "#/components/schemas/User"
+        uploadTarget:
+          $ref: "#/components/schemas/UploadTarget"
         subscription:
           oneOf:
-            - $ref: "#/components/schemas/Subscription"
+            - $ref: "#/components/schemas/ExportSubscription"
             - type: "null"
+        cloudConnections:
+          type: array
+          description: Connection metadata only — credentials and tokens are never exported.
+          items:
+            $ref: "#/components/schemas/ExportCloudConnection"
         referrals:
           type: array
           items:
             $ref: "#/components/schemas/Referral"
+        referredBy:
+          type: array
+          description: Referral rows in which this user is the referred party.
+          items:
+            $ref: "#/components/schemas/ExportReferredBy"
         uploads:
           type: array
           items:
-            $ref: "#/components/schemas/UploadItem"
+            $ref: "#/components/schemas/ExportUpload"
         feedback:
           type: array
           items:
             $ref: "#/components/schemas/FeedbackItem"
+
+    ExportSubscription:
+      type: object
+      required: [status, freeYearsAwarded]
+      properties:
+        status:
+          type: string
+        trialStart:
+          type: ["string", "null"]
+        trialEnd:
+          type: ["string", "null"]
+        currentPeriodEnd:
+          type: ["string", "null"]
+        freeYearsAwarded:
+          type: integer
+        createdAt:
+          type: ["string", "null"]
+
+    ExportCloudConnection:
+      type: object
+      required: [id, type, name, active]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+        provider:
+          type: ["string", "null"]
+        name:
+          type: string
+        host:
+          type: ["string", "null"]
+        port:
+          type: ["integer", "null"]
+        username:
+          type: ["string", "null"]
+        uploadPath:
+          type: ["string", "null"]
+        accountLabel:
+          type: ["string", "null"]
+        active:
+          type: boolean
+        createdAt:
+          type: ["string", "null"]
+
+    ExportReferredBy:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+        createdAt:
+          type: ["string", "null"]
+
+    ExportUpload:
+      type: object
+      required: [id, fileName, fileType, status]
+      properties:
+        id:
+          type: integer
+        fileName:
+          type: string
+        fileType:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: ["string", "null"]
 
     FeedbackItem:
       type: object
@@ -905,6 +1065,20 @@ components:
         password:
           type: string
           minLength: 8
+
+    ChangePasswordInput:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+          minLength: 8
+          description: At least 8 characters and at most 72 bytes (UTF-8).
+        totpCode:
+          type: ["string", "null"]
+          description: Required when 2FA is enabled — a 6-digit TOTP or a backup code.
 
     InviteCoworkersInput:
       type: object
@@ -1066,6 +1240,15 @@ components:
         host:
           type: ["string", "null"]
           description: Server URL for self-hosted types (nextcloud/webdav/ftp); null for OAuth providers.
+        port:
+          type: ["integer", "null"]
+          description: Explicit port for self-hosted types; null = protocol default.
+        username:
+          type: ["string", "null"]
+          description: Login for self-hosted types (never the password).
+        hasPassword:
+          type: boolean
+          description: Whether a password is saved (the password itself is never returned).
         accountLabel:
           type: ["string", "null"]
         hasCredentials:
@@ -1100,15 +1283,25 @@ components:
 
     CloudConnectionUpdate:
       type: object
+      additionalProperties: false
+      description: >-
+        Partial update. A field that is absent is left unchanged; an explicit
+        null clears it (password → no saved password, port → protocol default,
+        username → none, uploadPath → the default "/KKamera"). name, active and
+        host cannot be cleared, and host must not be blank. Nextcloud
+        connections cannot clear their username.
       properties:
         name:
-          type: ["string", "null"]
+          type: string
+          minLength: 1
         active:
-          type: ["boolean", "null"]
+          type: boolean
         uploadPath:
           type: ["string", "null"]
+          description: Folder path; ".." segments are rejected.
         host:
-          type: ["string", "null"]
+          type: string
+          minLength: 1
         port:
           type: ["integer", "null"]
         username:
@@ -1116,7 +1309,7 @@ components:
         password:
           type: ["string", "null"]
         oauthCode:
-          type: ["string", "null"]
+          type: string
 
     TestResult:
       type: object
@@ -1146,8 +1339,64 @@ components:
           type: ["string", "null"]
         error:
           type: ["string", "null"]
+        clientUploadId:
+          type: ["string", "null"]
+          description: The app's per-capture id sent to /uploads/execute, when there was one
         createdAt:
           type: string
+
+    ExecuteUploadInput:
+      type: object
+      required: [file]
+      properties:
+        file:
+          # The binary capture. Declared as a plain string part rather than
+          # `format: binary` because the generated api-zod lib compiles without
+          # DOM File/Blob types (the app uploads via XHR, not the generated hook).
+          type: string
+          description: The image or video file part (max 200 MB)
+        fileName:
+          type: string
+          maxLength: 255
+        mimeType:
+          type: string
+          description: image/* or video/*
+        connectionIds:
+          type: string
+          description: JSON array of connection IDs; omit to upload to every active connection
+        clientUploadId:
+          type: string
+          maxLength: 100
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Stable per-capture id used to de-duplicate retries
+
+    ExecuteUploadConnectionResult:
+      type: object
+      required: [connectionId, success]
+      properties:
+        connectionId:
+          type: integer
+        success:
+          type: boolean
+        error:
+          type: string
+
+    ExecuteUploadResult:
+      type: object
+      required: [status, results]
+      properties:
+        uploadId:
+          type: integer
+        status:
+          type: string
+          enum: [done, partial, failed, queued]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecuteUploadConnectionResult"
+        duplicate:
+          type: boolean
+          description: True when this capture had already been uploaded and nothing was re-sent
 
     UploadInput:
       type: object

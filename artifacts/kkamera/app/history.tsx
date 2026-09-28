@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   Alert, ActivityIndicator, RefreshControl,
@@ -61,6 +61,22 @@ export default function HistoryScreen() {
   const sorted = [...(uploads ?? [])].sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
+
+  // A capture still held on this device (e.g. a partial upload being retried)
+  // is shown once, in "On this device" — hide its server row until it leaves
+  // the local queue. The server reuses one row per clientUploadId (the queue
+  // item id), so after that there is exactly one server row for it.
+  const localIds = useMemo(() => new Set(queuedItems.map(i => i.id)), [queuedItems]);
+  const visible = sorted.filter(u => !u.clientUploadId || !localIds.has(u.clientUploadId));
+
+  // When a capture leaves the local queue (uploaded, or discarded) refresh the
+  // server list so its final row appears without a manual pull-to-refresh.
+  const prevLocalIds = useRef(localIds);
+  useEffect(() => {
+    const left = [...prevLocalIds.current].some(id => !localIds.has(id));
+    prevLocalIds.current = localIds;
+    if (left) queryClient.invalidateQueries({ queryKey: getListUploadsQueryKey() });
+  }, [localIds, queryClient]);
 
   const handleDelete = (id: number, fileName: string) => {
     Alert.alert("Remove Record", `Remove "${fileName}" from history?`, [
@@ -228,7 +244,7 @@ export default function HistoryScreen() {
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
         <Text style={styles.heading}>Upload History</Text>
-        {sorted.length > 0 && (
+        {visible.length > 0 && (
           <TouchableOpacity onPress={handleClearAll} disabled={isClearing} style={styles.clearAllBtn}>
             {isClearing
               ? <ActivityIndicator size="small" color="#ef4444" />
@@ -250,15 +266,15 @@ export default function HistoryScreen() {
         </>
       ) : (
         <FlatList
-          data={sorted}
+          data={visible}
           keyExtractor={item => String(item.id)}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={PRIMARY} />}
-          ListHeaderComponent={(deviceSection || sorted.length > 0) ? (
+          ListHeaderComponent={(deviceSection || visible.length > 0) ? (
             <>
               {deviceSection}
-              {sorted.length > 0 && (
-                <Text style={styles.countText}>{sorted.length} record{sorted.length !== 1 ? "s" : ""}</Text>
+              {visible.length > 0 && (
+                <Text style={styles.countText}>{visible.length} record{visible.length !== 1 ? "s" : ""}</Text>
               )}
             </>
           ) : null}

@@ -6,13 +6,16 @@ import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { uploadsTable, cloudConnectionsTable, usersTable } from "@workspace/db";
-import { eq, and, inArray, desc } from "drizzle-orm";
+import { eq, and, inArray, desc, lt } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { requireSubscription } from "../middlewares/requireSubscription.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { normalizeConnectionIds } from "../lib/connectionIds.js";
 import { MAX_UPLOAD_FILENAME_LENGTH, isAllowedMimeType, parseConnectionIdsField } from "../lib/cloudUploadPolicy.js";
+import {
+  STALE_UPLOADING_MS, decideExistingUpload, isUniqueViolation, mergeUploadOutcome, parseClientUploadIdField,
+} from "../lib/uploadDedupe.js";
 
 const router = Router();
 
@@ -66,7 +69,7 @@ function releaseUploadSlot(): void {
   else activeUploads -= 1;
 }
 
-function sendBusy(res: Response, status: 429 | 503, message: string): void {
+function sendBusy(res: Response, status: 409 | 429 | 503, message: string): void {
   res.setHeader("Retry-After", String(RETRY_AFTER_SECONDS));
   res.status(status).json({ message });
 }
@@ -135,6 +138,7 @@ function fmt(u: typeof uploadsTable.$inferSelect) {
   return {
     id: u.id, userId: u.userId, fileName: u.fileName, fileType: u.fileType,
     status: u.status, connectionIds: u.connectionIds ?? null, error: u.error ?? null,
+    clientUploadId: u.clientUploadId ?? null,
     createdAt: u.createdAt.toISOString(),
   };
 }
@@ -185,6 +189,80 @@ router.post("/uploads", requireAuth, async (req, res) => {
 
 // ─── Execute upload — requires active subscription ────────────────────────────
 
+type UploadRow = typeof uploadsTable.$inferSelect;
+
+async function findByClientUploadId(userId: number, clientUploadId: string): Promise<UploadRow | undefined> {
+  const [row] = await db.select().from(uploadsTable).where(
+    and(eq(uploadsTable.userId, userId), eq(uploadsTable.clientUploadId, clientUploadId))
+  ).limit(1);
+  return row;
+}
+
+type ClaimResult =
+  | { kind: "claimed"; row: UploadRow; previous: UploadRow | null }
+  | { kind: "done"; row: UploadRow }
+  | { kind: "busy" };
+
+/**
+ * Take ownership of the history row for one capture. Without a clientUploadId
+ * this is a plain insert. With one, an existing row is reused (never
+ * duplicated): a finished row short-circuits as "done", a row another request
+ * is still uploading is "busy", anything else is claimed with a conditional
+ * update so two concurrent retries can't both own it. A unique violation on
+ * insert means a concurrent request created the row first — re-read and decide
+ * again.
+ */
+async function claimUploadRow(
+  userId: number,
+  clientUploadId: string | null,
+  values: { fileName: string; fileType: string; status: string; connectionIds: string | null; error: string | null },
+): Promise<ClaimResult> {
+  if (!clientUploadId) {
+    const [row] = await db.insert(uploadsTable).values({ userId, ...values }).returning();
+    if (!row) throw new Error("Failed to create upload record");
+    return { kind: "claimed", row, previous: null };
+  }
+  for (let i = 0; i < 3; i++) {
+    const existing = await findByClientUploadId(userId, clientUploadId);
+    const decision = decideExistingUpload(existing);
+    if (decision.action === "done") return { kind: "done", row: existing! };
+    if (decision.action === "busy") return { kind: "busy" };
+    if (decision.action === "insert") {
+      try {
+        const [row] = await db.insert(uploadsTable).values({ userId, clientUploadId, ...values }).returning();
+        if (!row) throw new Error("Failed to create upload record");
+        return { kind: "claimed", row, previous: null };
+      } catch (err) {
+        if (isUniqueViolation(err)) continue;
+        throw err;
+      }
+    }
+    const prev = existing!;
+    // Keep every destination the capture has ever been sent to on the row.
+    const connectionIds = [...new Set(
+      [prev.connectionIds, values.connectionIds].filter(Boolean).join(",").split(",").filter(Boolean)
+    )].join(",") || null;
+    const [row] = await db.update(uploadsTable).set({ ...values, connectionIds }).where(and(
+      eq(uploadsTable.id, prev.id),
+      eq(uploadsTable.status, prev.status),
+      prev.status === "uploading"
+        ? lt(uploadsTable.updatedAt, new Date(Date.now() - STALE_UPLOADING_MS))
+        : undefined,
+    )).returning();
+    if (row) return { kind: "claimed", row, previous: prev };
+    // Another request changed the row between our read and update — re-read.
+  }
+  return { kind: "busy" };
+}
+
+function sendDuplicateBusy(res: Response): void {
+  sendBusy(res, 409, "This capture is already being uploaded. Please try again shortly.");
+}
+
+function sendAlreadyDone(res: Response, row: UploadRow): void {
+  res.json({ uploadId: row.id, status: "done", results: [], duplicate: true });
+}
+
 router.post(
   "/uploads/execute",
   requireAuth,
@@ -229,6 +307,22 @@ router.post(
       }
       const connectionIds = idsField.ids;
 
+      // Stable per-capture id from the app, used to recognise retries.
+      const clientIdField = parseClientUploadIdField(req.body.clientUploadId);
+      if (!clientIdField.ok) {
+        res.status(400).json({ message: "clientUploadId must be at most 100 characters of A-Z, a-z, 0-9, _ or -" }); return;
+      }
+      const clientUploadId = clientIdField.id;
+
+      // Cheap early exit for retries of a capture that already finished or is
+      // still in flight, before touching connections or reading the file.
+      if (clientUploadId) {
+        const existing = await findByClientUploadId(req.userId!, clientUploadId);
+        const decision = decideExistingUpload(existing);
+        if (decision.action === "done") { sendAlreadyDone(res, existing!); return; }
+        if (decision.action === "busy") { sendDuplicateBusy(res); return; }
+      }
+
       const connections = connectionIds
         ? await db.select().from(cloudConnectionsTable).where(
             and(
@@ -253,11 +347,13 @@ router.post(
       });
 
       if (targets.length === 0) {
-        const [item] = await db.insert(uploadsTable).values({
-          userId: req.userId!, fileName, fileType, status: "queued",
+        const claim = await claimUploadRow(req.userId!, clientUploadId, {
+          fileName, fileType, status: "queued", connectionIds: null,
           error: "No active cloud connections configured",
-        }).returning();
-        res.status(202).json({ uploadId: item?.id, results: [], status: "queued" });
+        });
+        if (claim.kind === "done") { sendAlreadyDone(res, claim.row); return; }
+        if (claim.kind === "busy") { sendDuplicateBusy(res); return; }
+        res.status(202).json({ uploadId: claim.row.id, results: [], status: "queued" });
         return;
       }
 
@@ -271,35 +367,47 @@ router.post(
         return;
       }
       await slot;
-      let uploadRecord: typeof uploadsTable.$inferSelect | undefined;
+      let uploadRecord: UploadRow | undefined;
+      let previousRecord: UploadRow | null = null;
       let results;
       try {
-        [uploadRecord] = await db.insert(uploadsTable).values({
-          userId: req.userId!, fileName, fileType, status: "uploading",
-          connectionIds: targets.map(c => c.id).join(","),
-        }).returning();
+        const claim = await claimUploadRow(req.userId!, clientUploadId, {
+          fileName, fileType, status: "uploading",
+          connectionIds: targets.map(c => c.id).join(","), error: null,
+        });
+        if (claim.kind === "done") { sendAlreadyDone(res, claim.row); return; }
+        if (claim.kind === "busy") { sendDuplicateBusy(res); return; }
+        uploadRecord = claim.row;
+        previousRecord = claim.previous;
         const buf = await fs.promises.readFile(file.path);
         results = await Promise.all(
           targets.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
         );
+      } catch (err) {
+        // Never leave a claimed row stuck in "uploading" — that would make every
+        // retry of this capture 409 until the row goes stale.
+        if (uploadRecord) {
+          await db.update(uploadsTable).set({ status: "failed", error: "Upload failed" })
+            .where(eq(uploadsTable.id, uploadRecord.id)).catch(() => {});
+        }
+        throw err;
       } finally {
         releaseUploadSlot();
       }
 
-      const allOk = results.every(r => r.success);
-      const anyOk = results.some(r => r.success);
-      const finalStatus = allOk ? "done" : anyOk ? "partial" : "failed";
-      // uploadToCloud already maps errors to generic per-provider text.
-      const errorMsg = results.filter(r => !r.success).map(r => r.error).join("; ");
+      // Combine with any previous attempt on the same row (a partial retry only
+      // re-sends the destinations that failed). uploadToCloud already maps
+      // errors to generic per-provider text.
+      const outcome = mergeUploadOutcome(previousRecord, results);
+      const finalStatus = outcome.status;
 
-      if (uploadRecord) {
-        await db.update(uploadsTable).set({
-          status: finalStatus,
-          error: errorMsg || null,
-        }).where(eq(uploadsTable.id, uploadRecord.id));
-      }
+      await db.update(uploadsTable).set({
+        status: finalStatus,
+        connectionIds: outcome.connectionIds,
+        error: outcome.error,
+      }).where(eq(uploadsTable.id, uploadRecord.id));
 
-      res.json({ uploadId: uploadRecord?.id, status: finalStatus, results });
+      res.json({ uploadId: uploadRecord.id, status: finalStatus, results });
     } catch (err) {
       req.log.error({ err }, "Execute upload error");
       // Don't leak internal error details to the client; they're in the logs.

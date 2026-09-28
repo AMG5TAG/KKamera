@@ -6,11 +6,12 @@ import {
   useFonts,
 } from "@expo-google-fonts/inter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack, router } from "expo-router";
+import { Stack, router, useRootNavigationState, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, BackHandler, Keyboard, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { setBaseUrl } from "@workspace/api-client-react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -39,7 +40,7 @@ initializeRevenueCat();
 
 function AppLockGate({ children }: { children: React.ReactNode }) {
   const { settings, isLoading: settingsLoading, updateSetting } = useSettings();
-  const { isAuthenticated, isLoading: authLoading, lastLoginAt, logout } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, lastLoginAt, logout, onLogout, hasCompletedWizard } = useAuth();
   const ready = !settingsLoading && !authLoading;
   const lockEnabled = settings.appLockEnabled && isAuthenticated;
 
@@ -108,13 +109,42 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
     return () => sub.remove();
   }, [locked]);
 
+  // Witness mode emails a contact after each upload — that contact belongs to
+  // the account, not the device, so it must not carry over to the next sign-in.
+  // (App-lock settings are device-level and intentionally kept.)
+  useEffect(() => onLogout(() => {
+    updateSetting("witnessOnSuccess", false);
+    updateSetting("witnessEmail", "");
+  }), [onLogout, updateSetting]);
+
+  // Routing guard. Sign-out from anywhere (Settings, Panic Wipe, Delete Account,
+  // an expired-token 401, the lock screen) lands on the login screen; a signed-in
+  // user who hasn't finished onboarding can't reach the main app via a deep link
+  // or restored route — they're sent back to the wizard.
+  const segments = useSegments();
+  const navReady = !!useRootNavigationState()?.key;
+  const wasAuthenticated = useRef(isAuthenticated);
+  useEffect(() => {
+    if (!ready || !navReady) return;
+    const top = segments[0] as string | undefined;
+    if (wasAuthenticated.current && !isAuthenticated && top !== "auth") {
+      router.replace("/auth/login");
+    } else if (
+      isAuthenticated && !hasCompletedWizard &&
+      top !== undefined && ONBOARDING_GATED.has(top)
+    ) {
+      router.replace("/wizard");
+    }
+    wasAuthenticated.current = isAuthenticated;
+  }, [ready, navReady, isAuthenticated, hasCompletedWizard, segments]);
+
   const handleUnlock = useCallback(() => setLockedState(false), []);
 
   const handleSignOut = useCallback(async (reason: LockSignOutReason) => {
     if (reason === "no-credential") disableLockOnNextLogin.current = true;
     await logout();
+    // The routing guard above sends the user to the login screen.
     setLockedState(false);
-    router.replace("/auth/login");
   }, [logout]);
 
   return (
@@ -135,6 +165,10 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
     </View>
   );
 }
+
+// Main-app routes that require a finished onboarding wizard. Settings, auth,
+// legal and OAuth routes stay reachable (the wizard itself opens Add Cloud).
+const ONBOARDING_GATED = new Set(["camera", "(tabs)", "history", "markup", "invite"]);
 
 const styles = StyleSheet.create({
   gateRoot: { flex: 1, backgroundColor: "#0d0b08" },
@@ -157,7 +191,8 @@ function RootLayoutNav() {
       <Stack.Screen name="camera" options={{ headerShown: false }} />
       {/* A card (not a native modal) so the app-lock overlay can cover it — a native
           modal is presented above the root view and would sit on top of the lock. */}
-      <Stack.Screen name="wizard" options={{ headerShown: false, animation: "slide_from_bottom" }} />
+      {/* Onboarding must be finished (Continue / Skip) — never swiped away. */}
+      <Stack.Screen name="wizard" options={{ headerShown: false, animation: "slide_from_bottom", gestureEnabled: false }} />
       <Stack.Screen name="auth/login" options={{ headerShown: false }} />
       <Stack.Screen name="auth/register" options={{ headerShown: false }} />
       <Stack.Screen name="settings/index" options={{ title: "Settings" }} />
@@ -167,6 +202,7 @@ function RootLayoutNav() {
       <Stack.Screen name="settings/subscription" options={{ title: "Subscription" }} />
       <Stack.Screen name="settings/affiliate" options={{ title: "Refer & Earn" }} />
       <Stack.Screen name="settings/security" options={{ title: "Security (2FA)" }} />
+      <Stack.Screen name="settings/change-password" options={{ headerShown: false }} />
       <Stack.Screen name="settings/feedback" options={{ title: "Feedback" }} />
       <Stack.Screen name="settings/privacy" options={{ title: "Privacy Policy" }} />
       <Stack.Screen name="settings/terms" options={{ title: "Terms of Service" }} />
@@ -205,11 +241,13 @@ export default function RootLayout() {
             <SettingsProvider>
               <UploadProvider>
                 <SubscriptionProvider>
-                  <AppLockGate>
-                    <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
-                      <RootLayoutNav />
-                    </GestureHandlerRootView>
-                  </AppLockGate>
+                  <KeyboardProvider>
+                    <AppLockGate>
+                      <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0d0b08" }}>
+                        <RootLayoutNav />
+                      </GestureHandlerRootView>
+                    </AppLockGate>
+                  </KeyboardProvider>
                 </SubscriptionProvider>
               </UploadProvider>
             </SettingsProvider>

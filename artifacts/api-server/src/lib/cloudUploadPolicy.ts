@@ -61,6 +61,95 @@ export function isAllowedMimeType(mime: unknown): mime is string {
   return typeof mime === "string" && MIME_RE.test(mime);
 }
 
+// ─── Upload paths ─────────────────────────────────────────────────────────────
+// One normaliser for every provider. Users type paths like "Photos/KKamera",
+// "/Photos/KKamera/", "\\Photos\\KKamera" (Windows habit) or "//a//b"; each
+// provider needs the same list of folder names out of that.
+
+/** Folder used when a connection has no upload path stored. */
+export const DEFAULT_UPLOAD_PATH = "/KKamera";
+
+/** True when any segment of `raw` is ".." (rejected at create/update time). */
+export function hasParentSegment(raw: string): boolean {
+  return raw.split(/[\\/]+/).some((seg) => seg.trim() === "..");
+}
+
+/**
+ * Split an upload path into folder names: backslashes count as separators,
+ * empty / "." segments are dropped, each segment is trimmed, and ".." segments
+ * are dropped too — validation rejects them, this is the defence in depth for
+ * rows stored before it did. `null`/`undefined` means the default folder; an
+ * explicit "" or "/" means the account root (no segments).
+ */
+export function uploadPathSegments(raw: string | null | undefined): string[] {
+  const path = raw ?? DEFAULT_UPLOAD_PATH;
+  return path
+    .split(/[\\/]+/)
+    .map((seg) => seg.trim())
+    .filter((seg) => seg !== "" && seg !== "." && seg !== "..");
+}
+
+/**
+ * Canonical form of an upload path, as stored: separators unified to "/",
+ * empty/"."/".." segments dropped, no trailing slash. A leading slash is kept
+ * only when the user typed one — every cloud provider treats the path as
+ * rooted either way, but FTP distinguishes absolute ("/dir") from relative to
+ * the login's home directory ("dir"). "/" is the root, "" the FTP home (and
+ * the root elsewhere).
+ */
+export function normalizeUploadPath(raw: string | null | undefined): string {
+  const path = (raw ?? DEFAULT_UPLOAD_PATH).trim();
+  const rel = uploadPathSegments(path).join("/");
+  return /^[\\/]/.test(path) ? `/${rel}` : rel;
+}
+
+/** "/seg/seg/fileName" — the absolute remote path for a file under `segments`. */
+export function joinRemotePath(segments: readonly string[], fileName: string): string {
+  return "/" + [...segments, fileName].join("/");
+}
+
+// ─── Google Drive ─────────────────────────────────────────────────────────────
+
+/** Above this, Drive uploads go resumable (multipart is documented up to 5 MB). */
+export const DRIVE_RESUMABLE_THRESHOLD = 5 * 1024 * 1024;
+/** Resumable chunk size — Drive requires multiples of 256 KiB (except the last). */
+export const DRIVE_CHUNK_SIZE = 16 * 1024 * 1024;
+
+/** Quote a value for a Drive `q=` string literal (backslash and ' escaped). */
+export function driveQueryString(value: string): string {
+  return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+
+/** Drive `q` for the (non-trashed) folders named `name` directly under `parentId`. */
+export function driveFolderQuery(name: string, parentId: string): string {
+  return `name=${driveQueryString(name)} and ${driveQueryString(parentId)} in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+}
+
+/**
+ * Parse the `Range` header of a Drive 308 "Resume Incomplete" ("bytes=0-N")
+ * into the next byte offset to send; no header means nothing was persisted.
+ */
+export function driveNextOffset(rangeHeader: string | null): number {
+  const m = rangeHeader?.match(/^bytes=0-(\d+)$/);
+  return m ? Number(m[1]) + 1 : 0;
+}
+
+// ─── OneDrive ─────────────────────────────────────────────────────────────────
+
+/** Above this, OneDrive uploads use an upload session instead of one PUT. */
+export const ONEDRIVE_SESSION_THRESHOLD = 4 * 1024 * 1024;
+/** Session fragment size — must be a multiple of 320 KiB and under 60 MiB. */
+export const ONEDRIVE_CHUNK_SIZE = 32 * 320 * 1024; // 10 MiB
+
+/**
+ * Graph path-addressing segment ("root:/a/b/file.jpg:") with every folder name
+ * and the file name percent-encoded, so '#', '?', '%', spaces and non-ASCII
+ * names address the item instead of truncating or corrupting the URL.
+ */
+export function oneDriveItemPath(segments: readonly string[], fileName: string): string {
+  return "root:/" + [...segments, fileName].map(encodeURIComponent).join("/") + ":";
+}
+
 // ─── FTPS fallback classification ─────────────────────────────────────────────
 
 const TLS_CERT_ERROR_CODES = new Set([
@@ -116,8 +205,7 @@ export function dropboxApiArg(arg: unknown): string {
 
 /** Absolute Dropbox path for `fileName` under `uploadPath` (always starts with "/"). */
 export function dropboxPath(uploadPath: string | null | undefined, fileName: string): string {
-  const dir = (uploadPath ?? "/KKamera").trim().replace(/^\/+|\/+$/g, "");
-  return dir ? `/${dir}/${fileName}` : `/${fileName}`;
+  return joinRemotePath(uploadPathSegments(uploadPath), fileName);
 }
 
 /** Split `size` bytes into [start, end) ranges of at most `chunk` bytes. */

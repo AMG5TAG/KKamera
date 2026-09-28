@@ -6,7 +6,12 @@ import { Ionicons } from "@expo/vector-icons";
 const BG = "#0d0b08";
 
 export default function OAuthErrorScreen() {
-  const { error, provider } = useLocalSearchParams<{ error?: string; provider?: string }>();
+  // expo-router has already percent-decoded these; decoding again threw
+  // URIError on a literal "%" (kkamera://oauth-error?error=%25) and crashed.
+  const { error } = useLocalSearchParams<{ error?: string; provider?: string }>();
+  const message = typeof error === "string" && error.trim()
+    ? error.slice(0, 300)
+    : "OAuth authorisation was cancelled or failed.";
   const scale = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
@@ -31,7 +36,7 @@ export default function OAuthErrorScreen() {
         </View>
         <Text style={styles.title}>Connection Failed</Text>
         <Text style={styles.subtitle}>
-          {decodeURIComponent(error ?? "OAuth authorisation was cancelled or failed.")}
+          {message}
         </Text>
         <Text style={styles.redirecting}>Returning to settings…</Text>
       </Animated.View>

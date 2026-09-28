@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Platform, Linking,
+  Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,6 +9,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useRegister, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import type { AuthUser } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
@@ -39,13 +40,15 @@ export default function RegisterScreen() {
   const handleRegister = async () => {
     setError("");
     if (!name.trim()) { setError("Please enter your name."); return; }
-    if (!email.trim()) { setError("Please enter your email."); return; }
+    const trimmedEmail = email.trim();
+    const trimmedName = name.trim();
+    if (!trimmedEmail) { setError("Please enter your email."); return; }
     if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
     if (!agreed) { setError("Please accept the Terms of Service to continue."); return; }
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       const result = await registerMutation.mutateAsync({
-        data: { name, email, password, referralCode: referralCode.trim().toUpperCase() || undefined }
+        data: { name: trimmedName, email: trimmedEmail, password, referralCode: referralCode.trim().toUpperCase() || undefined }
       });
       if (result.token && result.user) {
         await login(result.token, result.user as AuthUser);
@@ -62,12 +65,13 @@ export default function RegisterScreen() {
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={24} color={PRIMARY} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://app.kkamera.app")}>
-          <Ionicons name="chevron-back" size={18} color={PRIMARY} />
-          <Text style={styles.homeBtnText}>app.kkamera.app</Text>
-        </TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         <Text style={styles.title}>Create Account</Text>
         <Text style={styles.subtitle}>Start your 14-day free trial — no credit card needed</Text>
 
@@ -125,7 +129,7 @@ export default function RegisterScreen() {
         <TouchableOpacity style={styles.loginLink} onPress={() => router.back()}>
           <Text style={styles.loginLinkText}>Already have an account? <Text style={{ color: PRIMARY }}>Sign in</Text></Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }
@@ -144,8 +148,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   topRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingRight: 8 },
   backBtn: { padding: 16 },
-  homeBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, gap: 2 },
-  homeBtnText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium" },
   content: { paddingHorizontal: 28, paddingBottom: 40 },
   title: { fontSize: 26, fontFamily: "Inter_700Bold", color: "white", marginBottom: 6 },
   subtitle: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 20 },

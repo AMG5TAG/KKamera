@@ -63,6 +63,39 @@ export const ResetPasswordResponse = zod.object({
   message: zod.string(),
 });
 
+/**
+ * Verifies the current password (and a TOTP or backup code when 2FA is enabled), sets the new password, and signs out every other session. Returns a fresh token so the calling device stays signed in. Errors are 400 (never 401) so a mistyped password doesn't end the session.
+ * @summary Change the signed-in user's password
+ */
+export const changePasswordBodyNewPasswordMin = 8;
+
+export const ChangePasswordBody = zod.object({
+  currentPassword: zod.string(),
+  newPassword: zod
+    .string()
+    .min(changePasswordBodyNewPasswordMin)
+    .describe("At least 8 characters and at most 72 bytes (UTF-8)."),
+  totpCode: zod
+    .string()
+    .nullish()
+    .describe(
+      "Required when 2FA is enabled — a 6-digit TOTP or a backup code.",
+    ),
+});
+
+export const ChangePasswordResponse = zod.object({
+  token: zod.string(),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
+});
+
 export const Setup2FAResponse = zod.object({
   secret: zod.string(),
   qrCodeUrl: zod.string(),
@@ -231,6 +264,20 @@ export const ListCloudConnectionsResponseItem = zod.object({
     .describe(
       "Server URL for self-hosted types (nextcloud\/webdav\/ftp); null for OAuth providers.",
     ),
+  port: zod
+    .number()
+    .nullish()
+    .describe("Explicit port for self-hosted types; null = protocol default."),
+  username: zod
+    .string()
+    .nullish()
+    .describe("Login for self-hosted types (never the password)."),
+  hasPassword: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Whether a password is saved (the password itself is never returned).",
+    ),
   accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),
@@ -274,16 +321,23 @@ export const UpdateCloudConnectionParams = zod.object({
   id: zod.coerce.number(),
 });
 
-export const UpdateCloudConnectionBody = zod.object({
-  name: zod.string().nullish(),
-  active: zod.boolean().nullish(),
-  uploadPath: zod.string().nullish(),
-  host: zod.string().nullish(),
-  port: zod.number().nullish(),
-  username: zod.string().nullish(),
-  password: zod.string().nullish(),
-  oauthCode: zod.string().nullish(),
-});
+export const UpdateCloudConnectionBody = zod
+  .object({
+    name: zod.string().min(1).optional(),
+    active: zod.boolean().optional(),
+    uploadPath: zod
+      .string()
+      .nullish()
+      .describe('Folder path; \"..\" segments are rejected.'),
+    host: zod.string().min(1).optional(),
+    port: zod.number().nullish(),
+    username: zod.string().nullish(),
+    password: zod.string().nullish(),
+    oauthCode: zod.string().optional(),
+  })
+  .describe(
+    'Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default \"\/KKamera\"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.',
+  );
 
 export const UpdateCloudConnectionResponse = zod.object({
   id: zod.number(),
@@ -310,6 +364,20 @@ export const UpdateCloudConnectionResponse = zod.object({
     .nullish()
     .describe(
       "Server URL for self-hosted types (nextcloud\/webdav\/ftp); null for OAuth providers.",
+    ),
+  port: zod
+    .number()
+    .nullish()
+    .describe("Explicit port for self-hosted types; null = protocol default."),
+  username: zod
+    .string()
+    .nullish()
+    .describe("Login for self-hosted types (never the password)."),
+  hasPassword: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Whether a password is saved (the password itself is never returned).",
     ),
   accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
@@ -348,6 +416,12 @@ export const ListUploadsResponseItem = zod.object({
   ]),
   connectionIds: zod.string().nullish(),
   error: zod.string().nullish(),
+  clientUploadId: zod
+    .string()
+    .nullish()
+    .describe(
+      "The app's per-capture id sent to \/uploads\/execute, when there was one",
+    ),
   createdAt: zod.string(),
 });
 export const ListUploadsResponse = zod.array(ListUploadsResponseItem);
@@ -386,6 +460,12 @@ export const UpdateUploadResponse = zod.object({
   ]),
   connectionIds: zod.string().nullish(),
   error: zod.string().nullish(),
+  clientUploadId: zod
+    .string()
+    .nullish()
+    .describe(
+      "The app's per-capture id sent to \/uploads\/execute, when there was one",
+    ),
   createdAt: zod.string(),
 });
 
@@ -442,18 +522,6 @@ export const GetOAuthStatusResponse = zod
   .describe("Map keyed by provider id (googledrive, onedrive, dropbox)");
 
 /**
- * @summary Refresh an expired access token for a stored cloud connection
- */
-export const RefreshOAuthTokenParams = zod.object({
-  provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
-  connectionId: zod.coerce.number(),
-});
-
-export const RefreshOAuthTokenResponse = zod.object({
-  success: zod.boolean(),
-});
-
-/**
  * @summary Export all personal data for the current user (GDPR)
  */
 export const ExportMyDataResponse = zod.object({
@@ -467,26 +535,42 @@ export const ExportMyDataResponse = zod.object({
     onboardingCompleted: zod.boolean(),
     createdAt: zod.string(),
   }),
+  uploadTarget: zod.object({
+    mode: zod.enum(["all", "selected", "none"]),
+    connectionIds: zod.array(zod.number()),
+  }),
   subscription: zod
     .union([
       zod.object({
-        id: zod.number(),
-        userId: zod.number(),
-        status: zod.enum([
-          "trial",
-          "active",
-          "cancelled",
-          "expired",
-          "past_due",
-          "none",
-        ]),
+        status: zod.string(),
+        trialStart: zod.string().nullish(),
         trialEnd: zod.string().nullish(),
         currentPeriodEnd: zod.string().nullish(),
-        createdAt: zod.string(),
+        freeYearsAwarded: zod.number(),
+        createdAt: zod.string().nullish(),
       }),
       zod.null(),
     ])
     .optional(),
+  cloudConnections: zod
+    .array(
+      zod.object({
+        id: zod.number(),
+        type: zod.string(),
+        provider: zod.string().nullish(),
+        name: zod.string(),
+        host: zod.string().nullish(),
+        port: zod.number().nullish(),
+        username: zod.string().nullish(),
+        uploadPath: zod.string().nullish(),
+        accountLabel: zod.string().nullish(),
+        active: zod.boolean(),
+        createdAt: zod.string().nullish(),
+      }),
+    )
+    .describe(
+      "Connection metadata only — credentials and tokens are never exported.",
+    ),
   referrals: zod.array(
     zod.object({
       id: zod.number(),
@@ -495,23 +579,22 @@ export const ExportMyDataResponse = zod.object({
       createdAt: zod.string(),
     }),
   ),
+  referredBy: zod
+    .array(
+      zod.object({
+        id: zod.number(),
+        status: zod.string(),
+        createdAt: zod.string().nullish(),
+      }),
+    )
+    .describe("Referral rows in which this user is the referred party."),
   uploads: zod.array(
     zod.object({
       id: zod.number(),
-      userId: zod.number(),
       fileName: zod.string(),
       fileType: zod.string(),
-      status: zod.enum([
-        "pending",
-        "queued",
-        "uploading",
-        "done",
-        "failed",
-        "partial",
-      ]),
-      connectionIds: zod.string().nullish(),
-      error: zod.string().nullish(),
-      createdAt: zod.string(),
+      status: zod.string(),
+      createdAt: zod.string().nullish(),
     }),
   ),
   feedback: zod.array(
@@ -522,6 +605,55 @@ export const ExportMyDataResponse = zod.object({
       createdAt: zod.string(),
     }),
   ),
+});
+
+/**
+ * Requires an active subscription. Retries of the same capture are de-duplicated by `clientUploadId`: a capture that already finished returns its previous result without re-uploading, a capture another request is still uploading returns 409, and any other previous attempt (partial/failed/queued) is updated in place rather than duplicated. When retrying a partial upload, send only the failed `connectionIds`; the stored status combines both attempts.
+
+ * @summary Upload one capture to the user's active cloud connections
+ */
+export const executeUploadBodyFileNameMax = 255;
+
+export const executeUploadBodyClientUploadIdMax = 100;
+
+export const executeUploadBodyClientUploadIdRegExp = new RegExp(
+  "^[A-Za-z0-9_-]+$",
+);
+
+export const ExecuteUploadBody = zod.object({
+  file: zod.string().describe("The image or video file part (max 200 MB)"),
+  fileName: zod.string().max(executeUploadBodyFileNameMax).optional(),
+  mimeType: zod.string().optional().describe("image\/\* or video\/\*"),
+  connectionIds: zod
+    .string()
+    .optional()
+    .describe(
+      "JSON array of connection IDs; omit to upload to every active connection",
+    ),
+  clientUploadId: zod
+    .string()
+    .max(executeUploadBodyClientUploadIdMax)
+    .regex(executeUploadBodyClientUploadIdRegExp)
+    .optional()
+    .describe("Stable per-capture id used to de-duplicate retries"),
+});
+
+export const ExecuteUploadResponse = zod.object({
+  uploadId: zod.number().optional(),
+  status: zod.enum(["done", "partial", "failed", "queued"]),
+  results: zod.array(
+    zod.object({
+      connectionId: zod.number(),
+      success: zod.boolean(),
+      error: zod.string().optional(),
+    }),
+  ),
+  duplicate: zod
+    .boolean()
+    .optional()
+    .describe(
+      "True when this capture had already been uploaded and nothing was re-sent",
+    ),
 });
 
 /**

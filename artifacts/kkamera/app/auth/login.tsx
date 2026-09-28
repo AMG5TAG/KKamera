@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Platform, Alert, Image, Linking,
+  Platform, Image,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,6 +9,7 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useLogin, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import type { AuthUser } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
@@ -65,11 +66,12 @@ export default function LoginScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://app.kkamera.app")}>
-        <Ionicons name="chevron-back" size={18} color={PRIMARY} />
-        <Text style={styles.homeBtnText}>app.kkamera.app</Text>
-      </TouchableOpacity>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         {/* Logo */}
         <View style={styles.logoWrap}>
           <Image
@@ -185,7 +187,7 @@ export default function LoginScreen() {
             <Text style={styles.privacyLink}>Terms of Service</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }
@@ -217,6 +219,4 @@ const styles = StyleSheet.create({
   privacyRow: { flexDirection: "row", justifyContent: "center", gap: 8, alignItems: "center" },
   privacyLink: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
   privacySep: { color: "#555" },
-  homeBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, gap: 2 },
-  homeBtnText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

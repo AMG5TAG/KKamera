@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import {
   MAX_UPLOAD_DEADLINE_MS,
   RemoteHttpError,
+  DRIVE_CHUNK_SIZE,
+  ONEDRIVE_CHUNK_SIZE,
   chunkRanges,
+  driveFolderQuery,
+  driveNextOffset,
+  driveQueryString,
+  joinRemotePath,
+  normalizeUploadPath,
+  oneDriveItemPath,
+  uploadPathSegments,
   dropboxApiArg,
   dropboxPath,
   isAllowedMimeType,
@@ -90,4 +99,62 @@ test("client-facing upload errors never echo raw remote detail", () => {
   assert.match(publicUploadError("nextcloud", { status: 507 }), /out of storage/);
   assert.match(publicUploadError("webdav", { code: "ERR_SSRF_BLOCKED", message: "Blocked 169.254.169.254" }), /not allowed/);
   assert.equal(publicUploadError("mystery", new Error("x")), "Upload to cloud storage failed.");
+});
+
+test("upload path segments: slashes, backslashes, empties, dot segments", () => {
+  assert.deepEqual(uploadPathSegments(null), ["KKamera"]);
+  assert.deepEqual(uploadPathSegments(undefined), ["KKamera"]);
+  assert.deepEqual(uploadPathSegments(""), []);
+  assert.deepEqual(uploadPathSegments("/"), []);
+  assert.deepEqual(uploadPathSegments("/Photos/KKamera"), ["Photos", "KKamera"]);
+  assert.deepEqual(uploadPathSegments("Photos/KKamera/"), ["Photos", "KKamera"]);
+  assert.deepEqual(uploadPathSegments("//Photos///KKamera//"), ["Photos", "KKamera"]);
+  assert.deepEqual(uploadPathSegments("\\Photos\\KKamera\\"), ["Photos", "KKamera"]);
+  assert.deepEqual(uploadPathSegments("/a/./b/../c"), ["a", "b", "c"]); // ".." never escapes
+  assert.deepEqual(uploadPathSegments(" /My Photos / 2024 "), ["My Photos", "2024"]);
+});
+
+test("normalizeUploadPath keeps absolute vs relative (FTP) and canonicalises the rest", () => {
+  assert.equal(normalizeUploadPath(null), "/KKamera");
+  assert.equal(normalizeUploadPath("/Photos/KKamera/"), "/Photos/KKamera");
+  assert.equal(normalizeUploadPath("dir"), "dir");
+  assert.equal(normalizeUploadPath("dir/sub/"), "dir/sub");
+  assert.equal(normalizeUploadPath("\\dir\\sub"), "/dir/sub");
+  assert.equal(normalizeUploadPath("/"), "/");
+  assert.equal(normalizeUploadPath("///"), "/");
+  assert.equal(normalizeUploadPath(""), "");
+});
+
+test("joinRemotePath never doubles slashes", () => {
+  assert.equal(joinRemotePath([], "a.jpg"), "/a.jpg");
+  assert.equal(joinRemotePath(["Photos", "KKamera"], "a.jpg"), "/Photos/KKamera/a.jpg");
+  assert.equal(dropboxPath("/", "a.jpg"), "/a.jpg");
+  assert.equal(dropboxPath("Photos\\KKamera\\", "a.jpg"), "/Photos/KKamera/a.jpg");
+});
+
+test("Drive query quoting escapes quotes and backslashes; folder query scopes to the parent", () => {
+  assert.equal(driveQueryString("it's"), "'it\\'s'");
+  assert.equal(driveQueryString("a\\b"), "'a\\\\b'");
+  const q = driveFolderQuery("Bob's", "root");
+  assert.ok(q.startsWith("name='Bob\\'s' and 'root' in parents"));
+  assert.ok(q.includes("mimeType='application/vnd.google-apps.folder'"));
+  assert.ok(q.includes("trashed=false"));
+});
+
+test("Drive resumable: chunk size is a 256 KiB multiple; Range header parsing", () => {
+  assert.equal(DRIVE_CHUNK_SIZE % (256 * 1024), 0);
+  assert.equal(driveNextOffset(null), 0);
+  assert.equal(driveNextOffset("bytes=0-524287"), 524288);
+  assert.equal(driveNextOffset("garbage"), 0);
+});
+
+test("OneDrive: fragment size is a 320 KiB multiple under 60 MiB; path segments encoded", () => {
+  assert.equal(ONEDRIVE_CHUNK_SIZE % (320 * 1024), 0);
+  assert.ok(ONEDRIVE_CHUNK_SIZE < 60 * 1024 * 1024);
+  assert.equal(oneDriveItemPath(["KKamera"], "a.jpg"), "root:/KKamera/a.jpg:");
+  assert.equal(oneDriveItemPath([], "a.jpg"), "root:/a.jpg:");
+  assert.equal(
+    oneDriveItemPath(["My Photos", "#1?"], "100% café.jpg"),
+    "root:/My%20Photos/%231%3F/100%25%20caf%C3%A9.jpg:",
+  );
 });

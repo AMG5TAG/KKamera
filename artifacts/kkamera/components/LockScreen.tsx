@@ -140,6 +140,11 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
   const handlePinDelete = () => setPin(p => p.slice(0, -1));
 
   const confirmSignOut = () => {
+    // Alert.alert is a no-op on react-native-web, so use the browser dialog there.
+    if (Platform.OS === "web") {
+      if (window.confirm("Sign out of KKamera? You can sign back in with your password.")) onSignOut("user");
+      return;
+    }
     Alert.alert("Sign Out", "Sign out of KKamera? You can sign back in with your password.", [
       { text: "Cancel", style: "cancel" },
       { text: "Sign Out", style: "destructive", onPress: () => onSignOut("user") },

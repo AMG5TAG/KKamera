@@ -68,27 +68,52 @@ export interface User {
   createdAt: string;
 }
 
-export type SubscriptionStatus =
-  (typeof SubscriptionStatus)[keyof typeof SubscriptionStatus];
+export type UploadTargetMode =
+  (typeof UploadTargetMode)[keyof typeof UploadTargetMode];
 
-export const SubscriptionStatus = {
-  trial: "trial",
-  active: "active",
-  cancelled: "cancelled",
-  expired: "expired",
-  past_due: "past_due",
+export const UploadTargetMode = {
+  all: "all",
+  selected: "selected",
   none: "none",
 } as const;
 
-export interface Subscription {
-  id: number;
-  userId: number;
-  status: SubscriptionStatus;
+export interface UploadTarget {
+  mode: UploadTargetMode;
+  connectionIds: number[];
+}
+
+export interface ExportSubscription {
+  status: string;
+  /** @nullable */
+  trialStart?: string | null;
   /** @nullable */
   trialEnd?: string | null;
   /** @nullable */
   currentPeriodEnd?: string | null;
-  createdAt: string;
+  freeYearsAwarded: number;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export interface ExportCloudConnection {
+  id: number;
+  type: string;
+  /** @nullable */
+  provider?: string | null;
+  name: string;
+  /** @nullable */
+  host?: string | null;
+  /** @nullable */
+  port?: number | null;
+  /** @nullable */
+  username?: string | null;
+  /** @nullable */
+  uploadPath?: string | null;
+  /** @nullable */
+  accountLabel?: string | null;
+  active: boolean;
+  /** @nullable */
+  createdAt?: string | null;
 }
 
 export type ReferralStatus =
@@ -106,29 +131,20 @@ export interface Referral {
   createdAt: string;
 }
 
-export type UploadItemStatus =
-  (typeof UploadItemStatus)[keyof typeof UploadItemStatus];
-
-export const UploadItemStatus = {
-  pending: "pending",
-  queued: "queued",
-  uploading: "uploading",
-  done: "done",
-  failed: "failed",
-  partial: "partial",
-} as const;
-
-export interface UploadItem {
+export interface ExportReferredBy {
   id: number;
-  userId: number;
+  status: string;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export interface ExportUpload {
+  id: number;
   fileName: string;
   fileType: string;
-  status: UploadItemStatus;
+  status: string;
   /** @nullable */
-  connectionIds?: string | null;
-  /** @nullable */
-  error?: string | null;
-  createdAt: string;
+  createdAt?: string | null;
 }
 
 export type FeedbackItemType =
@@ -150,9 +166,14 @@ export interface FeedbackItem {
 export interface UserDataExport {
   exportedAt: string;
   user: User;
-  subscription?: Subscription | null;
+  uploadTarget: UploadTarget;
+  subscription?: ExportSubscription | null;
+  /** Connection metadata only — credentials and tokens are never exported. */
+  cloudConnections: ExportCloudConnection[];
   referrals: Referral[];
-  uploads: UploadItem[];
+  /** Referral rows in which this user is the referred party. */
+  referredBy: ExportReferredBy[];
+  uploads: ExportUpload[];
   feedback: FeedbackItem[];
 }
 
@@ -185,6 +206,20 @@ export interface ResetPasswordInput {
   password: string;
 }
 
+export interface ChangePasswordInput {
+  currentPassword: string;
+  /**
+   * At least 8 characters and at most 72 bytes (UTF-8).
+   * @minLength 8
+   */
+  newPassword: string;
+  /**
+   * Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+   * @nullable
+   */
+  totpCode?: string | null;
+}
+
 export interface InviteCoworkersInput {
   /**
    * @minItems 1
@@ -196,20 +231,6 @@ export interface InviteCoworkersInput {
 export interface AuthResponse {
   token: string;
   user: User;
-}
-
-export type UploadTargetMode =
-  (typeof UploadTargetMode)[keyof typeof UploadTargetMode];
-
-export const UploadTargetMode = {
-  all: "all",
-  selected: "selected",
-  none: "none",
-} as const;
-
-export interface UploadTarget {
-  mode: UploadTargetMode;
-  connectionIds: number[];
 }
 
 export type UploadTargetInputMode =
@@ -240,6 +261,29 @@ export interface TwoFASetup {
 
 export interface TwoFAVerifyInput {
   code: string;
+}
+
+export type SubscriptionStatus =
+  (typeof SubscriptionStatus)[keyof typeof SubscriptionStatus];
+
+export const SubscriptionStatus = {
+  trial: "trial",
+  active: "active",
+  cancelled: "cancelled",
+  expired: "expired",
+  past_due: "past_due",
+  none: "none",
+} as const;
+
+export interface Subscription {
+  id: number;
+  userId: number;
+  status: SubscriptionStatus;
+  /** @nullable */
+  trialEnd?: string | null;
+  /** @nullable */
+  currentPeriodEnd?: string | null;
+  createdAt: string;
 }
 
 export interface AffiliateStats {
@@ -279,6 +323,18 @@ export interface CloudConnection {
    * @nullable
    */
   host?: string | null;
+  /**
+   * Explicit port for self-hosted types; null = protocol default.
+   * @nullable
+   */
+  port?: number | null;
+  /**
+   * Login for self-hosted types (never the password).
+   * @nullable
+   */
+  username?: string | null;
+  /** Whether a password is saved (the password itself is never returned). */
+  hasPassword?: boolean;
   /** @nullable */
   accountLabel?: string | null;
   hasCredentials: boolean;
@@ -319,28 +375,103 @@ export interface CloudConnectionInput {
   oauthCode?: string | null;
 }
 
+/**
+ * Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default "/KKamera"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.
+ */
 export interface CloudConnectionUpdate {
-  /** @nullable */
-  name?: string | null;
-  /** @nullable */
-  active?: boolean | null;
-  /** @nullable */
+  /** @minLength 1 */
+  name?: string;
+  active?: boolean;
+  /**
+   * Folder path; ".." segments are rejected.
+   * @nullable
+   */
   uploadPath?: string | null;
-  /** @nullable */
-  host?: string | null;
+  /** @minLength 1 */
+  host?: string;
   /** @nullable */
   port?: number | null;
   /** @nullable */
   username?: string | null;
   /** @nullable */
   password?: string | null;
-  /** @nullable */
-  oauthCode?: string | null;
+  oauthCode?: string;
 }
 
 export interface TestResult {
   success: boolean;
   message: string;
+}
+
+export type UploadItemStatus =
+  (typeof UploadItemStatus)[keyof typeof UploadItemStatus];
+
+export const UploadItemStatus = {
+  pending: "pending",
+  queued: "queued",
+  uploading: "uploading",
+  done: "done",
+  failed: "failed",
+  partial: "partial",
+} as const;
+
+export interface UploadItem {
+  id: number;
+  userId: number;
+  fileName: string;
+  fileType: string;
+  status: UploadItemStatus;
+  /** @nullable */
+  connectionIds?: string | null;
+  /** @nullable */
+  error?: string | null;
+  /**
+   * The app's per-capture id sent to /uploads/execute, when there was one
+   * @nullable
+   */
+  clientUploadId?: string | null;
+  createdAt: string;
+}
+
+export interface ExecuteUploadInput {
+  /** The image or video file part (max 200 MB) */
+  file: string;
+  /** @maxLength 255 */
+  fileName?: string;
+  /** image/* or video/* */
+  mimeType?: string;
+  /** JSON array of connection IDs; omit to upload to every active connection */
+  connectionIds?: string;
+  /**
+   * Stable per-capture id used to de-duplicate retries
+   * @maxLength 100
+   * @pattern ^[A-Za-z0-9_-]+$
+   */
+  clientUploadId?: string;
+}
+
+export interface ExecuteUploadConnectionResult {
+  connectionId: number;
+  success: boolean;
+  error?: string;
+}
+
+export type ExecuteUploadResultStatus =
+  (typeof ExecuteUploadResultStatus)[keyof typeof ExecuteUploadResultStatus];
+
+export const ExecuteUploadResultStatus = {
+  done: "done",
+  partial: "partial",
+  failed: "failed",
+  queued: "queued",
+} as const;
+
+export interface ExecuteUploadResult {
+  uploadId?: number;
+  status: ExecuteUploadResultStatus;
+  results: ExecuteUploadConnectionResult[];
+  /** True when this capture had already been uploaded and nothing was re-sent */
+  duplicate?: boolean;
 }
 
 export interface UploadInput {

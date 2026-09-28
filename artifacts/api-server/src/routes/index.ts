@@ -10,6 +10,7 @@ import uploadsRouter from "./uploads.js";
 import feedbackRouter from "./feedback.js";
 import oauthRouter from "./oauth.js";
 import revenuecatRouter from "./revenuecat.js";
+import internalRouter from "./internal.js";
 
 const router: IRouter = Router();
 
@@ -24,5 +25,6 @@ router.use(uploadsRouter);
 router.use(feedbackRouter);
 router.use(oauthRouter);
 router.use(revenuecatRouter);
+router.use(internalRouter);
 
 export default router;
