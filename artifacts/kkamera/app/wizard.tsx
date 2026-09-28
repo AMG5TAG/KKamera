@@ -103,16 +103,21 @@ export default function WizardScreen() {
       {/* Header */}
       <View style={styles.header}>
         {step > 0 ? (
-          <TouchableOpacity onPress={goBack} style={styles.headerBtn}>
+          <TouchableOpacity onPress={goBack} style={styles.headerBtn} accessibilityRole="button" accessibilityLabel="Back">
             <Ionicons name="chevron-back" size={24} color={PRIMARY} />
           </TouchableOpacity>
         ) : <View style={styles.headerBtn} />}
-        <View style={styles.progressDots}>
+        <View
+          style={styles.progressDots}
+          accessible
+          accessibilityRole="progressbar"
+          accessibilityLabel={`Step ${step + 1} of ${STEPS.length}`}
+        >
           {STEPS.map((_, i) => (
             <View key={i} style={[styles.dot, i === step && styles.dotActive, i < step && styles.dotDone]} />
           ))}
         </View>
-        <TouchableOpacity onPress={skipWizard} style={styles.headerBtn}>
+        <TouchableOpacity onPress={skipWizard} style={styles.headerBtn} accessibilityRole="button" accessibilityLabel="Skip setup">
           <Text style={styles.skipText}>Skip</Text>
         </TouchableOpacity>
       </View>
@@ -120,9 +125,9 @@ export default function WizardScreen() {
       <KeyboardAvoidingViewCompat style={styles.content}>
       <ScrollView style={styles.content} contentContainerStyle={styles.contentPad} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={styles.iconWrap}>
-          <Ionicons name={(STEPS[step]?.icon ?? "camera") as any} size={56} color={PRIMARY} />
+          <Ionicons name={(STEPS[step]?.icon ?? "camera") as any} size={56} color={PRIMARY} accessible={false} />
         </View>
-        <Text style={styles.stepTitle}>{STEPS[step]?.title}</Text>
+        <Text style={styles.stepTitle} accessibilityRole="header">{STEPS[step]?.title}</Text>
 
         {/* Step 0: Profile */}
         {step === 0 && (
@@ -137,6 +142,7 @@ export default function WizardScreen() {
                 value={profileName}
                 onChangeText={setProfileName}
                 placeholder="Your name"
+                accessibilityLabel="Display name"
                 placeholderTextColor="#444"
                 autoCapitalize="words"
                 autoCorrect={false}
@@ -159,15 +165,15 @@ export default function WizardScreen() {
                 screen, which this button opens. */}
             {CLOUD_OPTIONS.map(opt => (
               <View key={opt.type} style={styles.storageOption}>
-                <MaterialCommunityIcons name={opt.icon as any} size={28} color="#fff" />
+                <MaterialCommunityIcons name={opt.icon as any} size={28} color="#fff" accessible={false} />
                 <View style={styles.storageText}>
                   <Text style={styles.storageLabel}>{opt.label}</Text>
                   <Text style={styles.storageDesc}>{opt.desc}</Text>
                 </View>
               </View>
             ))}
-            <TouchableOpacity style={styles.connectBtn} onPress={() => router.push("/settings/add-cloud")}>
-              <Ionicons name="add-circle-outline" size={20} color={PRIMARY} />
+            <TouchableOpacity style={styles.connectBtn} onPress={() => router.push("/settings/add-cloud")} accessibilityRole="button">
+              <Ionicons name="add-circle-outline" size={20} color={PRIMARY} accessible={false} />
               <Text style={styles.connectBtnText}>Connect storage now</Text>
             </TouchableOpacity>
             <InfoCard icon="information-circle-outline" text="You can add and manage multiple connections in Settings → Cloud Connections at any time." />
@@ -198,7 +204,7 @@ export default function WizardScreen() {
 
             {allPermsGranted && (
               <View style={[styles.infoCard, { borderColor: "#22c55e33", backgroundColor: "rgba(34,197,94,0.06)" }]}>
-                <Ionicons name="checkmark-circle" size={20} color="#22c55e" />
+                <Ionicons name="checkmark-circle" size={20} color="#22c55e" accessible={false} />
                 <Text style={styles.infoText}>All permissions granted — you're ready to shoot!</Text>
               </View>
             )}
@@ -250,14 +256,21 @@ export default function WizardScreen() {
             </Text>
             <InfoCard icon="camera-outline" text="Point, shoot, done — your photos are already in the cloud." />
             <InfoCard icon="cloud-upload-outline" text="Tap the upload badge on the camera screen to view upload history." />
-            <InfoCard icon="settings-outline" text="Customise camera formats, upload preferences and more in Settings." />
+            <InfoCard icon="settings-outline" text="Customise camera, video quality, upload preferences and more in Settings." />
           </View>
         )}
       </ScrollView>
 
       {/* Footer */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
-        <TouchableOpacity style={[styles.nextBtn, isSavingProfile && { opacity: 0.7 }]} onPress={goNext} disabled={isSavingProfile}>
+        <TouchableOpacity
+          style={[styles.nextBtn, isSavingProfile && { opacity: 0.7 }]}
+          onPress={goNext}
+          disabled={isSavingProfile}
+          accessibilityRole="button"
+          accessibilityLabel={isSavingProfile ? "Saving" : undefined}
+          accessibilityState={{ disabled: isSavingProfile, busy: isSavingProfile }}
+        >
           {isSavingProfile ? (
             <ActivityIndicator color="white" />
           ) : (
@@ -265,7 +278,7 @@ export default function WizardScreen() {
               <Text style={styles.nextText}>
                 {isLast ? "Start Using KKamera" : step === 2 && !allPermsGranted ? "Continue Without Permissions" : "Continue"}
               </Text>
-              <Ionicons name="arrow-forward" size={18} color="white" />
+              <Ionicons name="arrow-forward" size={18} color="white" accessible={false} />
             </>
           )}
         </TouchableOpacity>
@@ -278,7 +291,7 @@ export default function WizardScreen() {
 function InfoCard({ icon, text }: { icon: string; text: string }) {
   return (
     <View style={styles.infoCard}>
-      <Ionicons name={icon as any} size={20} color={PRIMARY} />
+      <Ionicons name={icon as any} size={20} color={PRIMARY} accessible={false} />
       <Text style={styles.infoText}>{text}</Text>
     </View>
   );
@@ -290,19 +303,25 @@ function PermRow({ icon, label, desc, granted, onGrant }: {
   return (
     <View style={styles.permRow}>
       <View style={styles.permIcon}>
-        <Ionicons name={icon as any} size={22} color={granted ? "#22c55e" : PRIMARY} />
+        <Ionicons name={icon as any} size={22} color={granted ? "#22c55e" : PRIMARY} accessible={false} />
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.permLabel}>{label}</Text>
         <Text style={styles.permDesc}>{desc}</Text>
       </View>
       {granted ? (
-        <View style={styles.permGrantedBadge}>
-          <Ionicons name="checkmark" size={14} color="#22c55e" />
+        <View style={styles.permGrantedBadge} accessible accessibilityLabel={`${label} access granted`}>
+          <Ionicons name="checkmark" size={14} color="#22c55e" accessible={false} />
           <Text style={styles.permGrantedText}>Granted</Text>
         </View>
       ) : (
-        <TouchableOpacity style={styles.permBtn} onPress={onGrant}>
+        <TouchableOpacity
+          style={styles.permBtn}
+          onPress={onGrant}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={`Allow ${label.toLowerCase()} access`}
+        >
           <Text style={styles.permBtnText}>Allow</Text>
         </TouchableOpacity>
       )}

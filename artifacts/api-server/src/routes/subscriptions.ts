@@ -2,9 +2,9 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { subscriptionsTable, usersTable, trialHistoryTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { emailTrialHash } from "../lib/emailHash.js";
+import { emailTrialHashes } from "../lib/emailHash.js";
 import { RevenueCatNotConfiguredError, syncUserFromRevenueCat } from "../lib/revenueCatApi.js";
 
 // Billing is IAP-only (App Store / Play via RevenueCat). Purchases, renewals and
@@ -58,9 +58,10 @@ router.post("/subscriptions/trial", requireAuth, async (req, res) => {
     }
     // Only grant a trial if this email has never had one (see trial_history).
     const [u] = await db.select({ email: usersTable.email }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
-    const emailHash = u ? emailTrialHash(u.email) : null;
-    const prior = emailHash
-      ? await db.select({ id: trialHistoryTable.id }).from(trialHistoryTable).where(eq(trialHistoryTable.emailHash, emailHash)).limit(1)
+    // Check both the legacy hash and the alias-normalised one (Gmail dots, +tags).
+    const emailHashes = u ? emailTrialHashes(u.email) : [];
+    const prior = emailHashes.length > 0
+      ? await db.select({ id: trialHistoryTable.id }).from(trialHistoryTable).where(inArray(trialHistoryTable.emailHash, emailHashes)).limit(1)
       : [];
     if (prior.length > 0) {
       const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "none" }).returning();
@@ -72,7 +73,9 @@ router.post("/subscriptions/trial", requireAuth, async (req, res) => {
     trialEnd.setDate(trialEnd.getDate() + 14);
     const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "trial", trialStart: new Date(), trialEnd }).returning();
     if (!sub) { res.status(500).json({ message: "Failed to start trial" }); return; }
-    if (emailHash) await db.insert(trialHistoryTable).values({ emailHash }).onConflictDoNothing();
+    if (emailHashes.length > 0) {
+      await db.insert(trialHistoryTable).values(emailHashes.map(emailHash => ({ emailHash }))).onConflictDoNothing();
+    }
     res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
   } catch (err) {
     req.log.error({ err }, "Start trial error");

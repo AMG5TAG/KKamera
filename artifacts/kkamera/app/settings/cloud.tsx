@@ -6,7 +6,7 @@ import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListCloudConnections, useDeleteCloudConnection, useUpdateCloudConnection,
-  useTestCloudConnection, getListCloudConnectionsQueryKey,
+  useTestCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage,
 } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -62,8 +62,9 @@ export default function CloudScreen() {
     try {
       const result = await testMutation.mutateAsync({ id });
       Alert.alert(result.success ? "Connection OK" : "Connection Failed", result.message);
-    } catch {
-      Alert.alert("Error", "Could not test connection");
+    } catch (e) {
+      // e.g. the per-user test rate limit (429) — show the server's message.
+      Alert.alert("Error", getUserFacingMessage(e, "Could not test connection"));
     } finally {
       setTesting(null);
     }

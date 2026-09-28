@@ -1,10 +1,11 @@
 import { index, integer, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
+import { usersTable } from "./users";
 
 export const uploadsTable = pgTable("uploads", {
   id: serial("id").primaryKey(),
-  userId: integer("user_id").notNull(),
+  userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   fileName: text("file_name").notNull(),
   fileType: text("file_type").notNull(),
   status: text("status").notNull().default("pending"),

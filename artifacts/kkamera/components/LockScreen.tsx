@@ -154,7 +154,7 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
   if (!loaded) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        <ActivityIndicator color={PRIMARY} />
+        <ActivityIndicator color={PRIMARY} accessibilityLabel="Loading" />
       </View>
     );
   }
@@ -162,18 +162,18 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.logoRow}>
-        <Ionicons name="lock-closed" size={32} color={PRIMARY} />
+        <Ionicons name="lock-closed" size={32} color={PRIMARY} accessible={false} />
         <Text style={styles.logoText}>KKamera</Text>
       </View>
 
-      <Text style={styles.title}>Unlock</Text>
+      <Text style={styles.title} accessibilityRole="header">Unlock</Text>
 
       {noCredential ? (
         <>
           <Text style={[styles.hint, styles.centerText]}>
             No PIN or device unlock is set up for this app lock. Sign in with your password to continue.
           </Text>
-          <TouchableOpacity style={styles.primaryBtn} onPress={() => onSignOut("no-credential")}>
+          <TouchableOpacity style={styles.primaryBtn} onPress={() => onSignOut("no-credential")} accessibilityRole="button">
             <Text style={styles.primaryBtnText}>Sign in with password</Text>
           </TouchableOpacity>
         </>
@@ -181,16 +181,20 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
         <>
           {showKeypad && (
             <>
-              <View style={styles.dotsRow}>
+              <View
+                style={styles.dotsRow}
+                accessible
+                accessibilityLabel={`${pin.length} of 4 digits entered`}
+              >
                 {[0, 1, 2, 3].map(i => (
                   <View key={i} style={[styles.dot, i < pin.length && styles.dotFilled]} />
                 ))}
               </View>
 
               {isLockedOut ? (
-                <Text style={styles.errorText}>Too many attempts. Try again in {Math.ceil(remainingLockMs / 1000)}s.</Text>
+                <Text style={styles.errorText} accessibilityRole="alert" accessibilityLiveRegion="polite">Too many attempts. Try again in {Math.ceil(remainingLockMs / 1000)}s.</Text>
               ) : error ? (
-                <Text style={styles.errorText}>{error}</Text>
+                <Text style={styles.errorText} accessibilityRole="alert" accessibilityLiveRegion="polite">{error}</Text>
               ) : (
                 <Text style={styles.hint}>
                   {failures > 0 ? `Enter your 4-digit PIN (${Math.max(0, PIN_FAIL_THRESHOLD - failures)} tries before a pause)` : "Enter your 4-digit PIN"}
@@ -207,7 +211,9 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
                       onPress={() => key === "⌫" ? handlePinDelete() : handlePinDigit(key)}
                       disabled={isLockedOut}
                       activeOpacity={0.6}
+                      accessibilityRole="button"
                       accessibilityLabel={key === "⌫" ? "Delete" : key}
+                      accessibilityState={{ disabled: isLockedOut }}
                     >
                       <Text style={styles.numKeyText}>{key}</Text>
                     </TouchableOpacity>
@@ -217,18 +223,18 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
             </>
           )}
 
-          {!showKeypad && error ? <Text style={styles.errorText}>{error}</Text> : null}
+          {!showKeypad && error ? <Text style={styles.errorText} accessibilityRole="alert" accessibilityLiveRegion="polite">{error}</Text> : null}
 
           {showDeviceAuth && Platform.OS !== "web" && (
-            <TouchableOpacity style={styles.biometricBtn} onPress={() => void tryDeviceAuth()}>
-              <Ionicons name={Platform.OS === "ios" ? "scan-outline" : "finger-print-outline"} size={28} color={PRIMARY} />
+            <TouchableOpacity style={styles.biometricBtn} onPress={() => void tryDeviceAuth()} accessibilityRole="button">
+              <Ionicons name={Platform.OS === "ios" ? "scan-outline" : "finger-print-outline"} size={28} color={PRIMARY} accessible={false} />
               <Text style={styles.biometricText}>{Platform.OS === "ios" ? "Use Face ID / Passcode" : "Use Biometrics"}</Text>
             </TouchableOpacity>
           )}
         </>
       )}
 
-      <TouchableOpacity style={styles.logoutBtn} onPress={confirmSignOut}>
+      <TouchableOpacity style={styles.logoutBtn} onPress={confirmSignOut} accessibilityRole="button" hitSlop={8}>
         <Text style={styles.logoutText}>{showKeypad ? "Forgot PIN? Sign out" : "Sign Out"}</Text>
       </TouchableOpacity>
     </View>

@@ -1,6 +1,7 @@
 import path from "path";
 import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
 import app from "./app.js";
+import { setMigrationState } from "./routes/health.js";
 import { logger } from "./lib/logger.js";
 
 // A rejected promise with no handler is logged rather than crashing the whole
@@ -30,6 +31,9 @@ if (!sessionSecret || sessionSecret.length < 32) {
   );
 }
 
+const MIGRATION_ATTEMPTS = 3;
+const MIGRATION_BACKOFF_MS = [2_000, 8_000];
+
 /**
  * Apply versioned Drizzle migrations so a fresh database is fully provisioned on
  * boot (no manual `push` step) and existing databases stay in sync. The baseline
@@ -45,6 +49,33 @@ async function runAppMigrations() {
   const migrationsFolder = path.resolve(import.meta.dirname, "../../../lib/db/drizzle");
   await runDbMigrations(migrationsFolder);
   logger.info("Database migrations applied");
+}
+
+/**
+ * Run migrations with retry + backoff (a cold DB often fails the first
+ * connection), tracking state for /api/readyz. After the final failure the
+ * instance refuses API traffic (503) rather than serving on a stale schema.
+ */
+async function migrateWithRetry() {
+  for (let attempt = 1; attempt <= MIGRATION_ATTEMPTS; attempt++) {
+    try {
+      await runAppMigrations();
+      setMigrationState("ok");
+      return;
+    } catch (err) {
+      if (attempt === MIGRATION_ATTEMPTS) {
+        setMigrationState("failed");
+        logger.fatal(
+          { err, attempts: attempt },
+          "Database migration failed — refusing API traffic (503) until restarted",
+        );
+        return;
+      }
+      const delay = MIGRATION_BACKOFF_MS[attempt - 1] ?? 8_000;
+      logger.warn({ err, attempt, retryInMs: delay }, "Database migration attempt failed — retrying");
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
 }
 
 // Listen FIRST so the health-check probe succeeds immediately — do NOT await
@@ -63,7 +94,6 @@ app.listen(port, (err?: Error) => {
   logger.info({ port }, "Server listening");
 });
 
-// Run migrations in the background after the port is open.
-runAppMigrations().catch((err) => {
-  logger.error({ err }, "Database migration failed — server is running but schema may be out of date");
-});
+// Run migrations in the background after the port is open. /api/readyz
+// reports progress; a definitive failure turns API routes into 503s.
+void migrateWithRetry();

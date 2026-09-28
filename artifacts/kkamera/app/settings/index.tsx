@@ -30,7 +30,13 @@ function MenuRow({
   onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole="button"
+      accessibilityLabel={[label, value, hint].filter(Boolean).join(", ")}
+    >
       <View style={[styles.rowIconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
         {iconSet === "mci"
           ? <MaterialCommunityIcons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
@@ -48,7 +54,7 @@ function MenuRow({
             <Text style={styles.badgeText}>{badge}</Text>
           </View>
         ) : null}
-        <Ionicons name="chevron-forward" size={15} color="#444" />
+        <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
       </View>
     </TouchableOpacity>
   );
@@ -108,8 +114,8 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView
@@ -137,13 +143,19 @@ export default function SettingsScreen() {
                 accessibilityLabel={`Share your referral code ${user.referralCode}`}
                 accessibilityHint="Opens the share sheet"
               >
-                <Ionicons name="people-outline" size={12} color={PRIMARY} />
+                <Ionicons name="people-outline" size={12} color={PRIMARY} accessible={false} />
                 <Text style={styles.referralPillText}>Code: {user.referralCode}</Text>
-                <Ionicons name="share-outline" size={12} color={PRIMARY} />
+                <Ionicons name="share-outline" size={12} color={PRIMARY} accessible={false} />
               </TouchableOpacity>
             ) : null}
           </View>
-          <TouchableOpacity style={styles.editBtn} onPress={() => router.push("/settings/subscription")}>
+          <TouchableOpacity
+            style={styles.editBtn}
+            onPress={() => router.push("/settings/subscription")}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Subscription"
+          >
             <Ionicons name="card-outline" size={18} color={PRIMARY} />
           </TouchableOpacity>
         </View>
@@ -153,7 +165,7 @@ export default function SettingsScreen() {
           <MenuRow
             icon="camera-outline"
             label="Camera"
-            hint="Format, quality, GPS, mirror"
+            hint="Video quality, grid, timer, GPS, stamps"
             onPress={() => router.push("/settings/camera")}
           />
           <View style={styles.divider} />
@@ -229,8 +241,8 @@ export default function SettingsScreen() {
         </View>
 
         {/* Sign Out */}
-        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
-          <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7} accessibilityRole="button">
+          <Ionicons name="log-out-outline" size={18} color="#ef4444" accessible={false} />
           <Text style={styles.logoutText}>Sign Out</Text>
         </TouchableOpacity>
       </ScrollView>

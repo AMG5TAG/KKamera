@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  mapRevenueCatEvent as mapWith, mapSubscriberEntitlement, mergeDecision, numericUserIds, resolveUserId, touchesProEntitlement,
-  type MirrorRow, type RCEvent,
+  eventIdOf, eventTimeOf, isStaleDecision, mapRevenueCatEvent as mapWith, mapSubscriberEntitlement, mergeDecision, numericUserIds,
+  resolveUserId, secretsEqual, touchesProEntitlement, type MirrorDecision, type MirrorRow, type RCEvent,
 } from "../src/lib/revenueCatMapping.ts";
 
 const NOW = 1_700_000_000_000; // fixed "now" in ms
@@ -146,19 +146,19 @@ function row(p: Partial<MirrorRow>): MirrorRow {
 
 test("grant is forward-only and never shortens a referral free year", () => {
   const r = mergeDecision(row({ status: "active", currentPeriodEnd: farFuture }), { kind: "grant", userId: 5, periodEnd: future, referrals: true }, now);
-  assert.deepEqual(r, { status: "active", currentPeriodEnd: farFuture });
+  assert.deepEqual(r, { status: "active", currentPeriodEnd: farFuture, lastEventAt: null });
 });
 
 test("grant during the server trial never shortens the trial (short store trial)", () => {
   const trialEnd = new Date(NOW + 10 * 86_400_000);
   const storeTrial = new Date(NOW + 3 * 86_400_000);
   const r = mergeDecision(row({ status: "trial", trialEnd }), { kind: "grant", userId: 5, periodEnd: storeTrial, referrals: false }, now);
-  assert.deepEqual(r, { status: "active", currentPeriodEnd: trialEnd });
+  assert.deepEqual(r, { status: "active", currentPeriodEnd: trialEnd, lastEventAt: null });
 });
 
 test("EXPIRATION keeps a referral free year (period end still in the future)", () => {
   const r = mergeDecision(row({ status: "active", currentPeriodEnd: farFuture }), { kind: "expire", userId: 5, referrals: true }, now);
-  assert.deepEqual(r, { status: "cancelled", currentPeriodEnd: farFuture });
+  assert.deepEqual(r, { status: "cancelled", currentPeriodEnd: farFuture, lastEventAt: null });
 });
 
 test("EXPIRATION with a lapsed period → expired; running server trial kept; no row → no-op", () => {
@@ -169,9 +169,9 @@ test("EXPIRATION with a lapsed period → expired; running server trial kept; no
 
 test("refund pins the period end (not forward-only) and expires when past", () => {
   const r = mergeDecision(row({ status: "active", currentPeriodEnd: farFuture }), { kind: "refund", userId: 5, periodEnd: past, referrals: true }, now);
-  assert.deepEqual(r, { status: "expired", currentPeriodEnd: past });
+  assert.deepEqual(r, { status: "expired", currentPeriodEnd: past, lastEventAt: null });
   const f = mergeDecision(row({ status: "active", currentPeriodEnd: farFuture }), { kind: "refund", userId: 5, periodEnd: future, referrals: true }, now);
-  assert.deepEqual(f, { status: "cancelled", currentPeriodEnd: future });
+  assert.deepEqual(f, { status: "cancelled", currentPeriodEnd: future, lastEventAt: null });
   // An unused server trial survives a refunded purchase.
   const t = mergeDecision(row({ status: "active", trialEnd: future, currentPeriodEnd: farFuture }), { kind: "refund", userId: 5, periodEnd: past, referrals: true }, now);
   assert.equal(t?.status, "trial");
@@ -182,7 +182,7 @@ test("past_due requires an existing row; cancel keeps the forward-only end", () 
   assert.equal(mergeDecision(null, { kind: "past_due", userId: 5, periodEnd: future, referrals: true }, now), null);
   assert.deepEqual(
     mergeDecision(row({ status: "active", currentPeriodEnd: farFuture }), { kind: "cancel", userId: 5, periodEnd: future, referrals: true }, now),
-    { status: "cancelled", currentPeriodEnd: farFuture },
+    { status: "cancelled", currentPeriodEnd: farFuture, lastEventAt: null },
   );
 });
 
@@ -241,4 +241,132 @@ test("merge + access: EXPIRATION after a referral award keeps upload access; ref
   assert.equal(evaluateAccess({ ...base, ...expired }, now).allow, true);
   const refunded = mergeDecision(base, { kind: "refund", userId: 5, periodEnd: past, referrals: true }, now)!;
   assert.equal(evaluateAccess({ ...base, ...refunded }, now).allow, false);
+});
+
+// --- Webhook secret ----------------------------------------------------------
+
+test("secretsEqual: matches only the exact secret, any length mismatch is just false", () => {
+  assert.equal(secretsEqual("Bearer abc123", "Bearer abc123"), true);
+  assert.equal(secretsEqual("Bearer abc124", "Bearer abc123"), false);
+  assert.equal(secretsEqual("Bearer abc", "Bearer abc123"), false);
+  assert.equal(secretsEqual("", "Bearer abc123"), false);
+  assert.equal(secretsEqual("Bearer abc123-and-much-longer", "Bearer abc123"), false);
+});
+
+// --- Event id / timestamp --------------------------------------------------------
+
+test("eventIdOf / eventTimeOf parse id and event_timestamp_ms defensively", () => {
+  assert.equal(eventIdOf({ id: "evt_1" }), "evt_1");
+  for (const id of [undefined, "", 42, "x".repeat(201)]) assert.equal(eventIdOf({ id }), null);
+  assert.equal(eventTimeOf({ event_timestamp_ms: NOW })?.getTime(), NOW);
+  for (const t of [undefined, null, 0, -5, "nope"]) assert.equal(eventTimeOf({ event_timestamp_ms: t }), null);
+  const d = mapRevenueCatEvent({ type: "RENEWAL", app_user_id: "5", expiration_at_ms: FUTURE, event_timestamp_ms: NOW - 1000 }, NOW);
+  assert.equal(d.kind === "grant" && d.eventAt?.getTime(), NOW - 1000);
+});
+
+// --- Ordering (out-of-order delivery) ---------------------------------------------
+
+const T1 = new Date(NOW - 3 * 3_600_000); // older event
+const T2 = new Date(NOW - 3_600_000); // newer event
+const farther = new Date(FUTURE + 30 * 86_400_000);
+const ev = <K extends MirrorDecision["kind"]>(d: Extract<MirrorDecision, { kind: K }>) => d;
+
+/** Apply a sequence of decisions (in delivery order) to a row, like applyMirrorDecisionInTx. */
+function replay(start: MirrorRow | null, ds: MirrorDecision[], opts?: { snapshot?: boolean }[]): MirrorRow | null {
+  let r = start;
+  ds.forEach((d, i) => {
+    const next = mergeDecision(r, d, now, opts?.[i]);
+    if (next) r = { trialEnd: r?.trialEnd ?? null, ...next };
+  });
+  return r;
+}
+
+test("non-stale writes advance lastEventAt; it never goes backwards or beyond now", () => {
+  const r = mergeDecision(row({ status: "active", currentPeriodEnd: future }), ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T2 }), now);
+  assert.equal(r?.lastEventAt?.getTime(), T2.getTime());
+  const skewed = mergeDecision(null, ev<"grant">({ kind: "grant", userId: 5, periodEnd: future, referrals: true, eventAt: new Date(NOW + 86_400_000) }), now);
+  assert.equal(skewed?.lastEventAt?.getTime(), NOW, "future event time clamped to now");
+  const noTs = mergeDecision(row({ status: "active", currentPeriodEnd: future, lastEventAt: T1 }), ev<"cancel">({ kind: "cancel", userId: 5, periodEnd: future, referrals: true }), now);
+  assert.equal(noTs?.status, "cancelled", "event without timestamp applies as before");
+  assert.equal(noTs?.lastEventAt?.getTime(), T1.getTime());
+});
+
+test("RENEWAL then an OLDER CANCELLATION: stays active", () => {
+  const r = replay(row({ status: "active", currentPeriodEnd: future }), [
+    ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T2 }),
+    ev<"cancel">({ kind: "cancel", userId: 5, periodEnd: future, referrals: true, eventAt: T1 }),
+  ]);
+  assert.equal(r?.status, "active");
+  assert.equal(r?.currentPeriodEnd?.getTime(), farther.getTime());
+  assert.equal(r?.lastEventAt?.getTime(), T2.getTime());
+});
+
+test("RENEWAL then an OLDER BILLING_ISSUE: not marked past_due", () => {
+  const base = row({ status: "active", currentPeriodEnd: future });
+  const r = replay(base, [
+    ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T2 }),
+    ev<"past_due">({ kind: "past_due", userId: 5, periodEnd: future, referrals: true, eventAt: T1 }),
+  ]);
+  assert.equal(r?.status, "active");
+  assert.equal(isStaleDecision(r, ev<"past_due">({ kind: "past_due", userId: 5, periodEnd: future, referrals: true, eventAt: T1 }), now), true);
+});
+
+test("UNCANCELLATION then an OLDER EXPIRATION: not expired, and reported stale", () => {
+  const r = replay(row({ status: "cancelled", currentPeriodEnd: past }), [
+    ev<"grant">({ kind: "grant", userId: 5, periodEnd: future, referrals: true, eventAt: T2 }),
+  ]);
+  assert.equal(r?.status, "active");
+  const exp = ev<"expire">({ kind: "expire", userId: 5, referrals: true, eventAt: T1 });
+  assert.equal(isStaleDecision(r, exp, now), true);
+  assert.equal(mergeDecision(r, exp, now), null);
+  // Same EXPIRATION in order (newer) still expires as before.
+  const newer = mergeDecision(row({ status: "active", currentPeriodEnd: past, lastEventAt: T1 }), ev<"expire">({ kind: "expire", userId: 5, referrals: true, eventAt: T2 }), now);
+  assert.equal(newer?.status, "expired");
+});
+
+test("an OLDER grant can't resurrect a newer cancel/expiry, but may extend a live paid period", () => {
+  const cancelled = row({ status: "cancelled", currentPeriodEnd: future, lastEventAt: T2 });
+  assert.equal(mergeDecision(cancelled, ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T1 }), now), null);
+  const expired = row({ status: "expired", currentPeriodEnd: past, lastEventAt: T2 });
+  assert.equal(mergeDecision(expired, ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T1 }), now), null);
+  // Live row: forward-only period extension, status and lastEventAt untouched.
+  const pastDue = row({ status: "past_due", currentPeriodEnd: future, lastEventAt: T2 });
+  assert.deepEqual(
+    mergeDecision(pastDue, ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T1 }), now),
+    { status: "past_due", currentPeriodEnd: farther, lastEventAt: T2 },
+  );
+  // ...and never shortens it.
+  const active = row({ status: "active", currentPeriodEnd: farther, lastEventAt: T2 });
+  assert.equal(mergeDecision(active, ev<"cancel">({ kind: "cancel", userId: 5, periodEnd: future, referrals: true, eventAt: T1 }), now), null);
+});
+
+test("refunds are never stale; after a refund an older grant can't restore access", () => {
+  const active = row({ status: "active", currentPeriodEnd: farther, lastEventAt: T2 });
+  const refunded = mergeDecision(active, ev<"refund">({ kind: "refund", userId: 5, periodEnd: past, referrals: true, eventAt: T1 }), now);
+  assert.equal(refunded?.status, "expired");
+  assert.equal(refunded?.lastEventAt?.getTime(), T2.getTime(), "lastEventAt never moves backwards");
+  // Refund with a future pinned end (cancelled) + older RENEWAL delivered late.
+  const pinned = row({ status: "cancelled", currentPeriodEnd: future, lastEventAt: T2 });
+  assert.equal(mergeDecision(pinned, ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T1 }), now), null);
+});
+
+test("duplicate delivery (same event twice) converges to the same row", () => {
+  const renewal = ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: true, eventAt: T2 });
+  const once = replay(row({ status: "active", currentPeriodEnd: future }), [renewal]);
+  const twice = replay(row({ status: "active", currentPeriodEnd: future }), [renewal, renewal]);
+  assert.deepEqual(twice, once);
+  // Equal timestamps are not stale (a second distinct event at the same ms applies).
+  assert.equal(isStaleDecision(once, renewal, now), false);
+  const cancelSameMs = mergeDecision(once, ev<"cancel">({ kind: "cancel", userId: 5, periodEnd: farther, referrals: true, eventAt: T2 }), now);
+  assert.equal(cancelSameMs?.status, "cancelled");
+});
+
+test("REST snapshot (sync) is never blocked by lastEventAt and stamps it with now", () => {
+  const cancelledLater = row({ status: "cancelled", currentPeriodEnd: past, lastEventAt: T2 });
+  const snap = mergeDecision(cancelledLater, ev<"grant">({ kind: "grant", userId: 5, periodEnd: farther, referrals: false }), now, { snapshot: true });
+  assert.equal(snap?.status, "active");
+  assert.equal(snap?.lastEventAt?.getTime(), NOW);
+  // A webhook generated before the snapshot and delivered after it is stale.
+  const r = { ...cancelledLater, ...snap! };
+  assert.equal(mergeDecision(r, ev<"cancel">({ kind: "cancel", userId: 5, periodEnd: future, referrals: true, eventAt: T2 }), now), null);
 });

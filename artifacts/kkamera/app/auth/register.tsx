@@ -62,8 +62,8 @@ export default function RegisterScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.topRow}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+          <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
         </TouchableOpacity>
       </View>
       <KeyboardAwareScrollViewCompat
@@ -72,45 +72,52 @@ export default function RegisterScreen() {
         keyboardShouldPersistTaps="handled"
         bottomOffset={24}
       >
-        <Text style={styles.title}>Create Account</Text>
+        <Text style={styles.title} accessibilityRole="header">Create Account</Text>
         <Text style={styles.subtitle}>Start your 14-day free trial — no credit card needed</Text>
 
         <View style={styles.trialBadge}>
-          <Ionicons name="gift-outline" size={18} color={PRIMARY} />
+          <Ionicons name="gift-outline" size={18} color={PRIMARY} accessible={false} />
           <Text style={styles.trialText}>14-day free trial · Then an annual subscription</Text>
         </View>
 
         {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+          <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
 
         <Field label="Your Name" hint="How you'll be identified in KKamera">
-          <TextInput style={styles.input} placeholder="Full name" placeholderTextColor="#555" autoCapitalize="words" autoComplete="name" textContentType="name" value={name} onChangeText={setName} />
+          <TextInput style={styles.input} placeholder="Full name" accessibilityLabel="Your name" placeholderTextColor="#555" autoCapitalize="words" autoComplete="name" textContentType="name" value={name} onChangeText={setName} />
         </Field>
         <Field label="Email Address" hint="Used for your account login">
-          <TextInput style={styles.input} placeholder="your@email.com" placeholderTextColor="#555" keyboardType="email-address" autoCapitalize="none" autoComplete="email" textContentType="emailAddress" value={email} onChangeText={setEmail} />
+          <TextInput style={styles.input} placeholder="your@email.com" accessibilityLabel="Email address" placeholderTextColor="#555" keyboardType="email-address" autoCapitalize="none" autoComplete="email" textContentType="emailAddress" value={email} onChangeText={setEmail} />
         </Field>
         <Field label="Password" hint="At least 8 characters for security">
           <View style={styles.inputRow}>
-            <TextInput style={[styles.input, { flex: 1, borderWidth: 0 }]} placeholder="••••••••" placeholderTextColor="#555" secureTextEntry={!showPassword} autoComplete="new-password" textContentType="newPassword" value={password} onChangeText={setPassword} />
+            <TextInput style={[styles.input, { flex: 1, borderWidth: 0 }]} placeholder="••••••••" accessibilityLabel="Password, at least 8 characters" placeholderTextColor="#555" secureTextEntry={!showPassword} autoComplete="new-password" textContentType="newPassword" value={password} onChangeText={setPassword} />
             <TouchableOpacity
               onPress={() => setShowPassword(v => !v)}
               style={styles.eyeBtn}
               accessibilityRole="button"
               accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+              hitSlop={12}
             >
               <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
             </TouchableOpacity>
           </View>
         </Field>
         <Field label="Referral Code (optional)" hint="🎁 Enter a friend's code — it counts toward their free year when you subscribe">
-          <TextInput style={[styles.input, { textTransform: "uppercase" }]} placeholder="e.g. JOHN42K" placeholderTextColor="#555" autoCapitalize="characters" value={referralCode} onChangeText={setReferralCode} />
+          <TextInput style={[styles.input, { textTransform: "uppercase" }]} placeholder="e.g. JOHN42K" accessibilityLabel="Referral code, optional" placeholderTextColor="#555" autoCapitalize="characters" value={referralCode} onChangeText={setReferralCode} />
         </Field>
 
-        <TouchableOpacity style={styles.agreeRow} onPress={() => setAgreed(v => !v)}>
+        <TouchableOpacity
+          style={styles.agreeRow}
+          onPress={() => setAgreed(v => !v)}
+          accessibilityRole="checkbox"
+          accessibilityLabel="I agree to the Terms of Service and Privacy Policy"
+          accessibilityState={{ checked: agreed }}
+        >
           <View style={[styles.checkbox, agreed && styles.checkboxChecked]}>
             {agreed && <Ionicons name="checkmark" size={14} color="white" />}
           </View>
@@ -122,11 +129,17 @@ export default function RegisterScreen() {
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.registerBtn, registerMutation.isPending && styles.btnDisabled]} onPress={handleRegister} disabled={registerMutation.isPending}>
+        <TouchableOpacity
+          style={[styles.registerBtn, registerMutation.isPending && styles.btnDisabled]}
+          onPress={handleRegister}
+          disabled={registerMutation.isPending}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: registerMutation.isPending, busy: registerMutation.isPending }}
+        >
           <Text style={styles.registerText}>{registerMutation.isPending ? "Creating Account..." : "Create Free Account"}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.loginLink} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.loginLink} onPress={() => router.back()} accessibilityRole="link">
           <Text style={styles.loginLinkText}>Already have an account? <Text style={{ color: PRIMARY }}>Sign in</Text></Text>
         </TouchableOpacity>
       </KeyboardAwareScrollViewCompat>

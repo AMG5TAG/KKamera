@@ -1,14 +1,16 @@
 import fs from "fs";
 import os from "os";
+import path from "path";
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { uploadsTable, cloudConnectionsTable, usersTable } from "@workspace/db";
-import { eq, and, inArray, desc, lt } from "drizzle-orm";
+import { eq, and, inArray, desc, lt, isNull } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { requireSubscription } from "../middlewares/requireSubscription.js";
+import { logger } from "../lib/logger.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { normalizeConnectionIds } from "../lib/connectionIds.js";
@@ -22,19 +24,53 @@ const router = Router();
 // Stream uploads to a temp file on disk rather than buffering the whole body in
 // RAM. memoryStorage held the entire file (up to the cap) in memory for every
 // concurrent request, so a handful of large videos could OOM-kill the shared
-// instance and drop all users. Disk storage bounds receive-time memory; the
-// semaphore below then bounds how many files are read into a Buffer at once for
-// the actual cloud upload.
+// instance and drop all users. The providers then stream from that file (FTP,
+// WebDAV) or read it one chunk at a time (Drive/OneDrive/Dropbox sessions), so
+// the whole file is never in memory during the cloud upload either.
+const UPLOAD_TMP_PREFIX = "kkamera-upload-";
 const upload = multer({
   storage: multer.diskStorage({
     destination: os.tmpdir(),
-    filename: (_req, _file, cb) => cb(null, `kkamera-upload-${Date.now()}-${Math.round(Math.random() * 1e9)}`),
+    filename: (_req, _file, cb) => cb(null, `${UPLOAD_TMP_PREFIX}${Date.now()}-${Math.round(Math.random() * 1e9)}`),
   }),
   limits: { fileSize: 200 * 1024 * 1024, files: 1 },
 });
 
-// Cap concurrent in-flight cloud uploads so peak memory (one Buffer per active
-// upload) stays bounded regardless of how many clients upload at once. Excess
+// Temp files are unlinked when their request finishes, but a crash or restart
+// mid-request leaves them behind. Sweep ones older than any live request can be
+// (uploads are bounded by MAX_UPLOAD_DEADLINE_MS) at startup and hourly.
+const TMP_SWEEP_AGE_MS = 60 * 60_000;
+const UPLOAD_TMP_RE = /^kkamera-upload-\d+-\d+$/;
+
+async function sweepOrphanedUploadTempFiles(): Promise<void> {
+  const dir = os.tmpdir();
+  let removed = 0;
+  try {
+    const names = await fs.promises.readdir(dir);
+    const cutoff = Date.now() - TMP_SWEEP_AGE_MS;
+    for (const name of names) {
+      if (!name.startsWith(UPLOAD_TMP_PREFIX) || !UPLOAD_TMP_RE.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = await fs.promises.lstat(full);
+        if (st.isFile() && st.mtimeMs < cutoff) {
+          await fs.promises.unlink(full);
+          removed += 1;
+        }
+      } catch { /* raced with the owning request's own unlink */ }
+    }
+  } catch (err) {
+    logger.warn({ err }, "Upload temp-file sweep failed");
+    return;
+  }
+  if (removed > 0) logger.info({ removed }, "Removed orphaned upload temp files");
+}
+
+void sweepOrphanedUploadTempFiles();
+setInterval(() => { void sweepOrphanedUploadTempFiles(); }, TMP_SWEEP_AGE_MS).unref();
+
+// Cap concurrent in-flight cloud uploads so outbound bandwidth, open files and
+// chunk buffers stay bounded regardless of how many clients upload at once. Excess
 // requests wait for a slot, but the wait queue itself is bounded too: once it is
 // full new uploads get 503 + Retry-After (the app's offline queue retries them),
 // instead of piling up temp files and open sockets without limit.
@@ -323,17 +359,17 @@ router.post(
         if (decision.action === "busy") { sendDuplicateBusy(res); return; }
       }
 
-      const connections = connectionIds
-        ? await db.select().from(cloudConnectionsTable).where(
-            and(
-              eq(cloudConnectionsTable.userId, req.userId!),
-              eq(cloudConnectionsTable.active, true),
-              inArray(cloudConnectionsTable.id, connectionIds)
-            )
-          )
-        : await db.select().from(cloudConnectionsTable).where(
-            and(eq(cloudConnectionsTable.userId, req.userId!), eq(cloudConnectionsTable.active, true))
-          );
+      // Only the user's active, CONFIRMED connections — never a pending OAuth
+      // row awaiting /oauth/complete — whether the ids were named explicitly
+      // (incl. an upload-target "selected" list) or it is "all".
+      const usable = and(
+        eq(cloudConnectionsTable.userId, req.userId!),
+        eq(cloudConnectionsTable.active, true),
+        isNull(cloudConnectionsTable.pendingNonceHash),
+      );
+      const connections = await db.select().from(cloudConnectionsTable).where(
+        connectionIds ? and(usable, inArray(cloudConnectionsTable.id, connectionIds)) : usable
+      );
 
       // Collapse duplicate active rows that point at the same cloud account
       // (possible if an identity lookup failed on a prior reconnect) so a single
@@ -357,10 +393,10 @@ router.post(
         return;
       }
 
-      // Read the file into memory (for uploadToCloud) only while holding a slot,
-      // then release it before the DB write so we don't pin memory needlessly.
-      // Each provider upload carries its own deadline (see uploadToCloud), so a
-      // slot is always released even if a remote stalls.
+      // Upload (streaming from the temp file) only while holding a slot, then
+      // release it before the DB write. Each provider upload carries its own
+      // deadline (see uploadToCloud), so a slot is always released even if a
+      // remote stalls.
       const slot = acquireUploadSlot();
       if (!slot) {
         sendBusy(res, 503, "Upload server is busy. Please try again shortly.");
@@ -379,9 +415,9 @@ router.post(
         if (claim.kind === "busy") { sendDuplicateBusy(res); return; }
         uploadRecord = claim.row;
         previousRecord = claim.previous;
-        const buf = await fs.promises.readFile(file.path);
+        const source = { path: file.path, size: file.size };
         results = await Promise.all(
-          targets.map(conn => uploadToCloud(conn, buf, fileName, mimeType))
+          targets.map(conn => uploadToCloud(conn, source, fileName, mimeType))
         );
       } catch (err) {
         // Never leave a claimed row stuck in "uploading" — that would make every

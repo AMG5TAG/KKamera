@@ -2,15 +2,43 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
+import rateLimit from "express-rate-limit";
 import { requireAuth } from "../middlewares/auth.js";
 import { encrypt } from "../lib/crypto.js";
-import { revokeProviderTokens, testCloudConnection } from "../lib/cloudUpload.js";
+import {
+  purgeExpiredPendingConnections, revokeProviderTokens, revokeRemovedConnectionIfUnshared, testCloudConnection,
+} from "../lib/cloudUpload.js";
 import { DEFAULT_UPLOAD_PATH, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
 import { connectionUpdatePlan, createConnectionSchema, updateConnectionSchema } from "../lib/cloudConnectionSchemas.js";
 import { logger } from "../lib/logger.js";
 
 const router = Router();
+
+/**
+ * A confirmed connection of this user. Pending OAuth rows (awaiting
+ * /oauth/complete from the device that started the flow) are invisible to
+ * every route here — never listed, edited, tested or deleted individually.
+ */
+function ownConfirmed(id: number, userId: number) {
+  return and(
+    eq(cloudConnectionsTable.id, id),
+    eq(cloudConnectionsTable.userId, userId),
+    isNull(cloudConnectionsTable.pendingNonceHash),
+  );
+}
+
+// A connection test makes the server connect to a user-chosen public host and
+// port and reports whether it answered — a port-scan oracle if unthrottled.
+// Keyed by the authenticated user (many users can share a carrier NAT).
+const testLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { success: false, message: "Too many connection tests. Please wait a minute and try again." },
+});
 
 /** Providers with a token-revocation endpoint (see revokeProviderTokens). */
 const REVOCABLE = new Set(["googledrive", "dropbox"]);
@@ -60,8 +88,9 @@ function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
 
 router.get("/cloud-connections", requireAuth, async (req, res) => {
   try {
+    void purgeExpiredPendingConnections();
     const conns = await db.select().from(cloudConnectionsTable)
-      .where(eq(cloudConnectionsTable.userId, req.userId!));
+      .where(and(eq(cloudConnectionsTable.userId, req.userId!), isNull(cloudConnectionsTable.pendingNonceHash)));
     res.json(conns.map(formatConn));
   } catch (err) {
     req.log.error({ err }, "List cloud connections error");
@@ -119,7 +148,7 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
     // Nextcloud's DAV endpoint is built from the username — it can't be cleared.
     if (updates.username === null) {
       const [existing] = await db.select({ type: cloudConnectionsTable.type }).from(cloudConnectionsTable)
-        .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
+        .where(ownConfirmed(id, req.userId!))
         .limit(1);
       if (!existing) { res.status(404).json({ message: "Connection not found" }); return; }
       if (existing.type === "nextcloud") {
@@ -129,14 +158,14 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
     }
     if (Object.keys(updates).length === 0) {
       const [current] = await db.select().from(cloudConnectionsTable)
-        .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
+        .where(ownConfirmed(id, req.userId!))
         .limit(1);
       if (!current) { res.status(404).json({ message: "Connection not found" }); return; }
       res.json(formatConn(current));
       return;
     }
     const [conn] = await db.update(cloudConnectionsTable).set(updates)
-      .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
+      .where(ownConfirmed(id, req.userId!))
       .returning();
     if (!conn) { res.status(404).json({ message: "Connection not found" }); return; }
     res.json(formatConn(conn));
@@ -176,38 +205,26 @@ router.delete("/cloud-connections/:id", requireAuth, async (req, res) => {
     const id = parseInt(String(req.params["id"] ?? "0"));
     if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
     const [removed] = await db.delete(cloudConnectionsTable)
-      .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
+      .where(ownConfirmed(id, req.userId!))
       .returning();
     res.json({ message: "Deleted" });
-    if (removed && REVOCABLE.has(removed.type)) {
-      // Runs after the response; must never throw into the handler.
-      void (async () => {
-        // A provider revoke kills the whole grant (Google: every token for this
-        // app + account). Keep it if another of the user's connections may be
-        // riding on the same account — same accountId, or either unidentified.
-        const siblings = await db.select({ accountId: cloudConnectionsTable.accountId })
-          .from(cloudConnectionsTable)
-          .where(and(
-            eq(cloudConnectionsTable.userId, removed.userId),
-            eq(cloudConnectionsTable.type, removed.type),
-            ne(cloudConnectionsTable.id, removed.id),
-          ));
-        const shared = siblings.some((c) => !c.accountId || !removed.accountId || c.accountId === removed.accountId);
-        if (!shared) revokeInBackground([removed]);
-      })().catch((err) => logger.info({ err, connectionId: removed.id }, "Token revoke skipped"));
-    }
+    // Runs after the response and never throws. A provider revoke kills the
+    // whole grant (Google: every token for this app + account), so it is kept
+    // while another connection may be riding on the same account (see
+    // revokeRemovedConnectionIfUnshared).
+    if (removed) void revokeRemovedConnectionIfUnshared(removed);
   } catch (err) {
     req.log.error({ err }, "Delete cloud connection error");
     res.status(500).json({ message: "Failed to delete connection" });
   }
 });
 
-router.post("/cloud-connections/:id/test", requireAuth, async (req, res) => {
+router.post("/cloud-connections/:id/test", requireAuth, testLimiter, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
     if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
     const [conn] = await db.select().from(cloudConnectionsTable)
-      .where(and(eq(cloudConnectionsTable.id, id), eq(cloudConnectionsTable.userId, req.userId!)))
+      .where(ownConfirmed(id, req.userId!))
       .limit(1);
     if (!conn) { res.status(404).json({ message: "Connection not found" }); return; }
     const result = await testCloudConnection(conn);

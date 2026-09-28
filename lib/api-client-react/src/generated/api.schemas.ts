@@ -30,6 +30,25 @@ export interface OAuthInitiateInput {
 export interface OAuthInitiateResult {
   authorizeUrl: string;
   state: string;
+  /** One-time secret for POST /oauth/complete. Keep it on the device that started the flow; never put it in a URL. */
+  nonce: string;
+}
+
+export interface OAuthCompleteInput {
+  /** The nonce returned by /oauth/{provider}/initiate */
+  nonce: string;
+  /** The one-time `code` from the callback redirect */
+  code: string;
+  /** The pending `connectionId` from the callback redirect */
+  connectionId?: number;
+}
+
+export interface OAuthCompleteResult {
+  connectionId: number;
+  type: string;
+  name: string;
+  /** @nullable */
+  accountLabel: string | null;
 }
 
 export interface OAuthNotConfigured {
@@ -259,8 +278,40 @@ export interface TwoFASetup {
   backupCodes: string[];
 }
 
-export interface TwoFAVerifyInput {
+export interface PasswordConfirmInput {
+  /** The account's current password (re-authentication). */
+  password: string;
+}
+
+export interface TwoFAEnableInput {
+  /** 6-digit TOTP from the authenticator app. */
   code: string;
+  /** The account's current password (re-authentication). */
+  password: string;
+}
+
+export interface TwoFADisableInput {
+  /** 6-digit TOTP or a backup code. */
+  code: string;
+  /** The account's current password (re-authentication). */
+  password: string;
+}
+
+export interface DeleteAccountInput {
+  /** The account's current password (re-authentication). */
+  password: string;
+  /**
+   * Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+   * @nullable
+   */
+  totpCode?: string | null;
+}
+
+export interface SessionRefreshResponse {
+  message: string;
+  /** Fresh session token — other sessions have been revoked. */
+  token: string;
+  user: User;
 }
 
 export type SubscriptionStatus =

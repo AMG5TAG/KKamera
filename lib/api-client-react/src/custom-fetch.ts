@@ -82,6 +82,14 @@ function applyBaseUrl(input: RequestInfo | URL): RequestInfo | URL {
   return new Request(absolute, input as Request);
 }
 
+// True for same-origin relative paths and URLs under the configured base URL.
+// The trailing "/" in the prefix check stops look-alike hosts such as
+// "https://api.example.com.evil.test" from matching "https://api.example.com".
+function isOwnApiUrl(url: string): boolean {
+  if (url.startsWith("/") && !url.startsWith("//")) return true;
+  return _baseUrl != null && (url === _baseUrl || url.startsWith(`${_baseUrl}/`));
+}
+
 function resolveUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") return input;
   if (isUrl(input)) return input.toString();
@@ -405,8 +413,9 @@ export async function customFetch<T = unknown>(
   }
 
   // Attach bearer token when an auth getter is configured and no
-  // Authorization header has been explicitly provided.
-  if (_authTokenGetter && !headers.has("authorization")) {
+  // Authorization header has been explicitly provided — and only for requests
+  // to our own API, so the session token never leaks to a third-party URL.
+  if (_authTokenGetter && !headers.has("authorization") && isOwnApiUrl(resolveUrl(input))) {
     const token = await _authTokenGetter();
     if (token) {
       headers.set("authorization", `Bearer ${token}`);

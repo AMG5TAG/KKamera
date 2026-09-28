@@ -152,3 +152,75 @@ export function buildUserExport(src: ExportSource, now: Date) {
     feedback: src.feedback.map(f => ({ id: f.id, type: f.type, message: f.message, createdAt: iso(f.createdAt) })),
   };
 }
+
+// ─── Sessions ─────────────────────────────────────────────────────────────────
+
+/** `aud` claim on session JWTs, so other JWTs signed with the same secret can't pose as one. */
+export const SESSION_AUDIENCE = "kkamera-session";
+
+export interface SessionClaims {
+  userId: number;
+  /** users.token_version at issue; legacy tokens without `tv` count as 0. */
+  tv: number;
+  iat: number | null;
+}
+
+/**
+ * Validate the claims of an (already signature-verified) session JWT. Returns
+ * null for anything that isn't a well-formed session token: a non-positive or
+ * non-integer userId, a malformed `tv`, or an `aud` other than ours. `aud` is
+ * only checked when present — tokens issued before it was added lack it.
+ */
+export function parseSessionClaims(payload: unknown): SessionClaims | null {
+  if (!payload || typeof payload !== "object") return null;
+  const p = payload as Record<string, unknown>;
+  const userId = p["userId"];
+  if (typeof userId !== "number" || !Number.isSafeInteger(userId) || userId <= 0) return null;
+  const aud = p["aud"];
+  if (aud !== undefined) {
+    const auds = Array.isArray(aud) ? aud : [aud];
+    if (!auds.includes(SESSION_AUDIENCE)) return null;
+  }
+  const tv = p["tv"] ?? 0;
+  if (typeof tv !== "number" || !Number.isSafeInteger(tv) || tv < 0) return null;
+  const iat = typeof p["iat"] === "number" ? p["iat"] : null;
+  return { userId, tv, iat };
+}
+
+/** A session is current only while its version matches the user's (bumped to revoke all sessions). */
+export function isTokenVersionCurrent(claims: Pick<SessionClaims, "tv">, userTokenVersion: number): boolean {
+  return claims.tv === userTokenVersion;
+}
+
+// ─── Per-account login throttling ─────────────────────────────────────────────
+
+/** Consecutive failed sign-ins that trigger a lockout (and every multiple after). */
+export const LOGIN_LOCK_THRESHOLD = 5;
+export const LOGIN_LOCK_BASE_MS = 15 * 60 * 1000;
+export const LOGIN_LOCK_MAX_MS = 24 * 60 * 60 * 1000;
+export const LOGIN_LOCKED_MESSAGE = "Too many sign-in attempts. Try again later or reset your password.";
+
+/**
+ * How long to lock the account after the failure that brought the consecutive
+ * count to `failedCount` (0 = no lock). Every THRESHOLD-th failure locks: 15 min
+ * the first time, doubling per further lockout, capped at 24 h.
+ */
+export function loginLockDurationMs(failedCount: number): number {
+  if (!Number.isInteger(failedCount) || failedCount < LOGIN_LOCK_THRESHOLD) return 0;
+  if (failedCount % LOGIN_LOCK_THRESHOLD !== 0) return 0;
+  const step = failedCount / LOGIN_LOCK_THRESHOLD - 1;
+  // Cap the exponent before shifting so huge counts can't overflow.
+  if (step >= 16) return LOGIN_LOCK_MAX_MS;
+  return Math.min(LOGIN_LOCK_BASE_MS * 2 ** step, LOGIN_LOCK_MAX_MS);
+}
+
+/** Whether the account is currently locked out of password sign-in. */
+export function isLoginLocked(lockedUntil: Date | null | undefined, now: Date): boolean {
+  return !!lockedUntil && lockedUntil.getTime() > now.getTime();
+}
+
+// ─── Password-reset throttling ────────────────────────────────────────────────
+
+/** At most this many reset emails per account per window (the response never changes). */
+export const RESET_EMAILS_PER_WINDOW = 3;
+export const RESET_EMAIL_WINDOW_MS = 60 * 60 * 1000;

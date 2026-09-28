@@ -211,6 +211,16 @@ const STRIP_MODES: ModeConfig[] = [
 const STRIP_LABEL: Partial<Record<ExtMode, string>> = {
   scan: "DOC", timelapse: "INTERVAL",
 };
+// Spoken names for the mode strip (the visual labels are all-caps shorthand).
+const MODE_A11Y_LABEL: Record<ExtMode, string> = {
+  photo: "Photo", video: "Video", timelapse: "Interval", pano: "Panorama", scan: "Document scan",
+};
+const GRID_LABEL: Record<string, string> = {
+  off: "off", thirds: "rule of thirds", golden: "golden ratio", square: "square", diagonal: "diagonal",
+};
+// Top-bar icons are ~30pt; these bring their touch targets to ~44pt+.
+const ICON_HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
+const ZOOM_HIT_SLOP = { top: 4, bottom: 4, left: 10, right: 10 };
 const DEFAULT_STRIP_IDX = STRIP_MODES.findIndex(m => m.mode === "photo"); // 2
 const ITEM_W = 88;
 
@@ -580,8 +590,9 @@ export default function CameraScreen() {
         if (!DeviceMotion || cancelled) return;
         const available = await DeviceMotion.isAvailableAsync().catch(() => false);
         if (!available || cancelled) return;
-        const perm = await DeviceMotion.requestPermissionsAsync().catch(() => null);
-        if ((perm && !perm.granted) || cancelled) return;
+        // No requestPermissionsAsync here: on iOS it runs a CMPedometer query
+        // and raises a "Motion & Fitness" prompt, yet CMMotionManager device
+        // motion needs no authorisation (Android has no permission either).
         DeviceMotion.setUpdateInterval(60);
         const created = DeviceMotion.addListener(({ accelerationIncludingGravity: g }) => {
           // expo-sensors reports gravity pointing DOWN on both platforms (iOS
@@ -1044,8 +1055,8 @@ export default function CameraScreen() {
       if (!DeviceMotion) return false;
       const available = await DeviceMotion.isAvailableAsync().catch(() => false);
       if (!available) return false;
-      const perm = await DeviceMotion.requestPermissionsAsync().catch(() => null);
-      if (perm && !perm.granted) return false;
+      // No requestPermissionsAsync — see the level guide above (it would raise
+      // an unneeded iOS Motion & Fitness prompt).
       DeviceMotion.setUpdateInterval(60);
       panoLastGyroT.current = null;
       panoSensorSub.current = DeviceMotion.addListener(({ rotation, rotationRate, accelerationIncludingGravity: g }) => {
@@ -1808,7 +1819,7 @@ export default function CameraScreen() {
     const blocked = !cameraPermission.canAskAgain && Platform.OS !== "web";
     return (
       <View style={[styles.container, styles.centeredContainer]}>
-        <Ionicons name="camera-outline" size={56} color={PRIMARY} />
+        <Ionicons name="camera-outline" size={56} color={PRIMARY} accessible={false} />
         <Text style={styles.permText}>
           {blocked
             ? "Camera access is turned off for KKamera. Turn it on in Settings to take photos and videos."
@@ -1816,6 +1827,7 @@ export default function CameraScreen() {
         </Text>
         <TouchableOpacity
           style={styles.permBtn}
+          accessibilityRole="button"
           onPress={() => {
             if (blocked) Linking.openSettings().catch(() => {});
             else requestCameraPermission();
@@ -1823,7 +1835,12 @@ export default function CameraScreen() {
         >
           <Text style={styles.permBtnText}>{blocked ? "Open Settings" : "Grant Camera Access"}</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.permSkip} onPress={() => router.push("/settings")}>
+        <TouchableOpacity
+          style={styles.permSkip}
+          onPress={() => router.push("/settings")}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+        >
           <Text style={styles.permSkipText}>Go to Settings instead</Text>
         </TouchableOpacity>
       </View>
@@ -1831,15 +1848,27 @@ export default function CameraScreen() {
   }
 
   if (!hasAccess) {
+    // Only ever show the live store price (never a hard-coded one); the "/year"
+    // suffix is only added when the package really is the annual one.
+    const paywallPkg = rcSub.offerings?.current?.availablePackages.find(
+      (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
+    );
+    const paywallPrice = paywallPkg?.product.priceString ?? null;
     return (
       <View style={[styles.container, styles.centeredContainer]}>
         <StatusBar barStyle="light-content" />
-        <Ionicons name="lock-closed" size={52} color={PRIMARY} style={{ marginBottom: 20 }} />
-        <Text style={styles.paywallTitle}>Subscription Required</Text>
+        <Ionicons name="lock-closed" size={52} color={PRIMARY} style={{ marginBottom: 20 }} accessible={false} />
+        <Text style={styles.paywallTitle} accessibilityRole="header">Subscription Required</Text>
         <Text style={styles.paywallBody}>Your free trial has ended.{"\n"}Subscribe to keep using KKamera.</Text>
-        <TouchableOpacity style={styles.paywallBtn} onPress={() => router.push("/settings/subscription")}>
-          <Ionicons name="card-outline" size={18} color="white" />
-          <Text style={styles.paywallBtnText}>View Subscription — $30/year</Text>
+        <TouchableOpacity
+          style={styles.paywallBtn}
+          onPress={() => router.push("/settings/subscription")}
+          accessibilityRole="button"
+        >
+          <Ionicons name="card-outline" size={18} color="white" accessible={false} />
+          <Text style={styles.paywallBtnText}>
+            {paywallPrice ? `View Subscription — ${paywallPrice}/year` : "View Subscription"}
+          </Text>
         </TouchableOpacity>
       </View>
     );
@@ -1851,6 +1880,15 @@ export default function CameraScreen() {
   // mid-recording, which must be allowed to finalise its file first.
   const cameraMounted = Platform.OS === "ios" || screenActive || isRecording;
   const captureIsActive = isRecording || isTimelapsing || isPanoCapturing || panoComposing;
+
+  const shutterLabel =
+    countdown != null ? "Cancel self-timer"
+    : extMode === "scan" ? "Scan document"
+    : extMode === "pano" ? (isPanoCapturing ? "Finish panorama" : panoComposing ? "Stitching panorama" : "Start panorama")
+    : extMode === "timelapse" ? (isTimelapsing ? "Stop interval capture" : "Start interval capture")
+    : isVideoMode ? (isRecording ? "Stop recording" : "Start recording")
+    : settings.timerSeconds > 0 ? `Take photo in ${settings.timerSeconds} seconds`
+    : "Take photo";
 
   const handleModeScrollEnd = (e: any) => {
     if (programmaticScroll.current) return; // ignore scrolls we triggered ourselves
@@ -2009,19 +2047,47 @@ export default function CameraScreen() {
 
         {/* ── Top Bar ─────────────────────────────────────────────────────── */}
         <View style={[styles.topBar, { paddingTop: insets.top + (Platform.OS === "web" ? 20 : 4) }]}>
-          <TouchableOpacity style={styles.iconBtn} onPress={cycleFlash}>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={cycleFlash}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel={`Flash: ${flash}`}
+            accessibilityHint="Cycles flash between auto, on and off"
+          >
             <Ionicons name={flashIcon as any} size={21} color={flash === "on" ? "#FFD700" : "white"} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={toggleLevelGuide}>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={toggleLevelGuide}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityRole="switch"
+            accessibilityLabel="Level guide"
+            accessibilityState={{ checked: settings.showLevelGuide }}
+          >
             <MaterialCommunityIcons name="spirit-level" size={19} color={settings.showLevelGuide ? PRIMARY : "white"} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => {
+          <TouchableOpacity
+            style={styles.iconBtn}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel={`Grid: ${GRID_LABEL[settings.gridType] ?? settings.gridType}`}
+            accessibilityHint="Cycles the composition grid"
+            accessibilityState={{ selected: settings.gridType !== "off" }}
+            onPress={() => {
             const next = settings.gridType === "off" ? "thirds" : settings.gridType === "thirds" ? "golden" : settings.gridType === "golden" ? "square" : settings.gridType === "square" ? "diagonal" : "off";
             updateSetting("gridType", next);
           }}>
             <Ionicons name="grid-outline" size={18} color={settings.gridType !== "off" ? PRIMARY : "white"} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => {
+          <TouchableOpacity
+            style={styles.iconBtn}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel={settings.timerSeconds > 0 ? `Self-timer: ${settings.timerSeconds} seconds` : "Self-timer: off"}
+            accessibilityHint="Cycles the self-timer between off, 3 and 10 seconds"
+            accessibilityState={{ selected: settings.timerSeconds > 0 }}
+            onPress={() => {
             const next = settings.timerSeconds === 0 ? 3 : settings.timerSeconds === 3 ? 10 : 0;
             updateSetting("timerSeconds", next);
           }}>
@@ -2030,27 +2096,52 @@ export default function CameraScreen() {
               <Text style={styles.timerBadge}>{settings.timerSeconds}s</Text>
             )}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => setShowFilters(v => !v)}>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => setShowFilters(v => !v)}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel="Filters"
+            accessibilityState={{ expanded: showFilters }}
+          >
             <Feather name="sliders" size={18} color={showFilters ? PRIMARY : "white"} />
           </TouchableOpacity>
           {(isRecording) && (
-            <View style={styles.recordingBadge}>
+            <View
+              style={styles.recordingBadge}
+              accessible
+              accessibilityLabel={`Recording, ${formatTime(recordSeconds)}`}
+            >
               <View style={styles.recordingDot} />
               <Text style={styles.recordingTime}>{formatTime(recordSeconds)}</Text>
             </View>
           )}
-          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push("/settings")}>
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => router.push("/settings")}
+            hitSlop={ICON_HIT_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+          >
             <Ionicons name="settings-outline" size={21} color="white" />
           </TouchableOpacity>
         </View>
 
         {/* ── Upload status badge ─────────────────────────────────────────── */}
-        {lastUpload && uploadStatusLabel !== "" && settings.recordHistory && !(lastUpload.status === "done" && doneBadgeHidden) && (
+        {/* Shown whatever the "Record History" setting: that only controls the
+            stored history list, and upload failures must always be visible.
+            The history screen still lists on-device (failed/queued) captures
+            when history is off. */}
+        {lastUpload && uploadStatusLabel !== "" && !(lastUpload.status === "done" && doneBadgeHidden) && (
           <TouchableOpacity
             style={[styles.uploadStatus, { top: insets.top + (Platform.OS === "web" ? 110 : 70) }]}
             onPress={() => router.push("/history")}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Upload status: ${uploadStatusLabel}`}
+            accessibilityHint="Opens upload history"
           >
-            <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} />
+            <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} accessible={false} />
             <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
           </TouchableOpacity>
         )}
@@ -2063,9 +2154,9 @@ export default function CameraScreen() {
             accessibilityRole="button"
             accessibilityLabel="Uploads paused, subscription required. Open subscription settings."
           >
-            <Ionicons name="pause-circle-outline" size={16} color="#f59e0b" />
+            <Ionicons name="pause-circle-outline" size={16} color="#f59e0b" accessible={false} />
             <Text style={styles.subBannerText} numberOfLines={1}>Uploads paused — subscription required</Text>
-            <Ionicons name="chevron-forward" size={14} color="#f59e0b" />
+            <Ionicons name="chevron-forward" size={14} color="#f59e0b" accessible={false} />
           </TouchableOpacity>
         )}
 
@@ -2074,7 +2165,14 @@ export default function CameraScreen() {
           <View style={[styles.filterPanel, { top: insets.top + (Platform.OS === "web" ? 100 : 60) }]}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
               {FILTERS.map((f, i) => (
-                <TouchableOpacity key={f.name} style={styles.filterChip} onPress={() => setSelectedFilter(i)}>
+                <TouchableOpacity
+                  key={f.name}
+                  style={styles.filterChip}
+                  onPress={() => setSelectedFilter(i)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${f.name} filter`}
+                  accessibilityState={{ selected: selectedFilter === i }}
+                >
                   <View style={[styles.filterThumb, {
                     backgroundColor: f.swatch,
                     borderWidth: selectedFilter === i ? 2 : 0,
@@ -2092,20 +2190,43 @@ export default function CameraScreen() {
         {/* ── Collapsible Zoom (right side) ───────────────────────────────── */}
         <View style={[styles.zoomSideBar, { top: "35%" }]}>
           {zoomExpanded && ultraWideAvailable && (
-            <TouchableOpacity style={styles.zoomSideBtn} onPress={() => selectZoom(0, true)}>
+            <TouchableOpacity
+              style={styles.zoomSideBtn}
+              onPress={() => selectZoom(0, true)}
+              hitSlop={ZOOM_HIT_SLOP}
+              accessibilityRole="button"
+              accessibilityLabel="Zoom 0.5 times, ultra-wide"
+              accessibilityState={{ selected: onUltraWide && zoom <= 0.02 }}
+            >
               <Text style={[styles.zoomSideLabel, onUltraWide && zoom <= 0.02 && styles.zoomSideLabelActive]}>
                 0.5×
               </Text>
             </TouchableOpacity>
           )}
           {zoomExpanded && ZOOM_LEVELS.map(({ value, label }) => (
-            <TouchableOpacity key={value} style={styles.zoomSideBtn} onPress={() => selectZoom(value)}>
+            <TouchableOpacity
+              key={value}
+              style={styles.zoomSideBtn}
+              onPress={() => selectZoom(value)}
+              hitSlop={ZOOM_HIT_SLOP}
+              accessibilityRole="button"
+              accessibilityLabel={`Zoom ${label.replace("×", " times")}`}
+              accessibilityState={{ selected: !onUltraWide && Math.abs(zoom - value) < 0.03 }}
+            >
               <Text style={[styles.zoomSideLabel, !onUltraWide && Math.abs(zoom - value) < 0.03 && styles.zoomSideLabelActive]}>
                 {label}
               </Text>
             </TouchableOpacity>
           ))}
-          <TouchableOpacity style={[styles.zoomSideBtn, styles.zoomBadgeBtn]} onPress={toggleZoom}>
+          <TouchableOpacity
+            style={[styles.zoomSideBtn, styles.zoomBadgeBtn]}
+            onPress={toggleZoom}
+            hitSlop={ZOOM_HIT_SLOP}
+            accessibilityRole="button"
+            accessibilityLabel={`Zoom ${currentZoomLabel.replace("×", " times")}`}
+            accessibilityHint={zoomExpanded ? "Hides zoom levels" : "Shows zoom levels"}
+            accessibilityState={{ expanded: zoomExpanded }}
+          >
             <Text style={styles.zoomBadgeText}>{currentZoomLabel}</Text>
           </TouchableOpacity>
         </View>
@@ -2147,6 +2268,9 @@ export default function CameraScreen() {
                     style={{ width: ITEM_W, alignItems: "center", justifyContent: "center", paddingVertical: 10 }}
                     onPress={() => { if (!captureIsActive) { setExtMode(m.mode); scrollToMode(i); } }}
                     activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${MODE_A11Y_LABEL[m.mode]} mode`}
+                    accessibilityState={{ selected: isActive, disabled: captureIsActive && !isActive }}
                   >
                     <Text
                       style={[styles.stripLabel, isActive && styles.stripLabelActive]}
@@ -2170,7 +2294,7 @@ export default function CameraScreen() {
               accessibilityRole="button"
               accessibilityLabel="Open your cloud storage"
             >
-              <Ionicons name="cloud-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+              <Ionicons name="cloud-outline" size={26} color={captureIsActive ? "#333" : "white"} accessible={false} />
             </TouchableOpacity>
 
             {/* Capture button */}
@@ -2186,6 +2310,9 @@ export default function CameraScreen() {
                 onPress={handleCapture}
                 activeOpacity={0.8}
                 disabled={panoComposing}
+                accessibilityRole="button"
+                accessibilityLabel={shutterLabel}
+                accessibilityState={{ disabled: panoComposing, busy: panoComposing }}
               >
                 {extMode === "pano" ? (
                   <View style={[
@@ -2229,6 +2356,9 @@ export default function CameraScreen() {
                 baseZoom.current = z;
               }}
               disabled={captureIsActive}
+              accessibilityRole="button"
+              accessibilityLabel={facing === "back" ? "Switch to front camera" : "Switch to rear camera"}
+              accessibilityState={{ disabled: captureIsActive }}
             >
               <Ionicons name="camera-reverse-outline" size={26} color={captureIsActive ? "#333" : "white"} />
             </TouchableOpacity>
@@ -2246,7 +2376,7 @@ export default function CameraScreen() {
               accessibilityRole="button"
               accessibilityLabel="Cancel self-timer"
             >
-              <Ionicons name="close" size={18} color="white" />
+              <Ionicons name="close" size={18} color="white" accessible={false} />
               <Text style={styles.countdownCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -2272,22 +2402,28 @@ export default function CameraScreen() {
         <Modal visible={showScanModal} animationType="slide" onRequestClose={discardScan}>
           <View style={styles.scanModal}>
             <View style={styles.scanModalHeader}>
-              <TouchableOpacity onPress={discardScan} style={styles.scanModalClose}>
+              <TouchableOpacity
+                onPress={discardScan}
+                style={styles.scanModalClose}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Discard scan"
+              >
                 <Ionicons name="close" size={24} color="white" />
               </TouchableOpacity>
-              <Text style={styles.scanModalTitle}>Document Scan</Text>
+              <Text style={styles.scanModalTitle} accessibilityRole="header">Document Scan</Text>
               <View style={{ width: 40 }} />
             </View>
             {scanUri && (
               <Image source={{ uri: scanUri }} style={styles.scanPreview} resizeMode="contain" accessibilityLabel="Document scan preview" />
             )}
             <View style={styles.scanModalFooter}>
-              <TouchableOpacity style={styles.scanRetakeBtn} onPress={retakeScan}>
-                <Ionicons name="camera-outline" size={18} color={PRIMARY} />
+              <TouchableOpacity style={styles.scanRetakeBtn} onPress={retakeScan} accessibilityRole="button">
+                <Ionicons name="camera-outline" size={18} color={PRIMARY} accessible={false} />
                 <Text style={styles.scanRetakeText}>Retake</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.scanUploadBtn} onPress={handleUploadScan}>
-                <Ionicons name="cloud-upload-outline" size={18} color="white" />
+              <TouchableOpacity style={styles.scanUploadBtn} onPress={handleUploadScan} accessibilityRole="button">
+                <Ionicons name="cloud-upload-outline" size={18} color="white" accessible={false} />
                 <Text style={styles.scanUploadText}>Upload Scan</Text>
               </TouchableOpacity>
             </View>
@@ -2543,7 +2679,7 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.4)",
     letterSpacing: 1.1,
     // Keep the label inside the center pill (width ITEM_W - 10) so long labels
-    // like "TIME-LAPSE" never spill past the oval.
+    // like "INTERVAL" never spill past the oval.
     maxWidth: ITEM_W - 16,
     textAlign: "center",
   },

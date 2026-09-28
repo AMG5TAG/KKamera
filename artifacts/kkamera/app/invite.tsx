@@ -110,7 +110,7 @@ export default function InviteScreen() {
         >
           <Ionicons name="chevron-back" size={24} color={PRIMARY} />
         </TouchableOpacity>
-        <Text style={styles.heading}>Invite Co-Workers</Text>
+        <Text style={styles.heading} accessibilityRole="header">Invite Co-Workers</Text>
         <View style={{ width: 40 }} />
       </View>
 
@@ -122,7 +122,7 @@ export default function InviteScreen() {
       >
         {celebrate === "1" && (
           <View style={styles.celebrateCard}>
-            <Ionicons name="checkmark-circle" size={22} color="#22c55e" />
+            <Ionicons name="checkmark-circle" size={22} color="#22c55e" accessible={false} />
             <View style={{ flex: 1 }}>
               <Text style={styles.celebrateTitle}>Payment successful — welcome aboard!</Text>
               <Text style={styles.celebrateText}>Know someone who'd love KKamera? Invite them and earn free years.</Text>
@@ -135,7 +135,7 @@ export default function InviteScreen() {
         {BENEFITS.map((b, i) => (
           <View key={i} style={styles.benefitRow}>
             <View style={styles.benefitIcon}>
-              <Ionicons name={b.icon as any} size={20} color={PRIMARY} />
+              <Ionicons name={b.icon as any} size={20} color={PRIMARY} accessible={false} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.benefitTitle}>{b.title}</Text>
@@ -153,7 +153,7 @@ export default function InviteScreen() {
 
         {sentCount !== null && (
           <View style={styles.sentCard}>
-            <Ionicons name="paper-plane" size={20} color="#22c55e" />
+            <Ionicons name="paper-plane" size={20} color="#22c55e" accessible={false} />
             <Text style={styles.sentText}>
               Invites sent to {sentCount} contact{sentCount !== 1 ? "s" : ""}! They'll appear in Refer & Earn once they sign up, and count toward your free year when they start a paid subscription.
             </Text>
@@ -170,6 +170,7 @@ export default function InviteScreen() {
                 <Text style={styles.chipText}>{e}</Text>
                 <TouchableOpacity
                   onPress={() => setEmails(prev => prev.filter(x => x !== e))}
+                  hitSlop={14}
                   accessibilityRole="button"
                   accessibilityLabel={`Remove ${e}`}
                 >
@@ -184,6 +185,7 @@ export default function InviteScreen() {
           <TextInput
             style={styles.input}
             placeholder="coworker@company.com"
+            accessibilityLabel="Co-worker's email address"
             placeholderTextColor="#555"
             keyboardType="email-address"
             autoCapitalize="none"
@@ -196,6 +198,7 @@ export default function InviteScreen() {
           <TouchableOpacity
             style={styles.addBtn}
             onPress={() => addEmail(draft)}
+            hitSlop={6}
             accessibilityRole="button"
             accessibilityLabel="Add email"
           >
@@ -204,15 +207,15 @@ export default function InviteScreen() {
         </View>
 
         {canPickContacts && (
-          <TouchableOpacity style={styles.contactsBtn} onPress={handlePickContacts}>
-            <Ionicons name="people-outline" size={18} color={PRIMARY} />
+          <TouchableOpacity style={styles.contactsBtn} onPress={handlePickContacts} accessibilityRole="button">
+            <Ionicons name="people-outline" size={18} color={PRIMARY} accessible={false} />
             <Text style={styles.contactsBtnText}>Choose from Contacts</Text>
           </TouchableOpacity>
         )}
 
         {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+          <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
@@ -221,11 +224,14 @@ export default function InviteScreen() {
           style={[styles.sendBtn, (inviteMutation.isPending || (emails.length === 0 && !draft.trim())) && styles.btnDisabled]}
           onPress={handleSend}
           disabled={inviteMutation.isPending}
+          accessibilityRole="button"
+          accessibilityLabel={inviteMutation.isPending ? "Sending invites" : undefined}
+          accessibilityState={{ disabled: inviteMutation.isPending, busy: inviteMutation.isPending }}
         >
           {inviteMutation.isPending
             ? <ActivityIndicator color="white" />
             : <>
-                <Ionicons name="paper-plane-outline" size={18} color="white" />
+                <Ionicons name="paper-plane-outline" size={18} color="white" accessible={false} />
                 <Text style={styles.sendBtnText}>
                   Send Invite{emails.length > 1 ? `s (${emails.length})` : ""}
                 </Text>
@@ -234,12 +240,16 @@ export default function InviteScreen() {
         </TouchableOpacity>
 
         {/* Share-sheet fallback (SMS, WhatsApp, etc.) */}
-        <TouchableOpacity style={styles.shareBtn} onPress={handleShareInstead}>
-          <Ionicons name="share-outline" size={18} color={PRIMARY} />
+        <TouchableOpacity style={styles.shareBtn} onPress={handleShareInstead} accessibilityRole="button">
+          <Ionicons name="share-outline" size={18} color={PRIMARY} accessible={false} />
           <Text style={styles.shareBtnText}>Share invite link another way</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.skipBtn} onPress={() => (router.canGoBack() ? router.back() : router.replace("/camera"))}>
+        <TouchableOpacity
+          style={styles.skipBtn}
+          onPress={() => (router.canGoBack() ? router.back() : router.replace("/camera"))}
+          accessibilityRole="button"
+        >
           <Text style={styles.skipBtnText}>Maybe later</Text>
         </TouchableOpacity>
       </KeyboardAwareScrollViewCompat>

@@ -2,13 +2,14 @@ import React, { useEffect, useRef } from "react";
 import { View, Text, StyleSheet, Animated, Easing } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { forgetOAuthNonce } from "@/lib/oauthPending";
 
 const BG = "#0d0b08";
 
 export default function OAuthErrorScreen() {
   // expo-router has already percent-decoded these; decoding again threw
   // URIError on a literal "%" (kkamera://oauth-error?error=%25) and crashed.
-  const { error } = useLocalSearchParams<{ error?: string; provider?: string }>();
+  const { error, provider } = useLocalSearchParams<{ error?: string; provider?: string }>();
   const message = typeof error === "string" && error.trim()
     ? error.slice(0, 300)
     : "OAuth authorisation was cancelled or failed.";
@@ -16,6 +17,10 @@ export default function OAuthErrorScreen() {
   const opacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    // The flow failed, so its one-time nonce (kept since /initiate) is spent.
+    if (typeof provider === "string" && /^(googledrive|onedrive|dropbox)$/.test(provider)) {
+      void forgetOAuthNonce(provider);
+    }
     Animated.sequence([
       Animated.delay(150),
       Animated.parallel([

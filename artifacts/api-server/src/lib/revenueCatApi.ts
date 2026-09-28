@@ -1,11 +1,14 @@
 import { db } from "@workspace/db";
-import { subscriptionsTable, usersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { revenueCatEventsTable, subscriptionsTable, usersTable } from "@workspace/db";
+import { eq, lt } from "drizzle-orm";
 import { logger } from "./logger.js";
+import type { DbTx } from "./referrals.js";
 import {
   allowSandboxIap,
+  isStaleDecision,
   mapSubscriberEntitlement,
   mergeDecision,
+  type MergeOptions,
   type MirrorDecision,
 } from "./revenueCatMapping.js";
 
@@ -34,38 +37,96 @@ export async function fetchSubscriber(appUserId: string): Promise<unknown> {
   return res.json();
 }
 
-export type MirrorResult = "written" | "no_user" | "no_op";
+/**
+ * "stale": the event is older than the newest one already applied (out-of-order
+ * delivery) — status was left alone; at most a live period end was extended.
+ */
+export type MirrorResult = "written" | "no_user" | "no_op" | "stale";
 
 /**
- * Apply a mirror decision to a user's subscriptions row. Runs under a row lock so
- * concurrent webhooks/syncs serialise, and refuses users that no longer exist
- * (e.g. deleted accounts whose store subscription is still running) so we never
- * create orphan rows.
+ * Apply a mirror decision to a user's subscriptions row inside `tx`. Takes a row
+ * lock so concurrent webhooks/syncs serialise, and refuses users that no longer
+ * exist (e.g. deleted accounts whose store subscription is still running) so we
+ * never create orphan rows.
  */
-export async function applyMirrorDecision(userId: number, d: MirrorDecision): Promise<MirrorResult> {
-  return db.transaction(async (tx) => {
-    const [user] = await tx.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
-    if (!user) return "no_user";
+export async function applyMirrorDecisionInTx(
+  tx: DbTx,
+  userId: number,
+  d: MirrorDecision,
+  opts: MergeOptions = {},
+): Promise<MirrorResult> {
+  const [user] = await tx.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+  if (!user) return "no_user";
 
-    const [row] = await tx
-      .select()
-      .from(subscriptionsTable)
-      .where(eq(subscriptionsTable.userId, userId))
-      .for("update")
-      .limit(1);
+  const [row] = await tx
+    .select()
+    .from(subscriptionsTable)
+    .where(eq(subscriptionsTable.userId, userId))
+    .for("update")
+    .limit(1);
 
-    const next = mergeDecision(row ?? null, d, new Date());
-    if (!next) return "no_op";
+  const now = new Date();
+  const stale = isStaleDecision(row ?? null, d, now, opts);
+  const next = mergeDecision(row ?? null, d, now, opts);
+  if (!next) return stale ? "stale" : "no_op";
 
-    if (row) {
-      await tx.update(subscriptionsTable).set(next).where(eq(subscriptionsTable.userId, userId));
-    } else {
-      // Concurrent first insert for the same user is harmless: the loser's
-      // conflict is a no-op and the next event/sync converges the row.
-      await tx.insert(subscriptionsTable).values({ userId, ...next }).onConflictDoNothing();
-    }
-    return "written";
-  });
+  if (row) {
+    await tx.update(subscriptionsTable).set(next).where(eq(subscriptionsTable.userId, userId));
+  } else {
+    // Concurrent first insert for the same user is harmless: the loser's
+    // conflict is a no-op and the next event/sync converges the row.
+    await tx.insert(subscriptionsTable).values({ userId, ...next }).onConflictDoNothing();
+  }
+  return stale ? "stale" : "written";
+}
+
+/** applyMirrorDecisionInTx in its own transaction. */
+export async function applyMirrorDecision(userId: number, d: MirrorDecision, opts: MergeOptions = {}): Promise<MirrorResult> {
+  return db.transaction((tx) => applyMirrorDecisionInTx(tx, userId, d, opts));
+}
+
+// ---------------------------------------------------------------------------
+// Webhook idempotency — revenuecat_events
+// ---------------------------------------------------------------------------
+
+/**
+ * Record a webhook event id inside `tx`. Returns false if it was already
+ * recorded (a RevenueCat retry/redelivery). A concurrent delivery of the same
+ * id blocks on the primary key until the first transaction finishes, then sees
+ * the conflict — so an event is applied at most once, and if the applying
+ * transaction rolls back the id is released for RevenueCat's retry.
+ */
+export async function claimRevenueCatEvent(
+  tx: DbTx | typeof db,
+  eventId: string,
+  userId: number | null,
+  type: string,
+): Promise<boolean> {
+  const inserted = await tx
+    .insert(revenueCatEventsTable)
+    .values({ eventId, userId, type: type.slice(0, 64) })
+    .onConflictDoNothing()
+    .returning({ eventId: revenueCatEventsTable.eventId });
+  return inserted.length > 0;
+}
+
+/** True when an event id was already processed (used before non-transactional work). */
+export async function isRevenueCatEventRecorded(eventId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ eventId: revenueCatEventsTable.eventId })
+    .from(revenueCatEventsTable)
+    .where(eq(revenueCatEventsTable.eventId, eventId))
+    .limit(1);
+  return !!row;
+}
+
+export const REVENUECAT_EVENT_RETENTION_DAYS = 90;
+
+/** Delete processed-event ids older than the retention window. Returns rows deleted. */
+export async function pruneRevenueCatEvents(): Promise<number> {
+  const cutoff = new Date(Date.now() - REVENUECAT_EVENT_RETENTION_DAYS * 86_400_000);
+  const res = await db.delete(revenueCatEventsTable).where(lt(revenueCatEventsTable.receivedAt, cutoff));
+  return res.rowCount ?? 0;
 }
 
 export interface SyncOptions {
@@ -86,8 +147,10 @@ export async function syncUserFromRevenueCat(userId: number, opts: SyncOptions =
   const body = await fetchSubscriber(String(userId));
   const mapped = mapSubscriberEntitlement(body, userId, new Date(), { allowSandbox: allowSandboxIap() });
 
+  // REST reads are snapshots of current store state: never blocked by (and they
+  // stamp) subscriptions.last_event_at, so older in-flight webhooks can't undo them.
   if (mapped.kind === "entitled") {
-    const result = await applyMirrorDecision(userId, mapped.decision);
+    const result = await applyMirrorDecision(userId, mapped.decision, { snapshot: true });
     logger.info(
       { userId, result, status: mapped.decision.kind, store: mapped.store, periodType: mapped.periodType, sandbox: mapped.sandbox },
       "RevenueCat sync applied",
@@ -104,7 +167,7 @@ export async function syncUserFromRevenueCat(userId: number, opts: SyncOptions =
       logger.warn({ userId }, "RevenueCat transfer source has referral free years — not revoking");
       return "no_op";
     }
-    const result = await applyMirrorDecision(userId, { kind: "refund", userId, periodEnd: new Date(), referrals: false });
+    const result = await applyMirrorDecision(userId, { kind: "refund", userId, periodEnd: new Date(), referrals: false }, { snapshot: true });
     logger.info({ userId, result }, "RevenueCat transfer source revoked");
     return result;
   }

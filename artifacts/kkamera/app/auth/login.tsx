@@ -82,12 +82,12 @@ export default function LoginScreen() {
           />
         </View>
 
-        <Text style={styles.title}>Welcome Back</Text>
+        <Text style={styles.title} accessibilityRole="header">Welcome Back</Text>
         <Text style={styles.subtitle}>Sign in to your account</Text>
 
         {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+          <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
@@ -99,6 +99,7 @@ export default function LoginScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="your@email.com"
+                accessibilityLabel="Email"
                 placeholderTextColor="#555"
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -114,6 +115,7 @@ export default function LoginScreen() {
                 <TextInput
                   style={[styles.input, { flex: 1, borderWidth: 0 }]}
                   placeholder="••••••••"
+                  accessibilityLabel="Password"
                   placeholderTextColor="#555"
                   secureTextEntry={!showPassword}
                   autoComplete="current-password"
@@ -126,6 +128,7 @@ export default function LoginScreen() {
                   style={styles.eyeBtn}
                   accessibilityRole="button"
                   accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                  hitSlop={12}
                 >
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                 </TouchableOpacity>
@@ -139,6 +142,7 @@ export default function LoginScreen() {
             <TextInput
               style={[styles.input, styles.totpInput]}
               placeholder="000000"
+              accessibilityLabel="Two-factor code"
               placeholderTextColor="#555"
               keyboardType="default"
               autoCapitalize="characters"
@@ -160,12 +164,14 @@ export default function LoginScreen() {
           style={[styles.loginBtn, loginMutation.isPending && styles.loginBtnDisabled]}
           onPress={handleLogin}
           disabled={loginMutation.isPending}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: loginMutation.isPending, busy: loginMutation.isPending }}
         >
           <Text style={styles.loginText}>{loginMutation.isPending ? "Signing in..." : "Sign In"}</Text>
         </TouchableOpacity>
 
         {!requires2FA ? (
-          <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")}>
+          <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")} accessibilityRole="link">
             <Text style={styles.forgotLinkText}>Forgot password?</Text>
           </TouchableOpacity>
         ) : (
@@ -174,16 +180,16 @@ export default function LoginScreen() {
           </TouchableOpacity>
         )}
 
-        <TouchableOpacity style={styles.registerLink} onPress={() => router.push("/auth/register")}>
+        <TouchableOpacity style={styles.registerLink} onPress={() => router.push("/auth/register")} accessibilityRole="link">
           <Text style={styles.registerLinkText}>Don't have an account? <Text style={{ color: PRIMARY }}>Create one free</Text></Text>
         </TouchableOpacity>
 
         <View style={styles.privacyRow}>
-          <TouchableOpacity onPress={() => router.push("/settings/privacy")}>
+          <TouchableOpacity onPress={() => router.push("/settings/privacy")} accessibilityRole="link" hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}>
             <Text style={styles.privacyLink}>Privacy Policy</Text>
           </TouchableOpacity>
           <Text style={styles.privacySep}>·</Text>
-          <TouchableOpacity onPress={() => router.push("/settings/terms")}>
+          <TouchableOpacity onPress={() => router.push("/settings/terms")} accessibilityRole="link" hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}>
             <Text style={styles.privacyLink}>Terms of Service</Text>
           </TouchableOpacity>
         </View>

@@ -213,8 +213,8 @@ export default function SubscriptionScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
     </TouchableOpacity>
     <ScrollView
       style={{ flex: 1 }}
@@ -223,16 +223,16 @@ export default function SubscriptionScreen() {
       {renderStatusCard()}
 
       {hasSubscription && (
-        <TouchableOpacity style={styles.manageBtn} onPress={openManage}>
-          <Ionicons name="settings-outline" size={18} color={PRIMARY} />
+        <TouchableOpacity style={styles.manageBtn} onPress={openManage} accessibilityRole="button">
+          <Ionicons name="settings-outline" size={18} color={PRIMARY} accessible={false} />
           <Text style={styles.manageBtnText}>Manage Subscription</Text>
         </TouchableOpacity>
       )}
 
-      <Text style={styles.sectionTitle}>What's included</Text>
+      <Text style={styles.sectionTitle} accessibilityRole="header">What's included</Text>
       {FEATURES.map((f, i) => (
         <View key={i} style={styles.featureRow}>
-          <Ionicons name={f.icon as any} size={18} color={PRIMARY} />
+          <Ionicons name={f.icon as any} size={18} color={PRIMARY} accessible={false} />
           <Text style={styles.featureText}>{f.text}</Text>
         </View>
       ))}
@@ -240,11 +240,11 @@ export default function SubscriptionScreen() {
       {showSubscribeButton && (
         rcSub.isReady && rcSub.isLoading ? (
           <View style={styles.unavailableCard}>
-            <ActivityIndicator color={PRIMARY} />
+            <ActivityIndicator color={PRIMARY} accessibilityLabel="Loading subscription options" />
           </View>
         ) : !purchasesAvailable ? (
           <View style={styles.unavailableCard}>
-            <Ionicons name="alert-circle-outline" size={22} color="#9ca3af" />
+            <Ionicons name="alert-circle-outline" size={22} color="#9ca3af" accessible={false} />
             <Text style={styles.unavailableTitle}>Purchases unavailable on this build</Text>
             <Text style={styles.unavailableText}>
               In-app purchases can't be made here. Install KKamera from the {STORE_NAME} to subscribe, or use Restore Purchases if you've already subscribed.
@@ -262,11 +262,14 @@ export default function SubscriptionScreen() {
               style={[styles.subscribeBtn, isPurchasing && styles.btnDisabled]}
               onPress={handleNativePurchase}
               disabled={isPurchasing}
+              accessibilityRole="button"
+              accessibilityLabel={isPurchasing ? "Purchasing" : `Subscribe, ${priceString} per ${period.unit}`}
+              accessibilityState={{ disabled: isPurchasing, busy: isPurchasing }}
             >
               {isPurchasing
                 ? <ActivityIndicator color="white" />
                 : <>
-                    <Ionicons name="bag-outline" size={18} color="white" />
+                    <Ionicons name="bag-outline" size={18} color="white" accessible={false} />
                     <Text style={styles.subscribeBtnText}>
                       {`Subscribe — ${priceString}/${period.unit}`}
                     </Text>
@@ -281,6 +284,9 @@ export default function SubscriptionScreen() {
         style={[styles.restoreBtn, rcSub.isRestoring && styles.btnDisabled]}
         onPress={handleRestore}
         disabled={rcSub.isRestoring}
+        accessibilityRole="button"
+        accessibilityLabel="Restore Purchases"
+        accessibilityState={{ disabled: rcSub.isRestoring, busy: rcSub.isRestoring }}
       >
         {rcSub.isRestoring
           ? <ActivityIndicator color={PRIMARY} size="small" />
@@ -294,33 +300,33 @@ export default function SubscriptionScreen() {
       </Text>
 
       <View style={styles.legalRow}>
-        <Text style={styles.legalLink} onPress={() => router.push("/settings/terms")}>Terms of Use</Text>
+        <Text style={styles.legalLink} onPress={() => router.push("/settings/terms")} accessibilityRole="link">Terms of Use</Text>
         <Text style={styles.legalSep}>·</Text>
-        <Text style={styles.legalLink} onPress={() => router.push("/settings/privacy")}>Privacy Policy</Text>
+        <Text style={styles.legalLink} onPress={() => router.push("/settings/privacy")} accessibilityRole="link">Privacy Policy</Text>
       </View>
 
-      <TouchableOpacity style={styles.referRow} onPress={() => router.push("/settings/affiliate")}>
-        <Ionicons name="people-outline" size={18} color={PRIMARY} />
+      <TouchableOpacity style={styles.referRow} onPress={() => router.push("/settings/affiliate")} accessibilityRole="button">
+        <Ionicons name="people-outline" size={18} color={PRIMARY} accessible={false} />
         <View style={{ flex: 1 }}>
           <Text style={styles.referTitle}>Refer & Earn</Text>
           <Text style={styles.referSub}>Earn a free year for every 5 friends who subscribe</Text>
         </View>
-        <Ionicons name="chevron-forward" size={16} color="#555" />
+        <Ionicons name="chevron-forward" size={16} color="#555" accessible={false} />
       </TouchableOpacity>
 
       {/* Native purchase confirmation modal */}
       <Modal visible={confirmVisible} transparent animationType="fade" onRequestClose={() => setConfirmVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Confirm Purchase</Text>
+            <Text style={styles.modalTitle} accessibilityRole="header">Confirm Purchase</Text>
             <Text style={styles.modalBody}>
               Subscribe to KKamera for {priceString} per {period.unit}?{"\n\n"}
               Payment is charged to your {STORE_NAME} account and renews automatically {period.adverb} unless cancelled at least 24 hours before the end of the current period.
             </Text>
-            <TouchableOpacity style={styles.modalConfirm} onPress={confirmPurchase}>
+            <TouchableOpacity style={styles.modalConfirm} onPress={confirmPurchase} accessibilityRole="button">
               <Text style={styles.modalConfirmText}>Subscribe — {priceString}/{period.unit}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setConfirmVisible(false)}>
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setConfirmVisible(false)} accessibilityRole="button">
               <Text style={styles.modalCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>

@@ -3,6 +3,8 @@
 // test/revenueCatMapping.test.ts). lib/revenueCatApi.ts turns a decision into the
 // actual DB write.
 
+import crypto from "node:crypto";
+
 const ENTITLEMENT = "pro"; // mirrors REVENUECAT_ENTITLEMENT_IDENTIFIER on the client
 
 // RevenueCat event types that grant or extend access.
@@ -29,8 +31,23 @@ export function allowSandboxIap(): boolean {
   return process.env["ALLOW_SANDBOX_IAP"] === "true";
 }
 
+/**
+ * Constant-time compare for the webhook shared secret. Comparing fixed-length
+ * SHA-256 digests means neither a length check nor timingSafeEqual leaks the
+ * secret's length.
+ */
+export function secretsEqual(provided: string, expected: string): boolean {
+  const a = crypto.createHash("sha256").update(provided).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 export interface RCEvent {
+  /** Unique event id; RevenueCat retries reuse the same id. */
+  id?: unknown;
   type?: unknown;
+  /** When RevenueCat generated the event (ms). Retries reuse it too. */
+  event_timestamp_ms?: unknown;
   app_user_id?: unknown;
   original_app_user_id?: unknown;
   aliases?: unknown;
@@ -49,15 +66,32 @@ export interface MapOptions {
 }
 
 // `referrals` is false for sandbox events: they may touch access (when allowed)
-// but must never complete or reverse a referral.
+// but must never complete or reverse a referral. `eventAt` is the webhook's
+// event_timestamp_ms (absent for REST snapshots and events that don't carry it)
+// and drives out-of-order protection in mergeDecision.
 export type RCDecision =
-  | { kind: "ignore"; reason: string }
-  | { kind: "grant"; userId: number; periodEnd: Date; referrals: boolean }
-  | { kind: "cancel"; userId: number; periodEnd: Date | null; referrals: boolean }
-  | { kind: "refund"; userId: number; periodEnd: Date; referrals: boolean }
-  | { kind: "past_due"; userId: number; periodEnd: Date | null; referrals: boolean }
-  | { kind: "expire"; userId: number; referrals: boolean }
+  | { kind: "ignore"; reason: string; userId?: number }
+  | { kind: "grant"; userId: number; periodEnd: Date; referrals: boolean; eventAt?: Date | null }
+  | { kind: "cancel"; userId: number; periodEnd: Date | null; referrals: boolean; eventAt?: Date | null }
+  | { kind: "refund"; userId: number; periodEnd: Date; referrals: boolean; eventAt?: Date | null }
+  | { kind: "past_due"; userId: number; periodEnd: Date | null; referrals: boolean; eventAt?: Date | null }
+  | { kind: "expire"; userId: number; referrals: boolean; eventAt?: Date | null }
   | { kind: "transfer"; fromUserIds: number[]; toUserIds: number[] };
+
+/**
+ * The event's idempotency key (`id`), or null when missing/malformed. Bounded
+ * so a hostile payload can't bloat the revenuecat_events table.
+ */
+export function eventIdOf(ev: RCEvent): string | null {
+  const id = ev?.id;
+  return typeof id === "string" && id.length > 0 && id.length <= 200 ? id : null;
+}
+
+/** When RevenueCat generated the event (`event_timestamp_ms`), or null. */
+export function eventTimeOf(ev: RCEvent): Date | null {
+  const ms = Number(ev?.event_timestamp_ms);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms) : null;
+}
 
 /** A valid positive-integer user id, or null (anonymous / malformed). */
 function toUserId(c: unknown): number | null {
@@ -121,30 +155,31 @@ export function mapRevenueCatEvent(ev: RCEvent, nowMs: number, opts: MapOptions)
 
   const userId = resolveUserId(ev);
   if (!userId) return { kind: "ignore", reason: "no numeric app_user_id" };
-  if (!touchesProEntitlement(ev)) return { kind: "ignore", reason: "not the pro entitlement" };
+  if (!touchesProEntitlement(ev)) return { kind: "ignore", reason: "not the pro entitlement", userId };
 
   const expMs = Number(ev.expiration_at_ms);
   const periodEnd = Number.isFinite(expMs) && expMs > 0 ? new Date(expMs) : null;
+  const eventAt = eventTimeOf(ev);
 
   if (GRANTING.has(ev.type)) {
-    if (!periodEnd) return { kind: "ignore", reason: "grant without expiration" };
-    return { kind: "grant", userId, periodEnd, referrals };
+    if (!periodEnd) return { kind: "ignore", reason: "grant without expiration", userId };
+    return { kind: "grant", userId, periodEnd, referrals, eventAt };
   }
   if (ev.type === "CANCELLATION") {
     // A refund ends access at the refund's expiration (which RevenueCat may send
     // as null/negative — then it ends now), never later.
     if (ev.cancel_reason === REFUND_CANCEL_REASON) {
-      return { kind: "refund", userId, periodEnd: periodEnd ?? new Date(nowMs), referrals };
+      return { kind: "refund", userId, periodEnd: periodEnd ?? new Date(nowMs), referrals, eventAt };
     }
-    return { kind: "cancel", userId, periodEnd, referrals };
+    return { kind: "cancel", userId, periodEnd, referrals, eventAt };
   }
-  if (ev.type === "BILLING_ISSUE") return { kind: "past_due", userId, periodEnd, referrals };
+  if (ev.type === "BILLING_ISSUE") return { kind: "past_due", userId, periodEnd, referrals, eventAt };
   if (ev.type === "EXPIRATION") {
     // Only expire if the entitlement has actually lapsed by now.
-    if (!periodEnd || periodEnd.getTime() <= nowMs) return { kind: "expire", userId, referrals };
-    return { kind: "ignore", reason: "future-dated expiration (stale)" };
+    if (!periodEnd || periodEnd.getTime() <= nowMs) return { kind: "expire", userId, referrals, eventAt };
+    return { kind: "ignore", reason: "future-dated expiration (stale)", userId };
   }
-  return { kind: "ignore", reason: "no state change for event type" };
+  return { kind: "ignore", reason: "no state change for event type", userId };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +190,23 @@ export interface MirrorRow {
   status: string;
   trialEnd: Date | null;
   currentPeriodEnd: Date | null;
+  /** Newest applied event time (subscriptions.last_event_at); null = none yet. */
+  lastEventAt?: Date | null;
+}
+
+export interface MergeOptions {
+  /**
+   * The decision comes from a REST snapshot (/subscriptions/sync, TRANSFER
+   * re-sync), not a webhook event: it describes the store state as of now, so
+   * it is never treated as stale and stamps lastEventAt with `now`.
+   */
+  snapshot?: boolean;
+}
+
+export interface MirrorWrite {
+  status: string;
+  currentPeriodEnd: Date | null;
+  lastEventAt: Date | null;
 }
 
 export type MirrorDecision = Extract<RCDecision, { kind: "grant" | "cancel" | "refund" | "past_due" | "expire" }>;
@@ -175,44 +227,89 @@ function existingAccessEnd(row: MirrorRow): Date | null {
 }
 
 /**
- * Compute the new {status, currentPeriodEnd} for a decision against the current
- * row (null = no row yet). Returns null when the decision must not write.
- * Period ends are forward-only (so out-of-order delivery and referral free years
- * are never shortened) — except a refund, which pins the end to the refund.
+ * The event time used for ordering: event_timestamp_ms clamped to `now`, so a
+ * bogus future timestamp (or clock skew) can never pin lastEventAt ahead of
+ * real time and block every later event.
+ */
+function effectiveEventAt(d: MirrorDecision, now: Date): Date | null {
+  const at = d.eventAt ?? null;
+  if (!at) return null;
+  return at > now ? now : at;
+}
+
+/**
+ * True when `d` is a webhook event OLDER than the newest event already applied
+ * to the row — i.e. delivered out of order (RevenueCat does not guarantee
+ * ordering). Equal timestamps are not stale; events without a timestamp and
+ * REST snapshots are never stale. Refunds are never stale: money went back, so
+ * the revocation always applies whatever else happened since.
+ */
+export function isStaleDecision(row: MirrorRow | null, d: MirrorDecision, now: Date, opts: MergeOptions = {}): boolean {
+  if (opts.snapshot || d.kind === "refund") return false;
+  const at = effectiveEventAt(d, now);
+  const last = row?.lastEventAt ?? null;
+  return !!(at && last && at < last);
+}
+
+/**
+ * Compute the new {status, currentPeriodEnd, lastEventAt} for a decision against
+ * the current row (null = no row yet). Returns null when the decision must not
+ * write. Period ends are forward-only (so out-of-order delivery and referral free
+ * years are never shortened) — except a refund, which pins the end to the refund.
+ *
+ * Ordering: a stale event (see isStaleDecision) never changes status — an old
+ * CANCELLATION / BILLING_ISSUE / EXPIRATION can't downgrade state set by a newer
+ * RENEWAL/UNCANCELLATION, and an old grant can't resurrect a newer cancel/expiry.
+ * The only thing a stale event may still do is extend the period end of a live
+ * paid row (active / past_due) — forward-only, so it can't cost the user access,
+ * and it never touches a cancelled/expired/trial row (which may be a refund's
+ * pinned end). Non-stale writes advance lastEventAt (never backwards, never
+ * beyond `now`); snapshots stamp it with `now`.
  */
 export function mergeDecision(
   row: MirrorRow | null,
   d: MirrorDecision,
   now: Date,
-): { status: string; currentPeriodEnd: Date | null } | null {
+  opts: MergeOptions = {},
+): MirrorWrite | null {
+  const lastEventAt = maxDate(row?.lastEventAt, opts.snapshot ? now : effectiveEventAt(d, now));
+
+  if (row && isStaleDecision(row, d, now, opts)) {
+    if (d.kind === "expire") return null;
+    if (row.status !== "active" && row.status !== "past_due") return null;
+    const end = maxDate(row.currentPeriodEnd, d.periodEnd);
+    if (!end || (row.currentPeriodEnd && end.getTime() === row.currentPeriodEnd.getTime())) return null;
+    return { status: row.status, currentPeriodEnd: end, lastEventAt: row.lastEventAt ?? null };
+  }
+
   const prevEnd = row ? existingAccessEnd(row) : null;
   switch (d.kind) {
     case "grant":
-      return { status: "active", currentPeriodEnd: maxDate(prevEnd, d.periodEnd) };
+      return { status: "active", currentPeriodEnd: maxDate(prevEnd, d.periodEnd), lastEventAt };
     case "cancel":
       // Auto-renew off; access continues until the (forward-only) period end.
-      return { status: "cancelled", currentPeriodEnd: maxDate(prevEnd, d.periodEnd) };
+      return { status: "cancelled", currentPeriodEnd: maxDate(prevEnd, d.periodEnd), lastEventAt };
     case "past_due":
       if (!row) return null; // nothing to mark past due
-      return { status: "past_due", currentPeriodEnd: maxDate(prevEnd, d.periodEnd) };
+      return { status: "past_due", currentPeriodEnd: maxDate(prevEnd, d.periodEnd), lastEventAt };
     case "expire": {
       if (!row) return null;
       // The store entitlement lapsed, but the row may still carry access past it
       // (a referral free year extended currentPeriodEnd, or the server trial is
       // still running). Keep that access instead of wiping it.
       if (row.status === "trial" && row.trialEnd && row.trialEnd > now) {
-        return { status: "trial", currentPeriodEnd: row.currentPeriodEnd };
+        return { status: "trial", currentPeriodEnd: row.currentPeriodEnd, lastEventAt };
       }
-      if (prevEnd && prevEnd > now) return { status: "cancelled", currentPeriodEnd: prevEnd };
-      return { status: "expired", currentPeriodEnd: row.currentPeriodEnd };
+      if (prevEnd && prevEnd > now) return { status: "cancelled", currentPeriodEnd: prevEnd, lastEventAt };
+      return { status: "expired", currentPeriodEnd: row.currentPeriodEnd, lastEventAt };
     }
     case "refund": {
       if (!row) return null; // nothing was granted, nothing to take back
       // Not forward-only: the refunded period is revoked. An unused server trial
       // (trialEnd is kept on the row) is restored rather than burned.
-      if (d.periodEnd > now) return { status: "cancelled", currentPeriodEnd: d.periodEnd };
-      if (row.trialEnd && row.trialEnd > now) return { status: "trial", currentPeriodEnd: d.periodEnd };
-      return { status: "expired", currentPeriodEnd: d.periodEnd };
+      if (d.periodEnd > now) return { status: "cancelled", currentPeriodEnd: d.periodEnd, lastEventAt };
+      if (row.trialEnd && row.trialEnd > now) return { status: "trial", currentPeriodEnd: d.periodEnd, lastEventAt };
+      return { status: "expired", currentPeriodEnd: d.periodEnd, lastEventAt };
     }
   }
 }

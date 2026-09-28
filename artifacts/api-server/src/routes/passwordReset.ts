@@ -5,10 +5,12 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq, and, gt, lt, isNull, count, sql } from "drizzle-orm";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
-import { newPasswordSchema, normalizedEmailSchema } from "../lib/accountRules.js";
+import {
+  newPasswordSchema, normalizedEmailSchema, RESET_EMAILS_PER_WINDOW, RESET_EMAIL_WINDOW_MS,
+} from "../lib/accountRules.js";
 
 const router = Router();
 
@@ -73,19 +75,45 @@ router.post("/auth/forgot-password", forgotPasswordLimiter, (req, res) => {
 
       const token = randomBytes(32).toString("hex");
       const tokenHash = hashToken(token);
-      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
 
-      // Invalidate any existing unused tokens for this user
-      await db
-        .delete(passwordResetTokensTable)
-        .where(
-          and(
+      // Per-account throttle (the per-IP limiter can't stop a distributed
+      // email-bomb of one victim): at most RESET_EMAILS_PER_WINDOW links per
+      // hour. Superseded tokens are voided (usedAt set) rather than deleted so
+      // they still count. The user row lock serialises concurrent requests so
+      // they can't all pass the count. Beyond the cap this silently no-ops —
+      // the response above is already sent and identical either way.
+      const issued = await db.transaction(async (tx) => {
+        await tx.select({ id: usersTable.id }).from(usersTable)
+          .where(eq(usersTable.id, user.id)).for("update");
+        const [recent] = await tx.select({ n: count() }).from(passwordResetTokensTable)
+          .where(and(
             eq(passwordResetTokensTable.userId, user.id),
-            isNull(passwordResetTokensTable.usedAt)
-          )
-        );
+            gt(passwordResetTokensTable.createdAt, new Date(now.getTime() - RESET_EMAIL_WINDOW_MS)),
+          ));
+        if ((recent?.n ?? 0) >= RESET_EMAILS_PER_WINDOW) return false;
 
-      await db.insert(passwordResetTokensTable).values({ userId: user.id, tokenHash, expiresAt });
+        // Invalidate any existing unused tokens for this user
+        await tx.update(passwordResetTokensTable)
+          .set({ usedAt: now })
+          .where(and(
+            eq(passwordResetTokensTable.userId, user.id),
+            isNull(passwordResetTokensTable.usedAt),
+          ));
+        // Housekeeping: old rows no longer matter for the throttle window.
+        await tx.delete(passwordResetTokensTable)
+          .where(and(
+            eq(passwordResetTokensTable.userId, user.id),
+            lt(passwordResetTokensTable.createdAt, new Date(now.getTime() - 24 * RESET_EMAIL_WINDOW_MS)),
+          ));
+        await tx.insert(passwordResetTokensTable).values({ userId: user.id, tokenHash, expiresAt });
+        return true;
+      });
+      if (!issued) {
+        req.log.warn({ userId: user.id }, "Password reset email suppressed (per-account limit)");
+        return;
+      }
 
       const resetUrl = `${getPublicBaseUrl()}/auth/reset-password?token=${token}`;
       await sendEmail({
@@ -132,7 +160,15 @@ router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
       if (!consumed) return null;
 
       await tx.update(usersTable)
-        .set({ passwordHash, passwordChangedAt: now })
+        .set({
+          passwordHash,
+          passwordChangedAt: now,
+          // Revoke every session and clear any sign-in lockout: the owner has
+          // just proven control of the mailbox.
+          tokenVersion: sql`${usersTable.tokenVersion} + 1`,
+          failedLoginCount: 0,
+          loginLockedUntil: null,
+        })
         .where(eq(usersTable.id, consumed.userId));
       return consumed.userId;
     });

@@ -4,12 +4,17 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
-import { eq, and, desc, inArray, isNull } from "drizzle-orm";
+import { eq, and, desc, inArray, isNull, ne } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
 import { fetchAccountIdentity } from "../lib/cloudIdentity.js";
 import { DEFAULT_UPLOAD_PATH, hasParentSegment, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
+import { purgeExpiredPendingConnections, revokeRemovedConnectionIfUnshared } from "../lib/cloudUpload.js";
+import {
+  PENDING_CONNECTION_TTL_MS, bindingHashFor, generateCallbackCode, generateOAuthNonce, hashOAuthNonce,
+  isPendingExpired, isWellFormedCallbackCode, isWellFormedNonce, isWellFormedNonceHash, pendingBindingHash,
+} from "../lib/oauthPending.js";
 
 const router = Router();
 
@@ -73,6 +78,13 @@ const PROVIDERS: Record<string, ProviderConfig> = {
 // ─── OAuth state (stateless, signed JWT) ─────────────────────────────────────
 // The state travels with the redirect as a short-lived signed token, so the
 // callback can land on any instance (autoscale) or survive a restart.
+//
+// The state names the initiating user, but that alone would let anyone who
+// sends their authorize URL to someone else link THAT person's cloud account
+// to their own KKamera account (account-linking CSRF). So the state also
+// carries the hash of a one-time nonce that only the initiating device holds,
+// and the callback just parks the tokens on a pending row that /oauth/complete
+// confirms — see lib/oauthPending.ts.
 
 interface OAuthState {
   userId: number;
@@ -81,6 +93,8 @@ interface OAuthState {
   platform: "web" | "native";
   uploadPath: string;
   verifier: string;
+  /** hashOAuthNonce(nonce) — the nonce itself stays on the initiating device. */
+  nonceHash: string;
 }
 
 function signState(s: OAuthState): string {
@@ -89,7 +103,7 @@ function signState(s: OAuthState): string {
     // query param through the OAuth provider and redirect URLs (logs, Referer),
     // so we encrypt the verifier — only our server can recover it, keeping PKCE's
     // proof-of-possession actually secret rather than readable in the JWT body.
-    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: encrypt(s.verifier) },
+    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: encrypt(s.verifier), nh: s.nonceHash },
     JWT_SECRET,
     { expiresIn: "10m" }
   );
@@ -105,6 +119,7 @@ function verifyState(state: string): OAuthState | null {
       platform: d["pf"] === "native" ? "native" : "web",
       uploadPath: d["up"] ?? "/KKamera",
       verifier: d["v"] ? decrypt(d["v"]) : "",
+      nonceHash: d["nh"] ?? "",
     };
   } catch {
     return null;
@@ -243,8 +258,13 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
     const platform = parsedBody.data.platform ?? "native";
     const uploadPath = normalizeUploadPath(parsedBody.data.uploadPath || DEFAULT_UPLOAD_PATH);
 
+    void purgeExpiredPendingConnections();
+
     const verifier = generateVerifier();
     const challenge = generateChallenge(verifier);
+    // Returned only to this (authenticated) caller; the app keeps it on the
+    // device and presents it to /oauth/complete. Only its hash is in the state.
+    const nonce = generateOAuthNonce();
 
     const state = signState({
       userId: req.userId!,
@@ -253,12 +273,13 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
       platform: platform === "native" ? "native" : "web",
       uploadPath,
       verifier,
+      nonceHash: hashOAuthNonce(nonce),
     });
 
     const redirectUri = getCallbackUrl(provider);
     const authorizeUrl = buildAuthorizeUrl(provider, cfg, redirectUri, state, challenge);
 
-    res.json({ authorizeUrl, state });
+    res.json({ authorizeUrl, state, nonce });
   } catch (err) {
     req.log.error({ err }, "OAuth initiate error");
     res.status(500).json({ message: "Failed to initiate OAuth" });
@@ -288,7 +309,7 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   if (error) { errorRedirect(error); return; }
   if (!code || !state) { errorRedirect("Missing code or state"); return; }
 
-  if (!entry || entry.provider !== provider) {
+  if (!entry || entry.provider !== provider || !isWellFormedNonceHash(entry.nonceHash)) {
     errorRedirect("Invalid or expired OAuth state — please try again");
     return;
   }
@@ -308,75 +329,38 @@ router.get("/oauth/:provider/callback", async (req, res) => {
     // provider can coexist as separate connections (best-effort; may be null).
     const identity = await fetchAccountIdentity(provider, tokens.access_token);
 
-    let conn: typeof cloudConnectionsTable.$inferSelect | undefined;
+    // Park the tokens on a PENDING row. It is not listed, never uploads and is
+    // not merged into an existing connection until /oauth/complete proves the
+    // request comes from the device that started this flow (initiate nonce)
+    // AND that this browser finished it (the one-time code minted here, which
+    // goes only into this redirect). Unconfirmed rows expire and are purged.
+    const callbackCode = generateCallbackCode();
+    const [pending] = await db.insert(cloudConnectionsTable).values({
+      userId: entry.userId,
+      type: provider,
+      name: entry.name,
+      uploadPath: entry.uploadPath,
+      accountId: identity.accountId,
+      accountLabel: identity.accountLabel,
+      accessTokenEncrypted: encrypt(tokens.access_token),
+      refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
+      tokenExpiry: expiry,
+      active: false,
+      pendingNonceHash: pendingBindingHash(entry.nonceHash, callbackCode),
+      pendingExpiresAt: new Date(Date.now() + PENDING_CONNECTION_TTL_MS),
+    }).returning({ id: cloudConnectionsTable.id });
 
-    // Reconnecting the SAME account refreshes that connection in place (keeps its
-    // id, so any saved upload-target selection stays valid) rather than stacking
-    // a duplicate. "Same account" is the provider's account id when the identity
-    // lookup worked; when it didn't, an unidentified connection of this provider
-    // with the same label/name. Any further matches are stale duplicates (e.g.
-    // rows the old code only deactivated, still holding live tokens) and are
-    // DELETED. Their grant is not revoked — it is the same account's grant the
-    // fresh tokens belong to. A different account falls through to an insert.
-    const sameAccount = identity.accountId
-      ? eq(cloudConnectionsTable.accountId, identity.accountId)
-      : and(
-          isNull(cloudConnectionsTable.accountId),
-          identity.accountLabel
-            ? eq(cloudConnectionsTable.accountLabel, identity.accountLabel)
-            : eq(cloudConnectionsTable.name, entry.name),
-        );
-    const matches = await db.select().from(cloudConnectionsTable).where(and(
-      eq(cloudConnectionsTable.userId, entry.userId),
-      eq(cloudConnectionsTable.type, provider),
-      sameAccount,
-    )).orderBy(desc(cloudConnectionsTable.active), desc(cloudConnectionsTable.createdAt));
+    if (!pending) { errorRedirect("Failed to save connection"); return; }
 
-    const [existing, ...superseded] = matches;
-    if (existing) {
-      [conn] = await db.update(cloudConnectionsTable).set({
-        name: entry.name,
-        uploadPath: entry.uploadPath,
-        accessTokenEncrypted: encrypt(tokens.access_token),
-        // Keep the prior refresh token if the provider didn't return a new one.
-        refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : existing.refreshToken,
-        tokenExpiry: expiry,
-        accountId: identity.accountId ?? existing.accountId,
-        accountLabel: identity.accountLabel ?? existing.accountLabel,
-        active: true,
-      }).where(eq(cloudConnectionsTable.id, existing.id)).returning();
-    }
-    if (superseded.length > 0) {
-      await db.delete(cloudConnectionsTable).where(and(
-        eq(cloudConnectionsTable.userId, entry.userId),
-        inArray(cloudConnectionsTable.id, superseded.map((c) => c.id)),
-      ));
-    }
-
-    if (!conn) {
-      [conn] = await db.insert(cloudConnectionsTable).values({
-        userId: entry.userId,
-        type: provider,
-        name: entry.name,
-        uploadPath: entry.uploadPath,
-        accountId: identity.accountId,
-        accountLabel: identity.accountLabel,
-        accessTokenEncrypted: encrypt(tokens.access_token),
-        refreshToken: tokens.refresh_token ? encrypt(tokens.refresh_token) : null,
-        tokenExpiry: expiry,
-        active: true,
-      }).returning();
-    }
-
-    if (!conn) { errorRedirect("Failed to save connection"); return; }
-
-    const nameEnc = encodeURIComponent(entry.name);
+    // Only non-secret values: the pending id, the provider, and the one-time
+    // code, which is useless without the nonce held by the initiating device.
+    const qs = `connectionId=${pending.id}&code=${encodeURIComponent(callbackCode)}&provider=${encodeURIComponent(provider)}`;
     if (entry.platform === "native") {
       // Deep link back into the native app
-      res.redirect(`kkamera://oauth-success?connectionId=${conn.id}&name=${nameEnc}&provider=${provider}`);
+      res.redirect(`kkamera://oauth-success?${qs}`);
     } else {
-      // Redirect to the success screen in the web/PWA app
-      res.redirect(`/oauth-success?connectionId=${conn.id}&name=${nameEnc}&provider=${provider}`);
+      // Redirect to the success screen in the web/PWA app, which completes it
+      res.redirect(`/oauth-success?${qs}`);
     }
   } catch (err: any) {
     req.log.error({ err }, "OAuth callback error");
@@ -385,6 +369,126 @@ router.get("/oauth/:provider/callback", async (req, res) => {
     // tokens, so it's safe to show — and gives the user (and support) an actionable
     // message instead of a dead-end "try again".
     errorRedirect(oauthErrorReason(err));
+  }
+});
+
+// POST /api/oauth/complete — authenticated; confirms a pending connection
+const completeSchema = z.object({
+  nonce: z.string().refine(isWellFormedNonce),
+  code: z.string().refine(isWellFormedCallbackCode),
+  connectionId: z.number().int().positive().optional(),
+});
+
+type ConnectionRow = typeof cloudConnectionsTable.$inferSelect;
+
+const COMPLETE_FAILED = "This connection request has expired or was started on another device. Please connect the account again from Settings.";
+
+router.post("/oauth/complete", requireAuth, async (req, res) => {
+  try {
+    const parsed = completeSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ message: "Invalid request" }); return; }
+    const { nonce, code, connectionId } = parsed.data;
+    const userId = req.userId!;
+    const binding = bindingHashFor(nonce, code);
+
+    void purgeExpiredPendingConnections();
+
+    // Looked up by (user, binding hash): a pending row created from someone
+    // else's authorize link belongs to that other user, and the binding needs
+    // both the initiator's nonce and this browser's callback code.
+    const [pending] = await db.select().from(cloudConnectionsTable).where(and(
+      eq(cloudConnectionsTable.userId, userId),
+      eq(cloudConnectionsTable.pendingNonceHash, binding),
+      connectionId ? eq(cloudConnectionsTable.id, connectionId) : undefined,
+    )).limit(1);
+    if (!pending) { res.status(404).json({ message: COMPLETE_FAILED }); return; }
+
+    if (isPendingExpired(pending.pendingExpiresAt)) {
+      const [gone] = await db.delete(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.id, pending.id),
+        eq(cloudConnectionsTable.pendingNonceHash, binding),
+      )).returning();
+      if (gone) void revokeRemovedConnectionIfUnshared(gone);
+      res.status(410).json({ message: COMPLETE_FAILED });
+      return;
+    }
+
+    const conn = await db.transaction(async (tx): Promise<ConnectionRow | undefined> => {
+      // Reconnecting the SAME account refreshes that connection in place (keeps
+      // its id, so any saved upload-target selection stays valid) rather than
+      // stacking a duplicate. "Same account" is the provider's account id when
+      // the identity lookup worked; when it didn't, an unidentified connection
+      // of this provider with the same label/name. Any further matches are stale
+      // duplicates (e.g. rows the old code only deactivated, still holding live
+      // tokens) and are DELETED. Their grant is not revoked — it is the same
+      // account's grant the fresh tokens belong to. A different account
+      // activates the pending row as a new connection.
+      const sameAccount = pending.accountId
+        ? eq(cloudConnectionsTable.accountId, pending.accountId)
+        : and(
+            isNull(cloudConnectionsTable.accountId),
+            pending.accountLabel
+              ? eq(cloudConnectionsTable.accountLabel, pending.accountLabel)
+              : eq(cloudConnectionsTable.name, pending.name),
+          );
+      const matches = await tx.select().from(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.userId, userId),
+        eq(cloudConnectionsTable.type, pending.type),
+        isNull(cloudConnectionsTable.pendingNonceHash),
+        ne(cloudConnectionsTable.id, pending.id),
+        sameAccount,
+      )).orderBy(desc(cloudConnectionsTable.active), desc(cloudConnectionsTable.createdAt));
+
+      const [existing, ...superseded] = matches;
+      if (!existing) {
+        // New account: confirm the pending row itself. Conditional on the
+        // binding so two concurrent completes can't both succeed.
+        const [activated] = await tx.update(cloudConnectionsTable).set({
+          active: true,
+          pendingNonceHash: null,
+          pendingExpiresAt: null,
+        }).where(and(
+          eq(cloudConnectionsTable.id, pending.id),
+          eq(cloudConnectionsTable.pendingNonceHash, binding),
+        )).returning();
+        return activated;
+      }
+
+      // Existing account: consume the pending row first (the claim), then move
+      // its tokens onto the existing connection.
+      const [claimed] = await tx.delete(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.id, pending.id),
+        eq(cloudConnectionsTable.pendingNonceHash, binding),
+      )).returning({ id: cloudConnectionsTable.id });
+      if (!claimed) return undefined;
+      const [updated] = await tx.update(cloudConnectionsTable).set({
+        name: pending.name,
+        uploadPath: pending.uploadPath,
+        accessTokenEncrypted: pending.accessTokenEncrypted,
+        // Keep the prior refresh token if the provider didn't return a new one.
+        refreshToken: pending.refreshToken ?? existing.refreshToken,
+        tokenExpiry: pending.tokenExpiry,
+        accountId: pending.accountId ?? existing.accountId,
+        accountLabel: pending.accountLabel ?? existing.accountLabel,
+        active: true,
+      }).where(eq(cloudConnectionsTable.id, existing.id)).returning();
+      // Deleted concurrently: roll back so the pending row survives and a
+      // retry activates it as a new connection instead of losing the tokens.
+      if (!updated) throw new Error("Connection to refresh disappeared during OAuth completion");
+      if (superseded.length > 0) {
+        await tx.delete(cloudConnectionsTable).where(and(
+          eq(cloudConnectionsTable.userId, userId),
+          inArray(cloudConnectionsTable.id, superseded.map((c) => c.id)),
+        ));
+      }
+      return updated;
+    });
+
+    if (!conn) { res.status(404).json({ message: COMPLETE_FAILED }); return; }
+    res.json({ connectionId: conn.id, type: conn.type, name: conn.name, accountLabel: conn.accountLabel ?? null });
+  } catch (err) {
+    req.log.error({ err }, "OAuth complete error");
+    res.status(500).json({ message: "Could not complete the connection. Please try again." });
   }
 });
 

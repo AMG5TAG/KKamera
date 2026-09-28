@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface TwoFAVerifyInput {
-  code: string;
+export interface PasswordConfirmInput {
+  /** The account's current password (re-authentication). */
+  password: string;
 }

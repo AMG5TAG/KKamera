@@ -30,6 +30,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  /readyz:
+    get:
+      operationId: readinessCheck
+      tags: [health]
+      summary: Readiness check
+      description: >-
+        200 once database migrations have been applied; 503 while they are still
+        running (status "pending") or after they have definitively failed
+        (status "failed"). /healthz stays 200 regardless (liveness).
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
   /auth/register:
     post:
       operationId: register
@@ -65,6 +88,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials or invalid 2FA code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: >-
+            Too many sign-in attempts (per-IP limit, or the account is
+            temporarily locked after repeated failures)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /auth/logout:
     post:
@@ -77,6 +114,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+
+  /auth/logout-all:
+    post:
+      operationId: logoutAll
+      tags: [auth]
+      summary: Sign out of all other devices
+      description: >-
+        Revokes every existing session for the account and returns a fresh
+        token so the calling device stays signed in.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Other sessions revoked; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
 
   /auth/forgot-password:
     post:
@@ -156,20 +211,7 @@ paths:
     post:
       operationId: setup2FA
       tags: [auth]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: 2FA setup info
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TwoFASetup"
-
-  /auth/2fa/verify:
-    post:
-      operationId: verify2FA
-      tags: [auth]
+      summary: Start 2FA setup (requires the current password)
       security:
         - BearerAuth: []
       requestBody:
@@ -177,10 +219,58 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TwoFAVerifyInput"
+              $ref: "#/components/schemas/PasswordConfirmInput"
       responses:
         "200":
-          description: 2FA verified
+          description: 2FA setup info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TwoFASetup"
+        "400":
+          description: Missing password, or 2FA already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password is incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/2fa/verify:
+    post:
+      operationId: verify2FA
+      tags: [auth]
+      summary: Enable 2FA (requires the current password and a TOTP code)
+      description: >-
+        Enabling 2FA signs out every other session; the response carries a
+        fresh token for this device.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TwoFAEnableInput"
+      responses:
+        "200":
+          description: 2FA enabled; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
+        "400":
+          description: Invalid input or code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password is incorrect
           content:
             application/json:
               schema:
@@ -190,6 +280,10 @@ paths:
     post:
       operationId: disable2FA
       tags: [auth]
+      summary: Disable 2FA (requires the current password and a TOTP or backup code)
+      description: >-
+        Disabling 2FA signs out every other session; the response carries a
+        fresh token for this device.
       security:
         - BearerAuth: []
       requestBody:
@@ -197,10 +291,22 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TwoFAVerifyInput"
+              $ref: "#/components/schemas/TwoFADisableInput"
       responses:
         "200":
-          description: 2FA disabled
+          description: 2FA disabled; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
+        "400":
+          description: Invalid input, or 2FA not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password or code is incorrect
           content:
             application/json:
               schema:
@@ -237,6 +343,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+    delete:
+      operationId: deleteMe
+      tags: [users]
+      summary: Permanently delete the account and all associated data
+      description: >-
+        Requires re-authentication: the current password, plus a TOTP or backup
+        code when 2FA is enabled. Wrong credentials are 403 (never 401).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteAccountInput"
+      responses:
+        "200":
+          description: Account deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: Missing password or 2FA code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password or 2FA code is incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /users/upload-target:
     get:
@@ -489,6 +629,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TestResult"
+        "404":
+          description: Connection not found (or still pending OAuth confirmation)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many connection tests (per-user limit, 10 per minute)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestResult"
 
   /uploads:
     get:
@@ -644,12 +796,16 @@ paths:
     get:
       operationId: oauthCallback
       tags: [oauth]
-      summary: OAuth provider redirect target; exchanges the code and stores the connection
+      summary: OAuth provider redirect target; exchanges the code and stores a pending connection
       description: >-
         Browser redirect target for the provider (not called programmatically by
         the client). The provider appends `code` + `state` query params on success
-        or `error` on failure; the server exchanges the code, stores the
-        connection, and 302-redirects to the app.
+        or `error` on failure; the server exchanges the code, stores the tokens on
+        a PENDING connection (inactive, not listed, never used for uploads, expires
+        after 10 minutes) and 302-redirects to the app with `connectionId` (the
+        pending id), `code` (a one-time callback code) and `provider`. The app
+        must then call POST /oauth/complete with that code and the nonce from
+        /oauth/{provider}/initiate to confirm the connection.
       parameters:
         - name: provider
           in: path
@@ -661,9 +817,56 @@ paths:
         "302":
           description: >-
             Redirect to the app success screen (/oauth-success), the native deep
-            link (kkamera://oauth-success), or the error screen
+            link (kkamera://oauth-success) — both carrying connectionId, code and
+            provider for POST /oauth/complete — or the error screen
             (kkamera://oauth-error, or /oauth-error for web flows). When the
             state cannot be verified, errors default to the native deep link.
+
+  /oauth/complete:
+    post:
+      operationId: completeOAuth
+      tags: [oauth]
+      summary: Confirm a pending OAuth connection from the device that started the flow
+      description: >-
+        Binds the OAuth result to the initiating device: requires the `nonce`
+        returned by /oauth/{provider}/initiate (kept on the device) and the
+        one-time `code` from the callback redirect. On success the pending row is
+        either activated as a new connection or, when the same provider account
+        is already connected, its tokens are moved onto that connection and the
+        pending row is removed.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthCompleteInput"
+      responses:
+        "200":
+          description: Connection confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthCompleteResult"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "404":
+          description: No matching pending connection for this user (wrong device, already completed, or purged)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "410":
+          description: The pending connection expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /oauth/status:
     get:
@@ -851,12 +1054,44 @@ components:
 
     OAuthInitiateResult:
       type: object
-      required: [authorizeUrl, state]
+      required: [authorizeUrl, state, nonce]
       properties:
         authorizeUrl:
           type: string
         state:
           type: string
+        nonce:
+          type: string
+          description: >-
+            One-time secret for POST /oauth/complete. Keep it on the device that
+            started the flow; never put it in a URL.
+
+    OAuthCompleteInput:
+      type: object
+      required: [nonce, code]
+      properties:
+        nonce:
+          type: string
+          description: The nonce returned by /oauth/{provider}/initiate
+        code:
+          type: string
+          description: The one-time `code` from the callback redirect
+        connectionId:
+          type: integer
+          description: The pending `connectionId` from the callback redirect
+
+    OAuthCompleteResult:
+      type: object
+      required: [connectionId, type, name, accountLabel]
+      properties:
+        connectionId:
+          type: integer
+        type:
+          type: string
+        name:
+          type: string
+        accountLabel:
+          type: ["string", "null"]
 
     OAuthNotConfigured:
       type: object
@@ -1165,12 +1400,58 @@ components:
           items:
             type: string
 
-    TwoFAVerifyInput:
+    PasswordConfirmInput:
       type: object
-      required: [code]
+      required: [password]
+      properties:
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+
+    TwoFAEnableInput:
+      type: object
+      required: [code, password]
       properties:
         code:
           type: string
+          description: 6-digit TOTP from the authenticator app.
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+
+    TwoFADisableInput:
+      type: object
+      required: [code, password]
+      properties:
+        code:
+          type: string
+          description: 6-digit TOTP or a backup code.
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+
+    DeleteAccountInput:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+        totpCode:
+          type: ["string", "null"]
+          description: Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+
+    SessionRefreshResponse:
+      type: object
+      required: [message, token, user]
+      properties:
+        message:
+          type: string
+        token:
+          type: string
+          description: Fresh session token — other sessions have been revoked.
+        user:
+          $ref: "#/components/schemas/User"
 
     Subscription:
       type: object

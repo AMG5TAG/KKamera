@@ -136,12 +136,12 @@ export default function HistoryScreen() {
     return (
       <View key={item.id} style={styles.card}>
         <View style={[styles.typeIcon, { backgroundColor: cfg.color + "22" }]}>
-          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} />
+          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} accessible={false} />
         </View>
         <View style={styles.cardBody}>
           <Text style={styles.fileName} numberOfLines={1}>{item.fileName}</Text>
           <View style={styles.metaRow}>
-            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} />
+            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} accessible={false} />
             <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
             <Text style={styles.dotSep}>·</Text>
             <Text style={styles.dateText}>{formatDate(new Date(item.createdAt).toISOString())}</Text>
@@ -156,13 +156,25 @@ export default function HistoryScreen() {
           )}
         </View>
         {uploading ? (
-          <ActivityIndicator size="small" color={PRIMARY} style={styles.deleteBtn} />
+          <ActivityIndicator size="small" color={PRIMARY} style={styles.deleteBtn} accessibilityLabel="Uploading" />
         ) : (
           <>
-            <TouchableOpacity style={styles.deleteBtn} onPress={() => retryItem(item.id)} accessibilityLabel="Retry upload">
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => retryItem(item.id)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Retry upload of ${item.fileName}`}
+            >
               <Ionicons name="refresh-outline" size={18} color={PRIMARY} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDiscard(item)} accessibilityLabel="Discard capture">
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => handleDiscard(item)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Discard ${item.fileName}`}
+            >
               <Ionicons name="trash-outline" size={18} color="#ef4444" />
             </TouchableOpacity>
           </>
@@ -183,17 +195,17 @@ export default function HistoryScreen() {
   if (!settings.recordHistory) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
         {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
         <View style={styles.center}>
-          <Ionicons name="eye-off-outline" size={48} color="#333" />
+          <Ionicons name="eye-off-outline" size={48} color="#333" accessible={false} />
           <Text style={styles.emptyTitle}>History is disabled</Text>
           <Text style={styles.emptyText}>
             Enable "Record History" in Settings → Upload to start tracking uploads.
           </Text>
-          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload" as any)}>
+          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload" as any)} accessibilityRole="button">
             <Text style={styles.settingsBtnText}>Open Upload Settings</Text>
           </TouchableOpacity>
         </View>
@@ -209,12 +221,12 @@ export default function HistoryScreen() {
     return (
       <View style={[styles.card, isDeleting && { opacity: 0.5 }]}>
         <View style={[styles.typeIcon, { backgroundColor: cfg.color + "22" }]}>
-          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} />
+          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} accessible={false} />
         </View>
         <View style={styles.cardBody}>
           <Text style={styles.fileName} numberOfLines={1}>{item.fileName}</Text>
           <View style={styles.metaRow}>
-            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} />
+            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} accessible={false} />
             <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
             <Text style={styles.dotSep}>·</Text>
             <Text style={styles.dateText}>{formatDate(item.createdAt)}</Text>
@@ -227,6 +239,10 @@ export default function HistoryScreen() {
           style={styles.deleteBtn}
           onPress={() => handleDelete(item.id, item.fileName)}
           disabled={isDeleting}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${item.fileName} from history`}
+          accessibilityState={{ disabled: isDeleting, busy: isDeleting }}
         >
           {isDeleting
             ? <ActivityIndicator size="small" color="#ef4444" />
@@ -240,17 +256,25 @@ export default function HistoryScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
-        <Text style={styles.heading}>Upload History</Text>
+        <Text style={styles.heading} accessibilityRole="header">Upload History</Text>
         {visible.length > 0 && (
-          <TouchableOpacity onPress={handleClearAll} disabled={isClearing} style={styles.clearAllBtn}>
+          <TouchableOpacity
+            onPress={handleClearAll}
+            disabled={isClearing}
+            style={styles.clearAllBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="Clear all upload history"
+            accessibilityState={{ disabled: isClearing, busy: isClearing }}
+          >
             {isClearing
               ? <ActivityIndicator size="small" color="#ef4444" />
               : (
                 <>
-                  <Ionicons name="trash-outline" size={15} color="#ef4444" />
+                  <Ionicons name="trash-outline" size={15} color="#ef4444" accessible={false} />
                   <Text style={styles.clearAllText}>Clear</Text>
                 </>
               )
@@ -280,11 +304,11 @@ export default function HistoryScreen() {
           ) : null}
           ListEmptyComponent={(
             <View style={styles.emptyWrap}>
-              <Ionicons name="cloud-upload-outline" size={52} color="#333" />
+              <Ionicons name="cloud-upload-outline" size={52} color="#333" accessible={false} />
               <Text style={styles.emptyTitle}>No uploads yet</Text>
               <Text style={styles.emptyText}>Photos, videos, and scans you upload will appear here.</Text>
-              <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera" as any)}>
-                <Ionicons name="camera-outline" size={18} color="white" />
+              <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera" as any)} accessibilityRole="button">
+                <Ionicons name="camera-outline" size={18} color="white" accessible={false} />
                 <Text style={styles.cameraBtnText}>Open Camera</Text>
               </TouchableOpacity>
             </View>

@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
 import router from "./routes/index.js";
+import { requireMigratedSchema } from "./routes/health.js";
 import { logger } from "./lib/logger.js";
 import { getPublicHost } from "./lib/appUrl.js";
 
@@ -80,6 +81,9 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
+// After a definitive migration failure every /api route except healthz/readyz
+// answers 503 instead of running against a stale schema.
+app.use("/api", requireMigratedSchema);
 app.use("/api", router);
 
 // Central error handler — catches CORS rejections, multer errors (e.g. a file

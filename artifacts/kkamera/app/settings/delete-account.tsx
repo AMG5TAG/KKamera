@@ -5,8 +5,8 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { deleteMe, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { API_BASE_URL } from "@/lib/config";
 import { useUpload } from "@/contexts/UploadContext";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useSettings } from "@/contexts/SettingsContext";
@@ -18,38 +18,63 @@ const BG = "#0d0b08";
 const CARD = "#1a1710";
 const DANGER = "#ef4444";
 
-const BASE = API_BASE_URL;
+/** Strip spaces/dashes and uppercase — backup codes are 8 hex chars, compared uppercase by the server. */
+function normaliseCode(input: string): string {
+  return input.replace(/[\s-]/g, "").toUpperCase();
+}
 
 export default function DeleteAccountScreen() {
   const insets = useSafeAreaInsets();
-  const { token, logout } = useAuth();
+  const { user, logout } = useAuth();
   const { customerInfo, isSubscribed } = useSubscription();
   const { discardQueue } = useUpload();
   const { resetSettings } = useSettings();
   const [confirm, setConfirm] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const needs2FA = user?.twoFAEnabled ?? false;
+  const confirmed = confirm.toLowerCase() === "delete my account";
+
   const handleDelete = async () => {
-    if (confirm.toLowerCase() !== "delete my account") {
+    if (!confirmed) {
       Alert.alert("Confirmation required", "Type 'delete my account' exactly to confirm.");
       return;
     }
+    if (!password) {
+      Alert.alert("Password required", "Enter your current password to delete your account.");
+      return;
+    }
+    const totp = normaliseCode(code);
+    if (needs2FA && !/^\d{6}$/.test(totp) && !/^[0-9A-F]{8}$/.test(totp)) {
+      Alert.alert("Code required", "Enter the 6-digit code from your authenticator app, or a backup code.");
+      return;
+    }
     setLoading(true);
+    let deleted = false;
     try {
-      const res = await fetch(`${BASE}/api/users/me`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error("Delete failed");
-      await discardQueue();
+      // Re-authentication: wrong credentials come back as 400/403 (never 401),
+      // so a typo shows a message instead of signing the user out.
+      await deleteMe({ password, totpCode: needs2FA ? totp : null });
+      deleted = true;
+    } catch (e) {
+      Alert.alert(
+        "Couldn't delete account",
+        getUserFacingMessage(e, "Could not delete account. Please contact development@koastal.com.au."),
+      );
+    }
+    if (!deleted) { setLoading(false); return; }
+    try {
+      await discardQueue().catch(() => {});
       // The account is gone — don't let the next person on this device inherit
       // its app-lock PIN, witness email or other device settings.
       await clearPin().catch(() => {});
       await resetSettings().catch(() => {});
-      await logout(); // the root routing guard then shows the login screen
-    } catch {
-      Alert.alert("Error", "Could not delete account. Please contact development@koastal.com.au.");
     } finally {
+      // The account is gone server-side: always end the session, even if a
+      // local cleanup step failed.
+      await logout(); // the root routing guard then shows the login screen
       setLoading(false);
     }
   };
@@ -118,10 +143,43 @@ export default function DeleteAccountScreen() {
           autoCapitalize="none"
         />
 
+        <Text style={styles.confirmLabel}>Current password:</Text>
+        <TextInput
+          style={styles.confirmInput}
+          placeholder="Enter your password"
+          placeholderTextColor="#444"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="current-password"
+          textContentType="password"
+        />
+
+        {needs2FA && (
+          <>
+            <Text style={styles.confirmLabel}>Authenticator code or backup code:</Text>
+            <TextInput
+              style={styles.confirmInput}
+              placeholder="000000"
+              placeholderTextColor="#444"
+              value={code}
+              onChangeText={setCode}
+              keyboardType="default"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="one-time-code"
+              textContentType="oneTimeCode"
+              maxLength={10}
+            />
+          </>
+        )}
+
         <TouchableOpacity
-          style={[styles.deleteBtn, (loading || confirm.toLowerCase() !== "delete my account") && styles.deleteBtnDisabled]}
+          style={[styles.deleteBtn, (loading || !confirmed || !password) && styles.deleteBtnDisabled]}
           onPress={handleDelete}
-          disabled={loading || confirm.toLowerCase() !== "delete my account"}
+          disabled={loading || !confirmed || !password}
         >
           <Ionicons name="trash-outline" size={18} color="white" />
           <Text style={styles.deleteBtnText}>{loading ? "Deleting..." : "Delete My Account"}</Text>

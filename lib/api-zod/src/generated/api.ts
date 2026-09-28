@@ -14,6 +14,14 @@ export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
 
+/**
+ * 200 once database migrations have been applied; 503 while they are still running (status "pending") or after they have definitively failed (status "failed"). /healthz stays 200 regardless (liveness).
+ * @summary Readiness check
+ */
+export const ReadinessCheckResponse = zod.object({
+  status: zod.string(),
+});
+
 export const RegisterBody = zod.object({
   email: zod.string(),
   password: zod.string(),
@@ -42,6 +50,26 @@ export const LoginResponse = zod.object({
 
 export const LogoutResponse = zod.object({
   message: zod.string(),
+});
+
+/**
+ * Revokes every existing session for the account and returns a fresh token so the calling device stays signed in.
+ * @summary Sign out of all other devices
+ */
+export const LogoutAllResponse = zod.object({
+  message: zod.string(),
+  token: zod
+    .string()
+    .describe("Fresh session token — other sessions have been revoked."),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
 });
 
 export const ForgotPasswordBody = zod.object({
@@ -96,26 +124,73 @@ export const ChangePasswordResponse = zod.object({
   }),
 });
 
+/**
+ * @summary Start 2FA setup (requires the current password)
+ */
+export const Setup2FABody = zod.object({
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
+});
+
 export const Setup2FAResponse = zod.object({
   secret: zod.string(),
   qrCodeUrl: zod.string(),
   backupCodes: zod.array(zod.string()),
 });
 
+/**
+ * Enabling 2FA signs out every other session; the response carries a fresh token for this device.
+ * @summary Enable 2FA (requires the current password and a TOTP code)
+ */
 export const Verify2FABody = zod.object({
-  code: zod.string(),
+  code: zod.string().describe("6-digit TOTP from the authenticator app."),
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
 });
 
 export const Verify2FAResponse = zod.object({
   message: zod.string(),
+  token: zod
+    .string()
+    .describe("Fresh session token — other sessions have been revoked."),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
 });
 
+/**
+ * Disabling 2FA signs out every other session; the response carries a fresh token for this device.
+ * @summary Disable 2FA (requires the current password and a TOTP or backup code)
+ */
 export const Disable2FABody = zod.object({
-  code: zod.string(),
+  code: zod.string().describe("6-digit TOTP or a backup code."),
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
 });
 
 export const Disable2FAResponse = zod.object({
   message: zod.string(),
+  token: zod
+    .string()
+    .describe("Fresh session token — other sessions have been revoked."),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
 });
 
 export const GetMeResponse = zod.object({
@@ -141,6 +216,26 @@ export const UpdateMeResponse = zod.object({
   twoFAEnabled: zod.boolean(),
   onboardingCompleted: zod.boolean(),
   createdAt: zod.string(),
+});
+
+/**
+ * Requires re-authentication: the current password, plus a TOTP or backup code when 2FA is enabled. Wrong credentials are 403 (never 401).
+ * @summary Permanently delete the account and all associated data
+ */
+export const DeleteMeBody = zod.object({
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
+  totpCode: zod
+    .string()
+    .nullish()
+    .describe(
+      "Required when 2FA is enabled — a 6-digit TOTP or a backup code.",
+    ),
+});
+
+export const DeleteMeResponse = zod.object({
+  message: zod.string(),
 });
 
 export const GetUploadTargetResponse = zod.object({
@@ -498,14 +593,41 @@ export const InitiateOAuthBody = zod.object({
 export const InitiateOAuthResponse = zod.object({
   authorizeUrl: zod.string(),
   state: zod.string(),
+  nonce: zod
+    .string()
+    .describe(
+      "One-time secret for POST \/oauth\/complete. Keep it on the device that started the flow; never put it in a URL.",
+    ),
 });
 
 /**
- * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the connection, and 302-redirects to the app.
- * @summary OAuth provider redirect target; exchanges the code and stores the connection
+ * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the tokens on a PENDING connection (inactive, not listed, never used for uploads, expires after 10 minutes) and 302-redirects to the app with `connectionId` (the pending id), `code` (a one-time callback code) and `provider`. The app must then call POST /oauth/complete with that code and the nonce from /oauth/{provider}/initiate to confirm the connection.
+ * @summary OAuth provider redirect target; exchanges the code and stores a pending connection
  */
 export const OauthCallbackParams = zod.object({
   provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
+});
+
+/**
+ * Binds the OAuth result to the initiating device: requires the `nonce` returned by /oauth/{provider}/initiate (kept on the device) and the one-time `code` from the callback redirect. On success the pending row is either activated as a new connection or, when the same provider account is already connected, its tokens are moved onto that connection and the pending row is removed.
+ * @summary Confirm a pending OAuth connection from the device that started the flow
+ */
+export const CompleteOAuthBody = zod.object({
+  nonce: zod
+    .string()
+    .describe("The nonce returned by \/oauth\/{provider}\/initiate"),
+  code: zod.string().describe("The one-time `code` from the callback redirect"),
+  connectionId: zod
+    .number()
+    .optional()
+    .describe("The pending `connectionId` from the callback redirect"),
+});
+
+export const CompleteOAuthResponse = zod.object({
+  connectionId: zod.number(),
+  type: zod.string(),
+  name: zod.string(),
+  accountLabel: zod.string().nullable(),
 });
 
 /**

@@ -16,15 +16,21 @@ function SettingRow({
   icon: string; iconColor?: string; label: string; hint?: string; onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole="button"
+      accessibilityLabel={hint ? `${label}, ${hint}` : label}
+    >
       <View style={[styles.iconWrap, { backgroundColor: (iconColor ?? PRIMARY) + "22" }]}>
-        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
+        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} accessible={false} />
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
         {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
       </View>
-      <Ionicons name="chevron-forward" size={15} color="#444" />
+      <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
     </TouchableOpacity>
   );
 }
@@ -38,7 +44,7 @@ function ToggleRow({
   return (
     <View style={styles.row}>
       <View style={[styles.iconWrap, { backgroundColor: (iconColor ?? PRIMARY) + "22" }]}>
-        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
+        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} accessible={false} />
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
@@ -47,6 +53,8 @@ function ToggleRow({
       <Switch
         value={value}
         onValueChange={onToggle}
+        accessibilityLabel={label}
+        accessibilityHint={hint}
         trackColor={{ false: "#2a2720", true: PRIMARY }}
         thumbColor="white"
         ios_backgroundColor="#2a2720"
@@ -61,7 +69,14 @@ function RadioRow({
   label: string; hint?: string; selected: boolean; onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole="radio"
+      accessibilityLabel={hint ? `${label}, ${hint}` : label}
+      accessibilityState={{ checked: selected, selected }}
+    >
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
         {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
@@ -79,8 +94,8 @@ export default function UploadScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView
@@ -94,7 +109,7 @@ export default function UploadScreen() {
           <ToggleRow
             icon="time-outline"
             label="Record Upload History"
-            hint="Track and view past uploads"
+            hint="Keep a list of past uploads. The camera always shows upload status and failures."
             value={settings.recordHistory}
             onToggle={v => updateSetting("recordHistory", v)}
           />

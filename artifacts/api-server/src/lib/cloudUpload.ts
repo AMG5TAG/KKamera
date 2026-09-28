@@ -1,13 +1,14 @@
 import { Client as FtpClient } from "basic-ftp";
 import { createClient as createWebdavClient } from "webdav";
-import { Readable } from "stream";
+import fs from "fs";
+import type { FileHandle } from "fs/promises";
 import dns from "dns";
 import { randomUUID } from "crypto";
 import net from "net";
 import type { ConnectionOptions as TlsConnectionOptions } from "tls";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
 import { logger } from "./logger.js";
 import { encrypt, decrypt, decryptCredential } from "./crypto.js";
 import { isPrivateIp, SafeHttpAgent, SafeHttpsAgent } from "./ssrf.js";
@@ -84,7 +85,7 @@ async function assertPublicHost(rawHost: string): Promise<{ hostname: string; pi
 
 // ─── Deadlines ────────────────────────────────────────────────────────────────
 // Every outbound call is bounded: a remote that accepts the connection and then
-// stalls must not pin an upload slot (and the file's Buffer) forever.
+// stalls must not pin an upload slot (and its open file / chunk buffer) forever.
 
 /** `signal` combined with a per-request timeout for small control calls. */
 function controlSignal(signal?: AbortSignal): AbortSignal {
@@ -112,6 +113,44 @@ export interface CloudConn {
 }
 
 export type UploadResult = { connectionId: number; success: boolean; error?: string };
+
+/**
+ * The file to upload, on local disk (multer's temp file). Providers stream it
+ * or read it one chunk at a time, so a large video is never held in memory
+ * whole — only small single-request uploads read the file into a Buffer.
+ */
+export interface UploadSource {
+  path: string;
+  size: number;
+}
+
+/** Read the whole file — only for the small single-request paths (≤ 8 MB). */
+function readSmallFile(src: UploadSource): Promise<Buffer> {
+  return fs.promises.readFile(src.path);
+}
+
+/** Run `fn` with a read-only handle on the source file, always closed after. */
+async function withSourceFile<T>(src: UploadSource, fn: (fh: FileHandle) => Promise<T>): Promise<T> {
+  const fh = await fs.promises.open(src.path, "r");
+  try {
+    return await fn(fh);
+  } finally {
+    await fh.close().catch(() => undefined);
+  }
+}
+
+/** Read bytes [start, end) — one chunk in memory at a time. */
+async function readRange(fh: FileHandle, start: number, end: number): Promise<Buffer> {
+  const len = end - start;
+  const buf = Buffer.allocUnsafe(len);
+  let off = 0;
+  while (off < len) {
+    const { bytesRead } = await fh.read(buf, off, len - off, start + off);
+    if (bytesRead === 0) throw new Error("Upload file is shorter than expected");
+    off += bytesRead;
+  }
+  return buf;
+}
 
 
 // ─── OAuth Auto-Refresh ───────────────────────────────────────────────────────
@@ -290,7 +329,7 @@ async function withFtpClient<T>(timeoutMs: number, signal: AbortSignal, fn: (cli
   }
 }
 
-async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
+async function uploadFtp(conn: CloudConn, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
   await withFtpClient(20_000, signal, async (client) => {
     await ftpConnect(client, conn);
     // ensureDir() walks (creating as needed) into the directory and LEAVES the
@@ -300,7 +339,14 @@ async function uploadFtp(conn: CloudConn, buf: Buffer, fileName: string, signal:
     const dir = normalizeUploadPath(conn.uploadPath);
     if (dir === "/") await client.cd("/");
     else if (dir) await client.ensureDir(dir);
-    await client.uploadFrom(Readable.from(buf), fileName);
+    // Streamed from disk; destroyed on every path (incl. the deadline closing
+    // the client mid-transfer) so the file descriptor is never leaked.
+    const stream = fs.createReadStream(src.path);
+    try {
+      await client.uploadFrom(stream, fileName);
+    } finally {
+      stream.destroy();
+    }
   });
 }
 
@@ -351,7 +397,7 @@ async function webdavClientFor(conn: CloudConn, baseUrl: string) {
   };
 }
 
-async function uploadWebdavTo(conn: CloudConn, baseUrl: string, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
+async function uploadWebdavTo(conn: CloudConn, baseUrl: string, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
   const { client, dispose } = await webdavClientFor(conn, baseUrl);
   try {
     const segments = uploadPathSegments(conn.uploadPath);
@@ -359,8 +405,24 @@ async function uploadWebdavTo(conn: CloudConn, baseUrl: string, buf: Buffer, fil
     if (segments.length > 0 && !(await client.exists(dir, { signal: controlSignal(signal) }))) {
       await client.createDirectory(dir, { recursive: true, signal: controlSignal(signal) });
     }
-    const ok = await client.putFileContents(joinRemotePath(segments, fileName), buf, { overwrite: true, signal });
-    if (ok === false) throw new Error("WebDAV server refused the upload");
+    // Streamed from disk. webdav 5 skips Content-Length for a stream body (and
+    // ignores its `contentLength` option then), so set the header explicitly —
+    // many servers (nginx, some NAS firmware) refuse chunked PUTs. A stream
+    // body also can't be re-sent, so node-fetch fails a 307/308 redirect
+    // instead of following it (the host-locked agents already block cross-host
+    // ones). Auth is Basic up-front (AuthType.Password), so there is no 401
+    // challenge retry that would need to replay the body.
+    const stream = fs.createReadStream(src.path);
+    try {
+      const ok = await client.putFileContents(joinRemotePath(segments, fileName), stream, {
+        overwrite: true,
+        signal,
+        headers: { "Content-Length": String(src.size) },
+      });
+      if (ok === false) throw new Error("WebDAV server refused the upload");
+    } finally {
+      stream.destroy();
+    }
   } finally {
     dispose();
   }
@@ -396,8 +458,8 @@ async function testWebdavAt(
   }
 }
 
-async function uploadWebdav(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
-  await uploadWebdavTo(conn, webdavBaseUrl(conn.host, conn.port), buf, fileName, signal);
+async function uploadWebdav(conn: CloudConn, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
+  await uploadWebdavTo(conn, webdavBaseUrl(conn.host, conn.port), src, fileName, signal);
 }
 
 async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message: string }> {
@@ -418,8 +480,8 @@ async function testWebdav(conn: CloudConn): Promise<{ success: boolean; message:
 // Credentials should be an app password (Settings → Security), which is what
 // keeps working when the account has 2FA enabled.
 
-async function uploadNextcloud(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
-  await uploadWebdavTo(conn, nextcloudDavUrl(conn.host, conn.username, conn.port), buf, fileName, signal);
+async function uploadNextcloud(conn: CloudConn, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
+  await uploadWebdavTo(conn, nextcloudDavUrl(conn.host, conn.username, conn.port), src, fileName, signal);
 }
 
 async function testNextcloud(conn: CloudConn): Promise<{ success: boolean; message: string }> {
@@ -556,8 +618,8 @@ async function driveMultipartUpload(token: string, meta: object, buf: Buffer, mi
  * persisted (Range: bytes=0-N) and the next chunk starts there, so a partially
  * accepted chunk is re-sent from the right offset rather than assumed done.
  */
-async function driveResumableUpload(token: string, meta: object, buf: Buffer, mimeType: string, signal: AbortSignal): Promise<void> {
-  const total = buf.length;
+async function driveResumableUpload(token: string, meta: object, src: UploadSource, mimeType: string, signal: AbortSignal): Promise<void> {
+  const total = src.size;
   const init = await fetch(`${DRIVE_UPLOAD}?uploadType=resumable&fields=id`, {
     method: "POST",
     headers: {
@@ -575,32 +637,38 @@ async function driveResumableUpload(token: string, meta: object, buf: Buffer, mi
     throw new Error("Google Drive did not return a resumable session URL");
   }
 
-  let offset = 0;
-  let stalls = 0;
-  while (offset < total) {
-    const end = Math.min(total, offset + DRIVE_CHUNK_SIZE);
-    const res = await fetch(sessionUrl, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Range": `bytes ${offset}-${end - 1}/${total}`,
-      },
-      body: buf.subarray(offset, end),
-      // 308 here means "Resume Incomplete", not a redirect.
-      redirect: "manual",
-      signal,
-    });
-    if (res.status === 200 || res.status === 201) return;
-    if (res.status !== 308) await failResponse(res, "Google Drive resumable upload");
-    await res.body?.cancel().catch(() => undefined);
-    const next = driveNextOffset(res.headers.get("range"));
-    if (next <= offset) {
-      if (++stalls >= 3) throw new Error("Google Drive resumable upload made no progress");
-    } else {
-      stalls = 0;
+  const done = await withSourceFile(src, async (fh) => {
+    let offset = 0;
+    let stalls = 0;
+    while (offset < total) {
+      const end = Math.min(total, offset + DRIVE_CHUNK_SIZE);
+      const res = await fetch(sessionUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Range": `bytes ${offset}-${end - 1}/${total}`,
+        },
+        // Read from disk per chunk (a 308 may rewind `offset`, so chunks are
+        // re-read rather than sliced from one whole-file Buffer).
+        body: await readRange(fh, offset, end),
+        // 308 here means "Resume Incomplete", not a redirect.
+        redirect: "manual",
+        signal,
+      });
+      if (res.status === 200 || res.status === 201) return true;
+      if (res.status !== 308) await failResponse(res, "Google Drive resumable upload");
+      await res.body?.cancel().catch(() => undefined);
+      const next = driveNextOffset(res.headers.get("range"));
+      if (next <= offset) {
+        if (++stalls >= 3) throw new Error("Google Drive resumable upload made no progress");
+      } else {
+        stalls = 0;
+      }
+      offset = next;
     }
-    offset = next;
-  }
+    return false;
+  });
+  if (done) return;
   // Every byte is persisted but the final 200/201 never arrived: ask for status.
   const status = await fetch(sessionUrl, {
     method: "PUT",
@@ -611,14 +679,14 @@ async function driveResumableUpload(token: string, meta: object, buf: Buffer, mi
   if (status.status !== 200 && status.status !== 201) await failResponse(status, "Google Drive resumable finalize");
 }
 
-async function uploadGoogleDrive(conn: CloudConn, buf: Buffer, fileName: string, mimeType: string, signal: AbortSignal): Promise<void> {
+async function uploadGoogleDrive(conn: CloudConn, src: UploadSource, fileName: string, mimeType: string, signal: AbortSignal): Promise<void> {
   const token = await getAccessToken(conn, signal);
   const segments = uploadPathSegments(conn.uploadPath);
   const upload = async () => {
     const folderId = await resolveDriveFolder(conn.id, token, segments, signal);
     const meta = { name: fileName, parents: [folderId] };
-    if (buf.length > DRIVE_RESUMABLE_THRESHOLD) await driveResumableUpload(token, meta, buf, mimeType, signal);
-    else await driveMultipartUpload(token, meta, buf, mimeType, signal);
+    if (src.size > DRIVE_RESUMABLE_THRESHOLD) await driveResumableUpload(token, meta, src, mimeType, signal);
+    else await driveMultipartUpload(token, meta, await readSmallFile(src), mimeType, signal);
   };
   try {
     await upload();
@@ -661,15 +729,15 @@ const GRAPH_DRIVE = "https://graph.microsoft.com/v1.0/me/drive";
  * Every path segment and the file name are percent-encoded, and name clashes
  * are auto-renamed ("photo 1.jpg") rather than overwriting an existing file.
  */
-async function uploadOneDrive(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
+async function uploadOneDrive(conn: CloudConn, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
   const token = await getAccessToken(conn, signal);
   const item = oneDriveItemPath(uploadPathSegments(conn.uploadPath), fileName);
 
-  if (buf.length <= ONEDRIVE_SESSION_THRESHOLD) {
+  if (src.size <= ONEDRIVE_SESSION_THRESHOLD) {
     const res = await fetch(`${GRAPH_DRIVE}/${item}/content?@microsoft.graph.conflictBehavior=rename`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream" },
-      body: buf,
+      body: await readSmallFile(src),
       signal,
     });
     if (!res.ok) await failResponse(res, "OneDrive upload");
@@ -687,25 +755,27 @@ async function uploadOneDrive(conn: CloudConn, buf: Buffer, fileName: string, si
   if (!uploadUrl || !uploadUrl.startsWith("https://")) throw new Error("OneDrive did not return an upload URL");
 
   try {
-    const total = buf.length;
-    for (const [start, end] of chunkRanges(total, ONEDRIVE_CHUNK_SIZE)) {
-      // The upload URL is pre-authenticated; Graph documents that sending the
-      // Authorization header to it can cause a 401.
-      const res = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: {
-          "Content-Range": `bytes ${start}-${end - 1}/${total}`,
-        },
-        body: buf.subarray(start, end),
-        signal,
-      });
-      if (!res.ok) await failResponse(res, "OneDrive upload fragment");
-      // 202 = more fragments expected; 200/201 = file committed.
-      if (end === total && res.status !== 200 && res.status !== 201) {
-        throw new Error(`OneDrive upload did not complete (status ${res.status})`);
+    const total = src.size;
+    await withSourceFile(src, async (fh) => {
+      for (const [start, end] of chunkRanges(total, ONEDRIVE_CHUNK_SIZE)) {
+        // The upload URL is pre-authenticated; Graph documents that sending the
+        // Authorization header to it can cause a 401.
+        const res = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Range": `bytes ${start}-${end - 1}/${total}`,
+          },
+          body: await readRange(fh, start, end),
+          signal,
+        });
+        if (!res.ok) await failResponse(res, "OneDrive upload fragment");
+        // 202 = more fragments expected; 200/201 = file committed.
+        if (end === total && res.status !== 200 && res.status !== 201) {
+          throw new Error(`OneDrive upload did not complete (status ${res.status})`);
+        }
+        await res.body?.cancel().catch(() => undefined);
       }
-      await res.body?.cancel().catch(() => undefined);
-    }
+    });
   } catch (err) {
     // Free the server-side temp file; best-effort, it also expires on its own.
     await fetch(uploadUrl, { method: "DELETE", signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
@@ -756,35 +826,38 @@ async function dropboxContentCall(token: string, endpoint: string, arg: unknown,
  * in DROPBOX_CHUNK_SIZE pieces: single-call uploads are capped at 150 MB, and
  * smaller requests also survive a flaky link better.
  */
-async function uploadDropbox(conn: CloudConn, buf: Buffer, fileName: string, signal: AbortSignal): Promise<void> {
+async function uploadDropbox(conn: CloudConn, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
   const token = await getAccessToken(conn, signal);
   const commit = { path: dropboxPath(conn.uploadPath, fileName), mode: "add", autorename: true };
 
-  if (buf.length <= DROPBOX_SESSION_THRESHOLD) {
-    await dropboxContentCall(token, "upload", commit, buf, signal);
+  if (src.size <= DROPBOX_SESSION_THRESHOLD) {
+    await dropboxContentCall(token, "upload", commit, await readSmallFile(src), signal);
     return;
   }
 
-  const ranges = chunkRanges(buf.length, DROPBOX_CHUNK_SIZE);
-  const [firstStart, firstEnd] = ranges[0]!;
-  const started = await dropboxContentCall(token, "upload_session/start", { close: false }, buf.subarray(firstStart, firstEnd), signal);
-  const sessionId = started?.session_id;
-  if (typeof sessionId !== "string" || !sessionId) throw new Error("Dropbox did not return an upload session id");
+  // Each chunk is read from disk just before it is sent — one in memory at a time.
+  await withSourceFile(src, async (fh) => {
+    const ranges = chunkRanges(src.size, DROPBOX_CHUNK_SIZE);
+    const [firstStart, firstEnd] = ranges[0]!;
+    const started = await dropboxContentCall(token, "upload_session/start", { close: false }, await readRange(fh, firstStart, firstEnd), signal);
+    const sessionId = started?.session_id;
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("Dropbox did not return an upload session id");
 
-  for (let i = 1; i < ranges.length - 1; i++) {
-    const [start, end] = ranges[i]!;
-    await dropboxContentCall(token, "upload_session/append_v2", { cursor: { session_id: sessionId, offset: start }, close: false }, buf.subarray(start, end), signal);
-  }
+    for (let i = 1; i < ranges.length - 1; i++) {
+      const [start, end] = ranges[i]!;
+      await dropboxContentCall(token, "upload_session/append_v2", { cursor: { session_id: sessionId, offset: start }, close: false }, await readRange(fh, start, end), signal);
+    }
 
-  // Finish carries the last chunk (or nothing, if the file fit in the first).
-  const [lastStart, lastEnd] = ranges.length > 1 ? ranges[ranges.length - 1]! : [firstEnd, firstEnd];
-  await dropboxContentCall(
-    token,
-    "upload_session/finish",
-    { cursor: { session_id: sessionId, offset: lastStart }, commit },
-    buf.subarray(lastStart, lastEnd),
-    signal,
-  );
+    // Finish carries the last chunk (or nothing, if the file fit in the first).
+    const [lastStart, lastEnd] = ranges.length > 1 ? ranges[ranges.length - 1]! : [firstEnd, firstEnd];
+    await dropboxContentCall(
+      token,
+      "upload_session/finish",
+      { cursor: { session_id: sessionId, offset: lastStart }, commit },
+      await readRange(fh, lastStart, lastEnd),
+      signal,
+    );
+  });
 }
 
 async function testDropbox(conn: CloudConn): Promise<{ success: boolean; message: string }> {
@@ -870,29 +943,94 @@ export async function revokeProviderTokens(conn: CloudConn): Promise<void> {
   }
 }
 
+/** Providers with a token-revocation endpoint (see revokeProviderTokens). */
+const REVOCABLE_TYPES = new Set(["googledrive", "dropbox"]);
+
+type ConnectionRow = typeof cloudConnectionsTable.$inferSelect;
+
+/**
+ * Revoke a removed row's grant unless another row may ride on the same grant.
+ * A provider revoke kills the whole grant (Google: every token for this app +
+ * account), so it is skipped when the same account is connected elsewhere —
+ * the same user's row of this type with the same (or an unknown) account id,
+ * or ANY user's row with the same account id (a pending row created by
+ * someone else's authorize link must not disconnect the owner's real one).
+ * Best-effort; never throws.
+ */
+export async function revokeRemovedConnectionIfUnshared(conn: ConnectionRow): Promise<void> {
+  if (!REVOCABLE_TYPES.has(conn.type) || !(conn.refreshToken || conn.accessTokenEncrypted)) return;
+  try {
+    const others = await db.select({ userId: cloudConnectionsTable.userId, accountId: cloudConnectionsTable.accountId })
+      .from(cloudConnectionsTable)
+      .where(and(
+        eq(cloudConnectionsTable.type, conn.type),
+        ne(cloudConnectionsTable.id, conn.id),
+        conn.accountId
+          ? or(eq(cloudConnectionsTable.userId, conn.userId), eq(cloudConnectionsTable.accountId, conn.accountId))
+          : eq(cloudConnectionsTable.userId, conn.userId),
+      ));
+    const shared = others.some((c) => c.userId === conn.userId
+      ? !c.accountId || !conn.accountId || c.accountId === conn.accountId
+      : c.accountId === conn.accountId);
+    if (!shared) await revokeProviderTokens(conn);
+  } catch (err) {
+    logger.info({ err, connectionId: conn.id }, "Token revoke skipped");
+  }
+}
+
+// ─── Pending OAuth connections ────────────────────────────────────────────────
+// The OAuth callback stores tokens on a PENDING row (pendingNonceHash set,
+// active=false) that only /oauth/complete — from the device that started the
+// flow — can confirm. Unconfirmed rows are deleted once they expire.
+
+const PENDING_PURGE_INTERVAL_MS = 60_000;
+let lastPendingPurge = 0;
+
+/**
+ * Delete expired pending rows (every user's) and revoke their grants in the
+ * background. Called opportunistically from the OAuth / connection routes and
+ * throttled per process; never throws.
+ */
+export async function purgeExpiredPendingConnections(): Promise<void> {
+  const now = Date.now();
+  if (now - lastPendingPurge < PENDING_PURGE_INTERVAL_MS) return;
+  lastPendingPurge = now;
+  try {
+    const removed = await db.delete(cloudConnectionsTable).where(and(
+      isNotNull(cloudConnectionsTable.pendingNonceHash),
+      or(isNull(cloudConnectionsTable.pendingExpiresAt), lt(cloudConnectionsTable.pendingExpiresAt, new Date(now))),
+    )).returning();
+    if (removed.length === 0) return;
+    logger.info({ count: removed.length }, "Purged expired pending OAuth connections");
+    void Promise.allSettled(removed.map((c) => revokeRemovedConnectionIfUnshared(c)));
+  } catch (err) {
+    logger.warn({ err }, "Pending OAuth connection purge failed");
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export async function uploadToCloud(conn: CloudConn, buf: Buffer, rawFileName: string, mimeType: string): Promise<UploadResult> {
+export async function uploadToCloud(conn: CloudConn, src: UploadSource, rawFileName: string, mimeType: string): Promise<UploadResult> {
   const fileName = sanitizeFileName(rawFileName);
   // One overall deadline per provider upload, scaled with size and capped
   // (see uploadDeadlineMs) so a stalled remote always frees the upload slot.
-  const deadlineMs = uploadDeadlineMs(buf.length);
+  const deadlineMs = uploadDeadlineMs(src.size);
   const signal = AbortSignal.timeout(deadlineMs);
   try {
     switch (conn.type) {
-      case "ftp":         await uploadFtp(conn, buf, fileName, signal); break;
-      case "webdav":      await uploadWebdav(conn, buf, fileName, signal); break;
-      case "nextcloud":   await uploadNextcloud(conn, buf, fileName, signal); break;
-      case "googledrive": await uploadGoogleDrive(conn, buf, fileName, mimeType, signal); break;
-      case "onedrive":    await uploadOneDrive(conn, buf, fileName, signal); break;
-      case "dropbox":     await uploadDropbox(conn, buf, fileName, signal); break;
+      case "ftp":         await uploadFtp(conn, src, fileName, signal); break;
+      case "webdav":      await uploadWebdav(conn, src, fileName, signal); break;
+      case "nextcloud":   await uploadNextcloud(conn, src, fileName, signal); break;
+      case "googledrive": await uploadGoogleDrive(conn, src, fileName, mimeType, signal); break;
+      case "onedrive":    await uploadOneDrive(conn, src, fileName, signal); break;
+      case "dropbox":     await uploadDropbox(conn, src, fileName, signal); break;
       default: throw new Error(`Unknown connection type: ${conn.type}`);
     }
     return { connectionId: conn.id, success: true };
   } catch (err: any) {
     // Full detail (remote status/body, resolver text, IPs) stays in the log;
     // the client — and the stored upload record — only get a generic message.
-    logger.warn({ err, connectionId: conn.id, type: conn.type, deadlineMs, bytes: buf.length }, "Cloud upload failed");
+    logger.warn({ err, connectionId: conn.id, type: conn.type, deadlineMs, bytes: src.size }, "Cloud upload failed");
     return { connectionId: conn.id, success: false, error: publicUploadError(conn.type, err) };
   }
 }

@@ -82,21 +82,28 @@ export default function UploadDestinationsScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 100 }} showsVerticalScrollIndicator={false}>
-        <Text style={styles.pageTitle}>Upload Destination</Text>
+        <Text style={styles.pageTitle} accessibilityRole="header">Upload Destination</Text>
         <Text style={styles.pageSubtitle}>Choose where captures upload by default. This is saved to your account.</Text>
 
         <View style={styles.card}>
           {MODE_OPTIONS.map((opt, i) => (
             <React.Fragment key={opt.key}>
               {i > 0 && <View style={styles.divider} />}
-              <TouchableOpacity style={styles.row} onPress={() => setMode(opt.key)} activeOpacity={0.7}>
+              <TouchableOpacity
+                style={styles.row}
+                onPress={() => setMode(opt.key)}
+                activeOpacity={0.7}
+                accessibilityRole="radio"
+                accessibilityLabel={`${opt.label}, ${opt.hint}`}
+                accessibilityState={{ checked: mode === opt.key, selected: mode === opt.key }}
+              >
                 <View style={styles.iconWrap}>
-                  <Ionicons name={opt.icon as any} size={19} color={PRIMARY} />
+                  <Ionicons name={opt.icon as any} size={19} color={PRIMARY} accessible={false} />
                 </View>
                 <View style={styles.rowBody}>
                   <Text style={styles.rowLabel}>{opt.label}</Text>
@@ -125,7 +132,14 @@ export default function UploadDestinationsScreen() {
                   return (
                     <React.Fragment key={c.id}>
                       {i > 0 && <View style={styles.divider} />}
-                      <TouchableOpacity style={styles.row} onPress={() => toggle(c.id)} activeOpacity={0.7}>
+                      <TouchableOpacity
+                        style={styles.row}
+                        onPress={() => toggle(c.id)}
+                        activeOpacity={0.7}
+                        accessibilityRole="checkbox"
+                        accessibilityLabel={`${c.name}${c.active ? "" : ", inactive"}`}
+                        accessibilityState={{ checked: on }}
+                      >
                         <View style={[styles.iconWrap, { backgroundColor: cfg.color + "22" }]}>
                           {cfg.set === "mci"
                             ? <MaterialCommunityIcons name={cfg.icon as any} size={19} color={cfg.color} />
@@ -157,6 +171,9 @@ export default function UploadDestinationsScreen() {
           style={[styles.saveBtn, saveDisabled && styles.saveBtnDisabled]}
           onPress={handleSave}
           disabled={saveDisabled}
+          accessibilityRole="button"
+          accessibilityLabel="Save default"
+          accessibilityState={{ disabled: saveDisabled, busy: setMutation.isPending }}
         >
           {setMutation.isPending
             ? <ActivityIndicator color="white" />

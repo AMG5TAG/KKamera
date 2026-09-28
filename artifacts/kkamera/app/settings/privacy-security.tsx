@@ -167,8 +167,8 @@ export default function PrivacySecurityScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <KeyboardAwareScrollViewCompat
@@ -178,7 +178,7 @@ export default function PrivacySecurityScreen() {
         keyboardShouldPersistTaps="handled"
         bottomOffset={120}
       >
-        <Text style={styles.pageTitle}>Privacy & Security</Text>
+        <Text style={styles.pageTitle} accessibilityRole="header">Privacy & Security</Text>
 
         {/* App Lock */}
         <Text style={styles.sectionLabel}>App Lock</Text>
@@ -194,6 +194,7 @@ export default function PrivacySecurityScreen() {
             <Switch
               value={settings.appLockEnabled}
               onValueChange={handleToggleLock}
+              accessibilityLabel="Require unlock on open"
               trackColor={{ false: "#2a2720", true: PRIMARY }}
               thumbColor="white"
               ios_backgroundColor="#2a2720"
@@ -208,6 +209,9 @@ export default function PrivacySecurityScreen() {
                   <TouchableOpacity
                     style={styles.row}
                     onPress={() => { if (settings.appLockType !== "biometric") void enableDeviceLock(); }}
+                    accessibilityRole="radio"
+                    accessibilityLabel={biometricEnrolled ? "Unlock with biometrics" : "Unlock with device passcode"}
+                    accessibilityState={{ checked: settings.appLockType === "biometric", selected: settings.appLockType === "biometric" }}
                   >
                     <View style={styles.iconWrap}>
                       <Ionicons name="finger-print-outline" size={19} color={PRIMARY} />
@@ -225,7 +229,13 @@ export default function PrivacySecurityScreen() {
                   <View style={styles.divider} />
                 </>
               )}
-              <TouchableOpacity style={styles.row} onPress={handleSelectPin}>
+              <TouchableOpacity
+                style={styles.row}
+                onPress={handleSelectPin}
+                accessibilityRole="radio"
+                accessibilityLabel={`Unlock with PIN code, ${pinStored ? (settings.appLockType === "pin" ? "PIN set, tap to change" : "PIN set") : "not set, tap to create"}`}
+                accessibilityState={{ checked: settings.appLockType === "pin" && pinStored, selected: settings.appLockType === "pin" && pinStored }}
+              >
                 <View style={styles.iconWrap}>
                   <Ionicons name="keypad-outline" size={19} color={PRIMARY} />
                 </View>
@@ -260,16 +270,25 @@ export default function PrivacySecurityScreen() {
                 value={pinStep === "enter" ? pinEntry : confirmPin}
                 onChangeText={(t) => (pinStep === "enter" ? setPinEntry : setConfirmPin)(t.replace(/\D/g, ""))}
                 placeholder="••••"
+                accessibilityLabel={pinStep === "enter" ? "Enter a 4-digit PIN" : "Confirm your PIN"}
                 placeholderTextColor="#444"
               />
               <TouchableOpacity
                 style={[styles.pinBtn, savingPin && { opacity: 0.6 }]}
                 onPress={() => void handlePinSubmit()}
                 disabled={savingPin}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: savingPin, busy: savingPin }}
               >
                 <Text style={styles.pinBtnText}>{pinStep === "enter" ? "Next" : "Set PIN"}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.pinCancelBtn} onPress={cancelPinSetup} disabled={savingPin}>
+              <TouchableOpacity
+                style={styles.pinCancelBtn}
+                onPress={cancelPinSetup}
+                disabled={savingPin}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: savingPin }}
+              >
                 <Text style={styles.pinCancelText}>Cancel</Text>
               </TouchableOpacity>
             </View>
@@ -290,6 +309,7 @@ export default function PrivacySecurityScreen() {
             <Switch
               value={settings.deleteLocalAfterUpload}
               onValueChange={v => updateSetting("deleteLocalAfterUpload", v)}
+              accessibilityLabel="Delete local file after upload"
               trackColor={{ false: "#2a2720", true: PRIMARY }}
               thumbColor="white"
               ios_backgroundColor="#2a2720"
@@ -311,6 +331,8 @@ export default function PrivacySecurityScreen() {
             <Switch
               value={settings.witnessOnSuccess}
               onValueChange={v => updateSetting("witnessOnSuccess", v)}
+              accessibilityLabel="Notify a witness"
+              accessibilityHint="Emails a contact after each upload"
               trackColor={{ false: "#2a2720", true: PRIMARY }}
               thumbColor="white"
               ios_backgroundColor="#2a2720"
@@ -326,6 +348,7 @@ export default function PrivacySecurityScreen() {
                 <TextInput
                   style={styles.inlineInput}
                   placeholder="witness@example.com"
+                  accessibilityLabel="Witness email address"
                   placeholderTextColor="#555"
                   keyboardType="email-address"
                   autoCapitalize="none"
@@ -340,7 +363,12 @@ export default function PrivacySecurityScreen() {
         {/* 2FA */}
         <Text style={styles.sectionLabel}>Two-Factor Authentication</Text>
         <View style={styles.card}>
-          <TouchableOpacity style={styles.row} onPress={() => router.push("/settings/security")}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push("/settings/security")}
+            accessibilityRole="button"
+            accessibilityLabel="Two-Factor Authentication, TOTP via authenticator app"
+          >
             <View style={styles.iconWrap}>
               <Ionicons name="shield-checkmark-outline" size={19} color={PRIMARY} />
             </View>
@@ -348,14 +376,20 @@ export default function PrivacySecurityScreen() {
               <Text style={styles.rowLabel}>Two-Factor Authentication</Text>
               <Text style={styles.rowHint}>TOTP via authenticator app</Text>
             </View>
-            <Ionicons name="chevron-forward" size={15} color="#444" />
+            <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
         </View>
 
         {/* Danger zone */}
         <Text style={[styles.sectionLabel, { color: DANGER + "aa" }]}>Danger Zone</Text>
         <View style={[styles.card, { borderColor: "rgba(239,68,68,0.2)" }]}>
-          <TouchableOpacity style={styles.row} onPress={handlePanic}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={handlePanic}
+            accessibilityRole="button"
+            accessibilityLabel="Panic Wipe"
+            accessibilityHint="Disconnects all clouds, clears history and signs out"
+          >
             <View style={[styles.iconWrap, { backgroundColor: "rgba(239,68,68,0.12)" }]}>
               <Ionicons name="nuclear-outline" size={19} color={DANGER} />
             </View>
@@ -363,10 +397,16 @@ export default function PrivacySecurityScreen() {
               <Text style={[styles.rowLabel, { color: DANGER }]}>Panic Wipe</Text>
               <Text style={styles.rowHint}>Disconnect all clouds, clear history, sign out</Text>
             </View>
-            <Ionicons name="chevron-forward" size={15} color="#444" />
+            <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
           <View style={styles.divider} />
-          <TouchableOpacity style={styles.row} onPress={() => router.push("/settings/delete-account")}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push("/settings/delete-account")}
+            accessibilityRole="button"
+            accessibilityLabel="Delete Account"
+            accessibilityHint="Permanently delete your account and all data"
+          >
             <View style={[styles.iconWrap, { backgroundColor: "rgba(239,68,68,0.12)" }]}>
               <Ionicons name="person-remove-outline" size={19} color={DANGER} />
             </View>
@@ -374,7 +414,7 @@ export default function PrivacySecurityScreen() {
               <Text style={[styles.rowLabel, { color: DANGER }]}>Delete Account</Text>
               <Text style={styles.rowHint}>Permanently delete your account and all data</Text>
             </View>
-            <Ionicons name="chevron-forward" size={15} color="#444" />
+            <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
         </View>
       </KeyboardAwareScrollViewCompat>

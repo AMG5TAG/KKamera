@@ -15,6 +15,7 @@ import {
 } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_BASE_URL } from "@/lib/config";
+import { completeOAuthConnection, forgetOAuthNonce, rememberOAuthNonce } from "@/lib/oauthPending";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -170,10 +171,11 @@ export default function AddCloudScreen() {
 
   const handleOAuth = async () => {
     if (!selectedType || !token) return;
+    const provider = selectedType;
     setOauthLoading(true);
     try {
       const platform = Platform.OS === "web" ? "web" : "native";
-      const res = await fetch(`${BASE_URL}/api/oauth/${selectedType}/initiate`, {
+      const res = await fetch(`${BASE_URL}/api/oauth/${provider}/initiate`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -198,40 +200,65 @@ export default function AddCloudScreen() {
         return;
       }
 
-      const { authorizeUrl } = data as { authorizeUrl: string };
+      const { authorizeUrl, nonce } = data as { authorizeUrl?: string; nonce?: string };
+      if (!authorizeUrl || !nonce) {
+        Alert.alert("Error", "The server did not return a sign-in link. Please try again.");
+        return;
+      }
+      // The nonce never goes into a URL: it stays on this device until the
+      // browser comes back, then proves to /oauth/complete that this device
+      // started the flow (see lib/oauthPending.ts).
+      await rememberOAuthNonce(provider, nonce);
 
       if (Platform.OS === "web") {
-        // Web: navigate same window — OAuth returns to /oauth-success
+        // Web: navigate same window — OAuth returns to /oauth-success, which
+        // completes the connection with the nonce from sessionStorage.
         window.location.href = authorizeUrl;
       } else {
         // Native: open in-app browser, intercept kkamera:// deep link
         const result = await WebBrowser.openAuthSessionAsync(authorizeUrl, "kkamera://");
         if (result.type === "success" && result.url) {
-          // The server deep-links back to kkamera://oauth-success (with a
-          // connectionId) on success, or kkamera://oauth-error (with an error) on
-          // failure — both close the auth browser, so inspect which one we got.
-          // searchParams.get() already percent-decodes; decoding again threw
-          // URIError on a literal "%" in the message.
+          // The server deep-links back to kkamera://oauth-success (with the
+          // pending connectionId + one-time code) on success, or
+          // kkamera://oauth-error (with an error) on failure — both close the
+          // auth browser, so inspect which one we got. searchParams.get()
+          // already percent-decodes; decoding again threw URIError on a
+          // literal "%" in the message.
           const url = new URL(result.url);
-          const connectionId = url.searchParams.get("connectionId");
+          const code = url.searchParams.get("code");
+          const connectionIdParam = url.searchParams.get("connectionId");
           const errParam = url.searchParams.get("error");
-          if (connectionId) {
+          const isSuccess = /^kkamera:\/\/\/?oauth-success\b/.test(result.url);
+          if (isSuccess && code) {
+            // The account is only added once the server confirms it with this
+            // device's nonce; until then nothing is listed or uploaded to.
+            const completion = await completeOAuthConnection({
+              provider,
+              code,
+              connectionId: connectionIdParam && /^\d+$/.test(connectionIdParam) ? Number(connectionIdParam) : null,
+            });
             queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
-            // Show the name the user typed here, not the deep link's `name`
-            // param (anything can open kkamera:// URLs).
-            Alert.alert(
-              "Connected!",
-              `"${name.trim() || selected?.label || "Connection"}" added successfully.`,
-              [{ text: "Done", onPress: () => router.back() }]
-            );
+            if (completion.ok) {
+              Alert.alert(
+                "Connected!",
+                `"${completion.name}" added successfully.`,
+                [{ text: "Done", onPress: () => router.back() }]
+              );
+            } else {
+              Alert.alert("Connection Failed", completion.message);
+            }
           } else if (errParam) {
+            void forgetOAuthNonce(provider);
             Alert.alert("Connection Failed", errParam.slice(0, 300));
           } else {
+            void forgetOAuthNonce(provider);
             Alert.alert("Connection Failed", "The connection did not complete. Please try again.");
           }
-        } else if (result.type === "cancel") {
-          // User cancelled — do nothing
+        } else if (result.type === "cancel" || result.type === "dismiss") {
+          // User cancelled — nothing was added.
+          void forgetOAuthNonce(provider);
         } else {
+          void forgetOAuthNonce(provider);
           Alert.alert("Auth Error", "OAuth flow did not complete. Please try again.");
         }
       }

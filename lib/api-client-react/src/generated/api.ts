@@ -23,6 +23,7 @@ import type {
   CloudConnection,
   CloudConnectionInput,
   CloudConnectionUpdate,
+  DeleteAccountInput,
   ExecuteUploadInput,
   ExecuteUploadResult,
   FeedbackInput,
@@ -31,17 +32,22 @@ import type {
   InviteCoworkersInput,
   LoginInput,
   MessageResponse,
+  OAuthCompleteInput,
+  OAuthCompleteResult,
   OAuthInitiateInput,
   OAuthInitiateResult,
   OAuthNotConfigured,
   OAuthStatus,
+  PasswordConfirmInput,
   Referral,
   RegisterInput,
   ResetPasswordInput,
+  SessionRefreshResponse,
   Subscription,
   TestResult,
+  TwoFADisableInput,
+  TwoFAEnableInput,
   TwoFASetup,
-  TwoFAVerifyInput,
   UploadInput,
   UploadItem,
   UploadTarget,
@@ -129,6 +135,82 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * 200 once database migrations have been applied; 503 while they are still running (status "pending") or after they have definitively failed (status "failed"). /healthz stays 200 regardless (liveness).
+ * @summary Readiness check
+ */
+export const getReadinessCheckUrl = () => {
+  return `/api/readyz`;
+};
+
+export const readinessCheck = async (
+  options?: RequestInit,
+): Promise<HealthStatus> => {
+  return customFetch<HealthStatus>(getReadinessCheckUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getReadinessCheckQueryKey = () => {
+  return [`/api/readyz`] as const;
+};
+
+export const getReadinessCheckQueryOptions = <
+  TData = Awaited<ReturnType<typeof readinessCheck>>,
+  TError = ErrorType<HealthStatus>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof readinessCheck>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getReadinessCheckQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof readinessCheck>>> = ({
+    signal,
+  }) => readinessCheck({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof readinessCheck>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ReadinessCheckQueryResult = NonNullable<
+  Awaited<ReturnType<typeof readinessCheck>>
+>;
+export type ReadinessCheckQueryError = ErrorType<HealthStatus>;
+
+/**
+ * @summary Readiness check
+ */
+
+export function useReadinessCheck<
+  TData = Awaited<ReturnType<typeof readinessCheck>>,
+  TError = ErrorType<HealthStatus>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof readinessCheck>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getReadinessCheckQueryOptions(options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;
@@ -234,7 +316,7 @@ export const login = async (
 };
 
 export const getLoginMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -275,10 +357,10 @@ export type LoginMutationResult = NonNullable<
   Awaited<ReturnType<typeof login>>
 >;
 export type LoginMutationBody = BodyType<LoginInput>;
-export type LoginMutationError = ErrorType<unknown>;
+export type LoginMutationError = ErrorType<MessageResponse>;
 
 export const useLogin = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -370,6 +452,88 @@ export const useLogout = <
   TContext
 > => {
   return useMutation(getLogoutMutationOptions(options));
+};
+
+/**
+ * Revokes every existing session for the account and returns a fresh token so the calling device stays signed in.
+ * @summary Sign out of all other devices
+ */
+export const getLogoutAllUrl = () => {
+  return `/api/auth/logout-all`;
+};
+
+export const logoutAll = async (
+  options?: RequestInit,
+): Promise<SessionRefreshResponse> => {
+  return customFetch<SessionRefreshResponse>(getLogoutAllUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getLogoutAllMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof logoutAll>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof logoutAll>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["logoutAll"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof logoutAll>>,
+    void
+  > = () => {
+    return logoutAll(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type LogoutAllMutationResult = NonNullable<
+  Awaited<ReturnType<typeof logoutAll>>
+>;
+
+export type LogoutAllMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Sign out of all other devices
+ */
+export const useLogoutAll = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof logoutAll>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof logoutAll>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getLogoutAllMutationOptions(options));
 };
 
 export const getForgotPasswordUrl = () => {
@@ -619,32 +783,40 @@ export const useChangePassword = <
   return useMutation(getChangePasswordMutationOptions(options));
 };
 
+/**
+ * @summary Start 2FA setup (requires the current password)
+ */
 export const getSetup2FAUrl = () => {
   return `/api/auth/2fa/setup`;
 };
 
-export const setup2FA = async (options?: RequestInit): Promise<TwoFASetup> => {
+export const setup2FA = async (
+  passwordConfirmInput: PasswordConfirmInput,
+  options?: RequestInit,
+): Promise<TwoFASetup> => {
   return customFetch<TwoFASetup>(getSetup2FAUrl(), {
     ...options,
     method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(passwordConfirmInput),
   });
 };
 
 export const getSetup2FAMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof setup2FA>>,
     TError,
-    void,
+    { data: BodyType<PasswordConfirmInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof setup2FA>>,
   TError,
-  void,
+  { data: BodyType<PasswordConfirmInput> },
   TContext
 > => {
   const mutationKey = ["setup2FA"];
@@ -658,9 +830,11 @@ export const getSetup2FAMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof setup2FA>>,
-    void
-  > = () => {
-    return setup2FA(requestOptions);
+    { data: BodyType<PasswordConfirmInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return setup2FA(data, requestOptions);
   };
 
   return { mutationFn, ...mutationOptions };
@@ -669,60 +843,67 @@ export const getSetup2FAMutationOptions = <
 export type Setup2FAMutationResult = NonNullable<
   Awaited<ReturnType<typeof setup2FA>>
 >;
+export type Setup2FAMutationBody = BodyType<PasswordConfirmInput>;
+export type Setup2FAMutationError = ErrorType<MessageResponse>;
 
-export type Setup2FAMutationError = ErrorType<unknown>;
-
+/**
+ * @summary Start 2FA setup (requires the current password)
+ */
 export const useSetup2FA = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof setup2FA>>,
     TError,
-    void,
+    { data: BodyType<PasswordConfirmInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof setup2FA>>,
   TError,
-  void,
+  { data: BodyType<PasswordConfirmInput> },
   TContext
 > => {
   return useMutation(getSetup2FAMutationOptions(options));
 };
 
+/**
+ * Enabling 2FA signs out every other session; the response carries a fresh token for this device.
+ * @summary Enable 2FA (requires the current password and a TOTP code)
+ */
 export const getVerify2FAUrl = () => {
   return `/api/auth/2fa/verify`;
 };
 
 export const verify2FA = async (
-  twoFAVerifyInput: TwoFAVerifyInput,
+  twoFAEnableInput: TwoFAEnableInput,
   options?: RequestInit,
-): Promise<MessageResponse> => {
-  return customFetch<MessageResponse>(getVerify2FAUrl(), {
+): Promise<SessionRefreshResponse> => {
+  return customFetch<SessionRefreshResponse>(getVerify2FAUrl(), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(twoFAVerifyInput),
+    body: JSON.stringify(twoFAEnableInput),
   });
 };
 
 export const getVerify2FAMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof verify2FA>>,
     TError,
-    { data: BodyType<TwoFAVerifyInput> },
+    { data: BodyType<TwoFAEnableInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof verify2FA>>,
   TError,
-  { data: BodyType<TwoFAVerifyInput> },
+  { data: BodyType<TwoFAEnableInput> },
   TContext
 > => {
   const mutationKey = ["verify2FA"];
@@ -736,7 +917,7 @@ export const getVerify2FAMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof verify2FA>>,
-    { data: BodyType<TwoFAVerifyInput> }
+    { data: BodyType<TwoFAEnableInput> }
   > = (props) => {
     const { data } = props ?? {};
 
@@ -749,60 +930,67 @@ export const getVerify2FAMutationOptions = <
 export type Verify2FAMutationResult = NonNullable<
   Awaited<ReturnType<typeof verify2FA>>
 >;
-export type Verify2FAMutationBody = BodyType<TwoFAVerifyInput>;
-export type Verify2FAMutationError = ErrorType<unknown>;
+export type Verify2FAMutationBody = BodyType<TwoFAEnableInput>;
+export type Verify2FAMutationError = ErrorType<MessageResponse>;
 
+/**
+ * @summary Enable 2FA (requires the current password and a TOTP code)
+ */
 export const useVerify2FA = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof verify2FA>>,
     TError,
-    { data: BodyType<TwoFAVerifyInput> },
+    { data: BodyType<TwoFAEnableInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof verify2FA>>,
   TError,
-  { data: BodyType<TwoFAVerifyInput> },
+  { data: BodyType<TwoFAEnableInput> },
   TContext
 > => {
   return useMutation(getVerify2FAMutationOptions(options));
 };
 
+/**
+ * Disabling 2FA signs out every other session; the response carries a fresh token for this device.
+ * @summary Disable 2FA (requires the current password and a TOTP or backup code)
+ */
 export const getDisable2FAUrl = () => {
   return `/api/auth/2fa/disable`;
 };
 
 export const disable2FA = async (
-  twoFAVerifyInput: TwoFAVerifyInput,
+  twoFADisableInput: TwoFADisableInput,
   options?: RequestInit,
-): Promise<MessageResponse> => {
-  return customFetch<MessageResponse>(getDisable2FAUrl(), {
+): Promise<SessionRefreshResponse> => {
+  return customFetch<SessionRefreshResponse>(getDisable2FAUrl(), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(twoFAVerifyInput),
+    body: JSON.stringify(twoFADisableInput),
   });
 };
 
 export const getDisable2FAMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof disable2FA>>,
     TError,
-    { data: BodyType<TwoFAVerifyInput> },
+    { data: BodyType<TwoFADisableInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof disable2FA>>,
   TError,
-  { data: BodyType<TwoFAVerifyInput> },
+  { data: BodyType<TwoFADisableInput> },
   TContext
 > => {
   const mutationKey = ["disable2FA"];
@@ -816,7 +1004,7 @@ export const getDisable2FAMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof disable2FA>>,
-    { data: BodyType<TwoFAVerifyInput> }
+    { data: BodyType<TwoFADisableInput> }
   > = (props) => {
     const { data } = props ?? {};
 
@@ -829,24 +1017,27 @@ export const getDisable2FAMutationOptions = <
 export type Disable2FAMutationResult = NonNullable<
   Awaited<ReturnType<typeof disable2FA>>
 >;
-export type Disable2FAMutationBody = BodyType<TwoFAVerifyInput>;
-export type Disable2FAMutationError = ErrorType<unknown>;
+export type Disable2FAMutationBody = BodyType<TwoFADisableInput>;
+export type Disable2FAMutationError = ErrorType<MessageResponse>;
 
+/**
+ * @summary Disable 2FA (requires the current password and a TOTP or backup code)
+ */
 export const useDisable2FA = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof disable2FA>>,
     TError,
-    { data: BodyType<TwoFAVerifyInput> },
+    { data: BodyType<TwoFADisableInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof disable2FA>>,
   TError,
-  { data: BodyType<TwoFAVerifyInput> },
+  { data: BodyType<TwoFADisableInput> },
   TContext
 > => {
   return useMutation(getDisable2FAMutationOptions(options));
@@ -986,6 +1177,93 @@ export const useUpdateMe = <
   TContext
 > => {
   return useMutation(getUpdateMeMutationOptions(options));
+};
+
+/**
+ * Requires re-authentication: the current password, plus a TOTP or backup code when 2FA is enabled. Wrong credentials are 403 (never 401).
+ * @summary Permanently delete the account and all associated data
+ */
+export const getDeleteMeUrl = () => {
+  return `/api/users/me`;
+};
+
+export const deleteMe = async (
+  deleteAccountInput: DeleteAccountInput,
+  options?: RequestInit,
+): Promise<MessageResponse> => {
+  return customFetch<MessageResponse>(getDeleteMeUrl(), {
+    ...options,
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(deleteAccountInput),
+  });
+};
+
+export const getDeleteMeMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteMe>>,
+    TError,
+    { data: BodyType<DeleteAccountInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteMe>>,
+  TError,
+  { data: BodyType<DeleteAccountInput> },
+  TContext
+> => {
+  const mutationKey = ["deleteMe"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteMe>>,
+    { data: BodyType<DeleteAccountInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return deleteMe(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteMeMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteMe>>
+>;
+export type DeleteMeMutationBody = BodyType<DeleteAccountInput>;
+export type DeleteMeMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Permanently delete the account and all associated data
+ */
+export const useDeleteMe = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteMe>>,
+    TError,
+    { data: BodyType<DeleteAccountInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteMe>>,
+  TError,
+  { data: BodyType<DeleteAccountInput> },
+  TContext
+> => {
+  return useMutation(getDeleteMeMutationOptions(options));
 };
 
 export const getGetUploadTargetUrl = () => {
@@ -1980,7 +2258,7 @@ export const testCloudConnection = async (
 };
 
 export const getTestCloudConnectionMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse | TestResult>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -2021,10 +2299,12 @@ export type TestCloudConnectionMutationResult = NonNullable<
   Awaited<ReturnType<typeof testCloudConnection>>
 >;
 
-export type TestCloudConnectionMutationError = ErrorType<unknown>;
+export type TestCloudConnectionMutationError = ErrorType<
+  MessageResponse | TestResult
+>;
 
 export const useTestCloudConnection = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse | TestResult>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -2612,8 +2892,8 @@ export const useInitiateOAuth = <
 };
 
 /**
- * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the connection, and 302-redirects to the app.
- * @summary OAuth provider redirect target; exchanges the code and stores the connection
+ * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the tokens on a PENDING connection (inactive, not listed, never used for uploads, expires after 10 minutes) and 302-redirects to the app with `connectionId` (the pending id), `code` (a one-time callback code) and `provider`. The app must then call POST /oauth/complete with that code and the nonce from /oauth/{provider}/initiate to confirm the connection.
+ * @summary OAuth provider redirect target; exchanges the code and stores a pending connection
  */
 export const getOauthCallbackUrl = (
   provider: "googledrive" | "onedrive" | "dropbox",
@@ -2677,7 +2957,7 @@ export type OauthCallbackQueryResult = NonNullable<
 export type OauthCallbackQueryError = ErrorType<void>;
 
 /**
- * @summary OAuth provider redirect target; exchanges the code and stores the connection
+ * @summary OAuth provider redirect target; exchanges the code and stores a pending connection
  */
 
 export function useOauthCallback<
@@ -2702,6 +2982,93 @@ export function useOauthCallback<
 
   return { ...query, queryKey: queryOptions.queryKey };
 }
+
+/**
+ * Binds the OAuth result to the initiating device: requires the `nonce` returned by /oauth/{provider}/initiate (kept on the device) and the one-time `code` from the callback redirect. On success the pending row is either activated as a new connection or, when the same provider account is already connected, its tokens are moved onto that connection and the pending row is removed.
+ * @summary Confirm a pending OAuth connection from the device that started the flow
+ */
+export const getCompleteOAuthUrl = () => {
+  return `/api/oauth/complete`;
+};
+
+export const completeOAuth = async (
+  oAuthCompleteInput: OAuthCompleteInput,
+  options?: RequestInit,
+): Promise<OAuthCompleteResult> => {
+  return customFetch<OAuthCompleteResult>(getCompleteOAuthUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(oAuthCompleteInput),
+  });
+};
+
+export const getCompleteOAuthMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof completeOAuth>>,
+    TError,
+    { data: BodyType<OAuthCompleteInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof completeOAuth>>,
+  TError,
+  { data: BodyType<OAuthCompleteInput> },
+  TContext
+> => {
+  const mutationKey = ["completeOAuth"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof completeOAuth>>,
+    { data: BodyType<OAuthCompleteInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return completeOAuth(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CompleteOAuthMutationResult = NonNullable<
+  Awaited<ReturnType<typeof completeOAuth>>
+>;
+export type CompleteOAuthMutationBody = BodyType<OAuthCompleteInput>;
+export type CompleteOAuthMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Confirm a pending OAuth connection from the device that started the flow
+ */
+export const useCompleteOAuth = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof completeOAuth>>,
+    TError,
+    { data: BodyType<OAuthCompleteInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof completeOAuth>>,
+  TError,
+  { data: BodyType<OAuthCompleteInput> },
+  TContext
+> => {
+  return useMutation(getCompleteOAuthMutationOptions(options));
+};
 
 /**
  * @summary Report which OAuth providers are configured on the server

@@ -9,4 +9,6 @@
 export interface OAuthInitiateResult {
   authorizeUrl: string;
   state: string;
+  /** One-time secret for POST /oauth/complete. Keep it on the device that started the flow; never put it in a URL. */
+  nonce: string;
 }

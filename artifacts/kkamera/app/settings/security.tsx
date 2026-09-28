@@ -4,8 +4,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { useSetup2FA, useVerify2FA, useDisable2FA, getGetMeQueryKey, getUserFacingMessage } from "@workspace/api-client-react";
-import { useAuth } from "@/contexts/AuthContext";
+import {
+  useSetup2FA, useVerify2FA, useDisable2FA, useLogoutAll, getGetMeQueryKey, getUserFacingMessage,
+} from "@workspace/api-client-react";
+import { useAuth, type AuthUser } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -25,20 +27,25 @@ function normaliseCode(input: string): string {
 
 export default function SecurityScreen() {
   const insets = useSafeAreaInsets();
-  const { user, updateUser } = useAuth();
+  const { user, login } = useAuth();
   const queryClient = useQueryClient();
 
   const setup2FAMutation = useSetup2FA();
   const verify2FAMutation = useVerify2FA();
   const disable2FAMutation = useDisable2FA();
+  const logoutAllMutation = useLogoutAll();
 
   const [setupData, setSetupData] = useState<{ secret: string; qrCodeUrl: string; backupCodes: string[] } | null>(null);
   const [code, setCode] = useState("");
+  // Current password — every 2FA change re-verifies it. Kept in memory only
+  // for the duration of the setup flow, cleared on finish/cancel.
+  const [password, setPassword] = useState("");
   const [mode, setMode] = useState<"idle" | "setup" | "disable">("idle");
 
   const handleSetup = async () => {
+    if (!password) { Alert.alert("Password required", "Enter your current password to set up 2FA."); return; }
     try {
-      const result = await setup2FAMutation.mutateAsync();
+      const result = await setup2FAMutation.mutateAsync({ data: { password } });
       setSetupData(result);
       setMode("setup");
     } catch (e) {
@@ -50,13 +57,16 @@ export default function SecurityScreen() {
     const trimmed = code.trim();
     if (!/^\d{6}$/.test(trimmed)) { Alert.alert("Error", "Please enter the 6-digit code from your authenticator app."); return; }
     try {
-      await verify2FAMutation.mutateAsync({ data: { code: trimmed } });
-      if (user) updateUser({ ...user, twoFAEnabled: true });
+      const result = await verify2FAMutation.mutateAsync({ data: { code: trimmed, password } });
+      // Enabling 2FA signs out every other session; keep this device signed in
+      // with the fresh token the server issued.
+      await login(result.token, result.user as AuthUser);
       queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
       setMode("idle");
       setCode("");
+      setPassword("");
       setSetupData(null);
-      Alert.alert("2FA Enabled", "Two-factor authentication is now active on your account.");
+      Alert.alert("2FA Enabled", "Two-factor authentication is now active on your account. Other devices have been signed out.");
     } catch (e) {
       Alert.alert("Error", getUserFacingMessage(e, "Invalid code. Please try again."));
     }
@@ -68,16 +78,42 @@ export default function SecurityScreen() {
       Alert.alert("Error", "Enter the 6-digit code from your authenticator app, or a backup code.");
       return;
     }
+    if (!password) { Alert.alert("Password required", "Enter your current password to disable 2FA."); return; }
     try {
-      await disable2FAMutation.mutateAsync({ data: { code: normalised } });
-      if (user) updateUser({ ...user, twoFAEnabled: false });
+      const result = await disable2FAMutation.mutateAsync({ data: { code: normalised, password } });
+      await login(result.token, result.user as AuthUser);
       queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
       setMode("idle");
       setCode("");
-      Alert.alert("2FA Disabled", "Two-factor authentication has been removed from your account.");
+      setPassword("");
+      Alert.alert("2FA Disabled", "Two-factor authentication has been removed from your account. Other devices have been signed out.");
     } catch (e) {
       Alert.alert("Error", getUserFacingMessage(e, "Invalid code. Could not disable 2FA."));
     }
+  };
+
+  const doLogoutAll = async () => {
+    try {
+      const result = await logoutAllMutation.mutateAsync();
+      // Every session was revoked, including this one — adopt the fresh token.
+      await login(result.token, result.user as AuthUser);
+      Alert.alert("Signed out", "You've been signed out on all other devices.");
+    } catch (e) {
+      Alert.alert("Error", getUserFacingMessage(e, "Could not sign out other devices. Please try again."));
+    }
+  };
+
+  const handleLogoutAll = () => {
+    const title = "Sign out of all other devices?";
+    const body = "Every other phone or tablet signed in to this account will need to sign in again. This device stays signed in.";
+    if (Platform.OS === "web") {
+      if (window.confirm(`${title}\n\n${body}`)) void doLogoutAll();
+      return;
+    }
+    Alert.alert(title, body, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign Out Others", style: "destructive", onPress: () => { void doLogoutAll(); } },
+    ]);
   };
 
   const handleOpenAuthenticator = async () => {
@@ -133,6 +169,20 @@ export default function SecurityScreen() {
             <Text style={styles.rowCardText}>Change Password</Text>
             <Ionicons name="chevron-forward" size={16} color="#555" />
           </TouchableOpacity>
+
+          <Text style={styles.sectionTitle}>Sessions</Text>
+          <TouchableOpacity
+            style={[styles.rowCard, logoutAllMutation.isPending && styles.btnDisabled]}
+            onPress={handleLogoutAll}
+            disabled={logoutAllMutation.isPending}
+            accessibilityRole="button"
+          >
+            <Ionicons name="log-out-outline" size={18} color={PRIMARY} />
+            <Text style={styles.rowCardText}>Sign out of all other devices</Text>
+            {logoutAllMutation.isPending
+              ? <ActivityIndicator color={PRIMARY} size="small" />
+              : <Ionicons name="chevron-forward" size={16} color="#555" />}
+          </TouchableOpacity>
         </>
       )}
 
@@ -148,6 +198,19 @@ export default function SecurityScreen() {
             <Ionicons name="key-outline" size={18} color={PRIMARY} />
             <Text style={styles.infoText}>Even if someone gets your password, they can't access your account without the code from your phone.</Text>
           </View>
+          <Text style={styles.fieldLabel}>Current password</Text>
+          <TextInput
+            style={styles.passwordInput}
+            placeholder="Enter your password"
+            placeholderTextColor="#555"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="current-password"
+            textContentType="password"
+            value={password}
+            onChangeText={setPassword}
+          />
           <TouchableOpacity
             style={[styles.actionBtn, setup2FAMutation.isPending && styles.btnDisabled]}
             onPress={handleSetup}
@@ -216,7 +279,7 @@ export default function SecurityScreen() {
               <Text style={styles.actionBtnText}>Confirm & Enable 2FA</Text>
             )}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelBtn} onPress={() => { setMode("idle"); setSetupData(null); setCode(""); }}>
+          <TouchableOpacity style={styles.cancelBtn} onPress={() => { setMode("idle"); setSetupData(null); setCode(""); setPassword(""); }}>
             <Text style={styles.cancelBtnText}>Cancel</Text>
           </TouchableOpacity>
         </>
@@ -226,7 +289,21 @@ export default function SecurityScreen() {
       {is2FAEnabled && mode === "idle" && (
         <>
           <Text style={styles.sectionTitle}>Manage 2FA</Text>
-          <Text style={styles.bodyText}>To disable two-factor authentication, enter the 6-digit code from your authenticator app, or a backup code:</Text>
+          <Text style={styles.bodyText}>To disable two-factor authentication, enter your current password and the 6-digit code from your authenticator app, or a backup code:</Text>
+          <Text style={styles.fieldLabel}>Current password</Text>
+          <TextInput
+            style={styles.passwordInput}
+            placeholder="Enter your password"
+            placeholderTextColor="#555"
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="current-password"
+            textContentType="password"
+            value={password}
+            onChangeText={setPassword}
+          />
+          <Text style={styles.fieldLabel}>Authenticator or backup code</Text>
           <TextInput
             style={styles.codeInput}
             placeholder="000000"
@@ -287,5 +364,7 @@ const styles = StyleSheet.create({
   disableBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: "#ef4444" },
   backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
   rowCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, marginBottom: 24, borderWidth: 1, borderColor: "rgba(177,152,112,0.1)" },
+  fieldLabel: { fontSize: 13, color: "#aaa", fontFamily: "Inter_500Medium", marginBottom: 8 },
+  passwordInput: { backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, color: "white", fontSize: 15, fontFamily: "Inter_400Regular", borderWidth: 1, borderColor: "rgba(177,152,112,0.2)", marginBottom: 16 },
   rowCardText: { flex: 1, fontSize: 15, color: "white", fontFamily: "Inter_500Medium" },
 });

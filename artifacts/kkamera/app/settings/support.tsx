@@ -25,6 +25,7 @@ function MenuRow({
       onPress={onPress}
       activeOpacity={0.65}
       accessibilityRole={external ? "link" : "button"}
+      accessibilityLabel={hint ? `${label}, ${hint}` : label}
     >
       <View style={[styles.iconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
         <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
@@ -43,8 +44,8 @@ export default function SupportScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView

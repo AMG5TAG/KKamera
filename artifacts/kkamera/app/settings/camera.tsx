@@ -13,7 +13,7 @@ const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 
 function SectionLabel({ title }: { title: string }) {
-  return <Text style={styles.sectionLabel}>{title}</Text>;
+  return <Text style={styles.sectionLabel} accessibilityRole="header">{title}</Text>;
 }
 
 function ToggleRow({
@@ -25,7 +25,7 @@ function ToggleRow({
   return (
     <View style={styles.row}>
       <View style={[styles.iconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
-        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
+        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} accessible={false} />
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
@@ -34,6 +34,8 @@ function ToggleRow({
       <Switch
         value={value}
         onValueChange={onToggle}
+        accessibilityLabel={label}
+        accessibilityHint={hint}
         trackColor={{ false: "#333", true: PRIMARY + "88" }}
         thumbColor={value ? PRIMARY : "#666"}
         ios_backgroundColor="#333"
@@ -53,7 +55,7 @@ function SegmentRow<T extends string | number>({
     <View style={[styles.row, { flexDirection: "column", alignItems: "flex-start", gap: 8 }]}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
         <View style={styles.iconWrap}>
-          <Ionicons name={icon as any} size={19} color={PRIMARY} />
+          <Ionicons name={icon as any} size={19} color={PRIMARY} accessible={false} />
         </View>
         <View>
           <Text style={styles.rowLabel}>{label}</Text>
@@ -66,6 +68,10 @@ function SegmentRow<T extends string | number>({
             key={String(opt.value)}
             style={[styles.segmentBtn, value === opt.value && styles.segmentBtnActive]}
             onPress={() => onChange(opt.value)}
+            accessibilityRole="button"
+            hitSlop={{ top: 8, bottom: 8 }}
+            accessibilityLabel={`${label}: ${opt.label}`}
+            accessibilityState={{ selected: value === opt.value }}
           >
             <Text style={[styles.segmentText, value === opt.value && styles.segmentTextActive]}>
               {opt.label}
@@ -112,8 +118,8 @@ export default function CameraScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView

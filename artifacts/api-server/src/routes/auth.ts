@@ -1,18 +1,20 @@
 import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
 import bcryptjs from "bcryptjs";
-import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { authenticator } from "@otplib/preset-default";
 import QRCode from "qrcode";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, subscriptionsTable, referralsTable, trialHistoryTable, passwordResetTokensTable } from "@workspace/db";
-import { eq, and, isNull, sql } from "drizzle-orm";
-import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
+import { eq, and, isNull, inArray, sql } from "drizzle-orm";
+import { requireAuth, issueSessionToken } from "../middlewares/auth.js";
 import { sendEmail, welcomeEmail } from "../lib/email.js";
-import { emailTrialHash } from "../lib/emailHash.js";
-import { newPasswordSchema, normalizedEmailSchema, normalizeReferralCode } from "../lib/accountRules.js";
+import { emailTrialHashes } from "../lib/emailHash.js";
+import {
+  newPasswordSchema, normalizedEmailSchema, normalizeReferralCode,
+  isLoginLocked, loginLockDurationMs, LOGIN_LOCKED_MESSAGE,
+} from "../lib/accountRules.js";
 
 const router = Router();
 
@@ -21,14 +23,20 @@ const router = Router();
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
+  // Only failed attempts count, so a shared IP (office / carrier NAT) isn't
+  // locked out by its own successful sign-ins. Per-account lockout (below)
+  // bounds guessing against any one account across IPs.
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many login attempts. Please try again in 15 minutes." },
 });
 
+// Generous enough for many people behind one carrier-NAT / office IP; bulk
+// sign-up abuse is still bounded (and trials are keyed per mailbox).
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 5,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many registration attempts. Please try again in an hour." },
@@ -56,6 +64,17 @@ const changePasswordLimiter = rateLimit({
   message: { message: "Too many password change attempts. Please try again in 15 minutes." },
 });
 
+// Password re-authentication on sensitive authenticated routes (2FA setup /
+// enable / disable, "sign out everywhere") — bound guesses per account.
+const reauthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+});
+
 // ─── Validation schemas ────────────────────────────────────────────────────────
 
 const registerSchema = z.object({
@@ -81,12 +100,18 @@ const changePasswordSchema = z.object({
   totpCode: z.string().nullish(),
 });
 
-const twoFACodeSchema = z.object({
-  code: z.string().length(6, "Code must be 6 digits").regex(/^\d+$/, "Code must be numeric"),
+const passwordConfirmSchema = z.object({
+  password: z.string({ required_error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
 });
 
-const twoFAOrBackupSchema = z.object({
-  code: z.string().min(1, "Code is required"),
+const twoFAEnableSchema = z.object({
+  code: z.string().length(6, "Code must be 6 digits").regex(/^\d+$/, "Code must be numeric"),
+  password: z.string({ required_error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
+});
+
+const twoFADisableSchema = z.object({
+  code: z.string({ required_error: "Code is required" }).min(1, "Code is required"),
+  password: z.string({ required_error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -139,8 +164,55 @@ async function verifySecondFactor(user: { id: number; twoFASecret: string }, cod
   return consumeBackupCode(user.id, trimmed);
 }
 
-function issueToken(userId: number): string {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: "30d" });
+/** Session token carrying the user's current token_version (see requireAuth). */
+function issueToken(user: { id: number; tokenVersion: number }): string {
+  return issueSessionToken(user.id, user.tokenVersion);
+}
+
+export type ReauthResult = { ok: true } | { ok: false; status: 400 | 403; message: string };
+
+/**
+ * Re-authenticate the signed-in user for a sensitive action: the current
+ * password, plus a TOTP / backup code when 2FA is enabled. Failures are 400
+ * (missing input) or 403 (wrong credentials) — NEVER 401, which the app treats
+ * as "session revoked" and signs the user out.
+ */
+export async function verifyReauth(
+  user: { id: number; passwordHash: string; twoFAEnabled: boolean; twoFASecret: string | null },
+  password: string | null | undefined,
+  code: string | null | undefined,
+): Promise<ReauthResult> {
+  if (!password) return { ok: false, status: 400, message: "Enter your password to continue." };
+  if (!(await bcryptjs.compare(password, user.passwordHash))) {
+    return { ok: false, status: 403, message: "Password is incorrect." };
+  }
+  if (user.twoFAEnabled && user.twoFASecret) {
+    if (!code?.trim()) {
+      return { ok: false, status: 400, message: "Enter the code from your authenticator app, or a backup code." };
+    }
+    if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, code))) {
+      return { ok: false, status: 403, message: "Invalid 2FA code." };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Record a failed sign-in for an existing account. The increment is one atomic
+ * UPDATE ... RETURNING, and the lockout length is derived from the resulting
+ * consecutive-failure count. Returns true when this failure locked the account.
+ */
+async function recordLoginFailure(userId: number): Promise<boolean> {
+  const [row] = await db.update(usersTable)
+    .set({ failedLoginCount: sql`${usersTable.failedLoginCount} + 1` })
+    .where(eq(usersTable.id, userId))
+    .returning({ failedLoginCount: usersTable.failedLoginCount });
+  const lockMs = row ? loginLockDurationMs(row.failedLoginCount) : 0;
+  if (lockMs <= 0) return false;
+  await db.update(usersTable)
+    .set({ loginLockedUntil: new Date(Date.now() + lockMs) })
+    .where(eq(usersTable.id, userId));
+  return true;
 }
 
 function generateBackupCodes(): string[] {
@@ -190,7 +262,9 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
     // Grant the 14-day trial only if this email has never had one. The
     // trial_history row (keyed by an HMAC of the email) outlives account deletion,
     // so deleting and re-registering the same address can't farm fresh trials.
-    const emailHash = emailTrialHash(email);
+    // Both the legacy key and the alias-normalised one (+tags / Gmail dots) are
+    // checked and recorded, so old rows and "+trial2" aliases keep matching.
+    const emailHashes = emailTrialHashes(email);
 
     // One transaction: a failure part-way must never leave a user without a
     // subscription row (or a trial recorded for a user that doesn't exist).
@@ -202,7 +276,7 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
       if (!created) throw new Error("User insert returned no row");
 
       const [priorTrial] = await tx.select({ id: trialHistoryTable.id })
-        .from(trialHistoryTable).where(eq(trialHistoryTable.emailHash, emailHash)).limit(1);
+        .from(trialHistoryTable).where(inArray(trialHistoryTable.emailHash, emailHashes)).limit(1);
 
       if (priorTrial) {
         await tx.insert(subscriptionsTable).values({ userId: created.id, status: "none" });
@@ -212,7 +286,9 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
         await tx.insert(subscriptionsTable).values({
           userId: created.id, status: "trial", trialStart: new Date(), trialEnd,
         });
-        await tx.insert(trialHistoryTable).values({ emailHash }).onConflictDoNothing();
+        await tx.insert(trialHistoryTable)
+          .values(emailHashes.map((emailHash) => ({ emailHash })))
+          .onConflictDoNothing();
       }
 
       if (referrerId) {
@@ -224,7 +300,7 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
       return created;
     });
 
-    const token = issueToken(user.id);
+    const token = issueToken(user);
 
     // Fire and forget — never block the response
     const welcome = welcomeEmail(name);
@@ -258,25 +334,52 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
     if (!user) {
       // Spend comparable time so timing doesn't reveal whether the email exists.
+      // Unknown emails never see the lockout response — only a real account
+      // can reveal itself, and only after LOGIN_LOCK_THRESHOLD failures.
       await bcryptjs.compare(password, DUMMY_BCRYPT_HASH);
       res.status(401).json({ message: "Invalid credentials" });
       return;
     }
 
+    // Per-account lockout: checked before the password so a locked account
+    // gives no password oracle to an attacker rotating IPs.
+    if (isLoginLocked(user.loginLockedUntil, new Date())) {
+      res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
+      return;
+    }
+
     const valid = await bcryptjs.compare(password, user.passwordHash);
-    if (!valid) { res.status(401).json({ message: "Invalid credentials" }); return; }
+    if (!valid) {
+      if (await recordLoginFailure(user.id)) {
+        res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
+        return;
+      }
+      res.status(401).json({ message: "Invalid credentials" });
+      return;
+    }
 
     if (user.twoFAEnabled && user.twoFASecret) {
       if (!totpCode) { res.status(200).json({ requires2FA: true }); return; }
 
       // Try TOTP first, then (single-use) backup codes
       if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, totpCode))) {
+        if (await recordLoginFailure(user.id)) {
+          res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
+          return;
+        }
         res.status(401).json({ message: "Invalid 2FA code" });
         return;
       }
     }
 
-    const token = issueToken(user.id);
+    // Full success: clear the consecutive-failure counter (no write when clean).
+    if (user.failedLoginCount > 0 || user.loginLockedUntil) {
+      await db.update(usersTable)
+        .set({ failedLoginCount: 0, loginLockedUntil: null })
+        .where(eq(usersTable.id, user.id));
+    }
+
+    const token = issueToken(user);
     res.json({ token, user: formatUser(user) });
   } catch (err) {
     req.log.error({ err }, "Login error");
@@ -289,6 +392,24 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
 router.post("/auth/logout", (_req, res) => {
   // JWT is stateless; client discards the token
   res.json({ message: "Logged out" });
+});
+
+// ─── Sign out of all other devices ───────────────────────────────────────────
+// Bumps token_version (every existing session, including this one, is revoked)
+// and returns a fresh token so the calling device stays signed in.
+
+router.post("/auth/logout-all", requireAuth, reauthLimiter, async (req, res) => {
+  try {
+    const [updated] = await db.update(usersTable)
+      .set({ tokenVersion: sql`${usersTable.tokenVersion} + 1` })
+      .where(eq(usersTable.id, req.userId!))
+      .returning();
+    if (!updated) { res.status(404).json({ message: "User not found" }); return; }
+    res.json({ message: "Signed out of all other devices", token: issueToken(updated), user: formatUser(updated) });
+  } catch (err) {
+    req.log.error({ err }, "Logout-all error");
+    res.status(500).json({ message: "Failed to sign out other devices" });
+  }
 });
 
 // ─── Change password ──────────────────────────────────────────────────────────
@@ -337,13 +458,17 @@ router.post("/auth/change-password", requireAuth, changePasswordLimiter, async (
         isNull(passwordResetTokensTable.usedAt),
       ));
       return tx.update(usersTable)
-        .set({ passwordHash, passwordChangedAt: changedAt })
+        .set({
+          passwordHash,
+          passwordChangedAt: changedAt,
+          tokenVersion: sql`${usersTable.tokenVersion} + 1`,
+        })
         .where(eq(usersTable.id, user.id))
         .returning();
     });
     if (!updated) { res.status(404).json({ message: "User not found" }); return; }
 
-    res.json({ token: issueToken(updated.id), user: formatUser(updated) });
+    res.json({ token: issueToken(updated), user: formatUser(updated) });
   } catch (err) {
     req.log.error({ err }, "Change password error");
     res.status(500).json({ message: "Failed to change password" });
@@ -351,9 +476,17 @@ router.post("/auth/change-password", requireAuth, changePasswordLimiter, async (
 });
 
 // ─── 2FA Setup ────────────────────────────────────────────────────────────────
+// Every 2FA change re-verifies the current password: a stolen session token
+// alone must not be able to lock the owner out (enable) or strip protection
+// (disable). Wrong credentials are 403, never 401 (see verifyReauth).
 
-router.post("/auth/2fa/setup", requireAuth, async (req, res) => {
+router.post("/auth/2fa/setup", requireAuth, reauthLimiter, async (req, res) => {
   try {
+    const parsed = passwordConfirmSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
     // Don't let an already-enabled secret be silently overwritten — the user
@@ -362,6 +495,8 @@ router.post("/auth/2fa/setup", requireAuth, async (req, res) => {
       res.status(400).json({ message: "2FA is already enabled. Disable it before setting up again." });
       return;
     }
+    const reauth = await verifyReauth(user, parsed.data.password, null);
+    if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
 
     const secret = authenticator.generateSecret();
 
@@ -385,20 +520,30 @@ router.post("/auth/2fa/setup", requireAuth, async (req, res) => {
 });
 
 // ─── 2FA Verify (enable) ──────────────────────────────────────────────────────
+// Enabling 2FA revokes every other session (token_version bump); the response
+// carries a fresh token for this device.
 
 router.post("/auth/2fa/verify", twoFactorLimiter, requireAuth, async (req, res) => {
   try {
-    const parsed = twoFACodeSchema.safeParse(req.body);
+    const parsed = twoFAEnableSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid code" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
     if (!user?.twoFASecret) { res.status(400).json({ message: "2FA not set up" }); return; }
+    if (user.twoFAEnabled) { res.status(400).json({ message: "2FA is already enabled." }); return; }
+    // Password only — 2FA isn't enabled yet, so verifyReauth skips the code.
+    const reauth = await verifyReauth(user, parsed.data.password, null);
+    if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
     const isValid = authenticator.verify({ token: parsed.data.code, secret: user.twoFASecret });
     if (!isValid) { res.status(400).json({ message: "Invalid code" }); return; }
-    await db.update(usersTable).set({ twoFAEnabled: true }).where(eq(usersTable.id, req.userId!));
-    res.json({ message: "2FA enabled successfully" });
+    const [updated] = await db.update(usersTable)
+      .set({ twoFAEnabled: true, tokenVersion: sql`${usersTable.tokenVersion} + 1` })
+      .where(eq(usersTable.id, req.userId!))
+      .returning();
+    if (!updated) { res.status(404).json({ message: "User not found" }); return; }
+    res.json({ message: "2FA enabled successfully", token: issueToken(updated), user: formatUser(updated) });
   } catch (err) {
     req.log.error({ err }, "2FA verify error");
     res.status(500).json({ message: "2FA verification failed" });
@@ -409,31 +554,26 @@ router.post("/auth/2fa/verify", twoFactorLimiter, requireAuth, async (req, res) 
 
 router.post("/auth/2fa/disable", twoFactorLimiter, requireAuth, async (req, res) => {
   try {
-    const parsed = twoFAOrBackupSchema.safeParse(req.body);
+    const parsed = twoFADisableSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: "Code is required" });
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
     if (!user?.twoFAEnabled || !user.twoFASecret) { res.status(400).json({ message: "2FA not enabled" }); return; }
 
-    const isTotpValid = authenticator.verify({ token: parsed.data.code, secret: user.twoFASecret });
-    if (!isTotpValid) {
-      // Accept backup code to disable 2FA (recovery path)
-      const backupCodes: string[] = user.twoFABackupCodes ? JSON.parse(user.twoFABackupCodes) : [];
-      const inputHash = hashBackupCode(parsed.data.code.replace(/\s/g, "").toUpperCase());
-      if (!backupCodes.includes(inputHash)) {
-        res.status(400).json({ message: "Invalid code" });
-        return;
-      }
-    }
+    // Password + TOTP or (single-use) backup code — the recovery path.
+    const reauth = await verifyReauth(user, parsed.data.password, parsed.data.code);
+    if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
 
-    await db.update(usersTable).set({
+    const [updated] = await db.update(usersTable).set({
       twoFAEnabled: false,
       twoFASecret: null,
       twoFABackupCodes: null,
-    }).where(eq(usersTable.id, req.userId!));
-    res.json({ message: "2FA disabled" });
+      tokenVersion: sql`${usersTable.tokenVersion} + 1`,
+    }).where(eq(usersTable.id, req.userId!)).returning();
+    if (!updated) { res.status(404).json({ message: "User not found" }); return; }
+    res.json({ message: "2FA disabled", token: issueToken(updated), user: formatUser(updated) });
   } catch (err) {
     req.log.error({ err }, "2FA disable error");
     res.status(500).json({ message: "2FA disable failed" });

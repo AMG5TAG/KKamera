@@ -15,8 +15,8 @@ export default function PrivacyScreen() {
   const insets = useSafeAreaInsets();
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
     </TouchableOpacity>
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
       <Text style={styles.updated}>Last updated: {LAST_UPDATED}</Text>
@@ -105,7 +105,7 @@ export default function PrivacyScreen() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
+      <Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
       <Text style={styles.body}>{children}</Text>
     </View>
   );

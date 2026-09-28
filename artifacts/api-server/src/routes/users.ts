@@ -1,16 +1,35 @@
 import { Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
   cloudConnectionsTable, uploadsTable, feedbackTable,
   passwordResetTokensTable,
 } from "@workspace/db";
-import { eq, and, ne, inArray } from "drizzle-orm";
+import { eq, and, ne, inArray, isNull } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
+import { verifyReauth } from "./auth.js";
 import { buildUserExport, parseTargetIds } from "../lib/accountRules.js";
 
 const router = Router();
+
+// Account deletion re-verifies the password (+2FA) — bound guesses per account.
+const deleteAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+});
+
+const deleteAccountSchema = z.object({
+  password: z.string({ required_error: "Enter your password to delete your account." })
+    .min(1, "Enter your password to delete your account."),
+  // Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+  totpCode: z.string().nullish(),
+});
 
 const updateMeSchema = z.object({
   // Trimmed so a whitespace-only name is rejected; null (allowed by the spec) = no change.
@@ -103,6 +122,8 @@ router.put("/users/upload-target", requireAuth, async (req, res) => {
         .where(and(
           eq(cloudConnectionsTable.userId, req.userId!),
           inArray(cloudConnectionsTable.id, connectionIds),
+          // Unconfirmed OAuth connections can't be chosen as destinations.
+          isNull(cloudConnectionsTable.pendingNonceHash),
         ));
       const ownedSet = new Set(owned.map(c => c.id));
       ownedIds = connectionIds.filter(id => ownedSet.has(id));
@@ -145,7 +166,10 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
         username: cloudConnectionsTable.username, uploadPath: cloudConnectionsTable.uploadPath,
         accountLabel: cloudConnectionsTable.accountLabel, active: cloudConnectionsTable.active,
         createdAt: cloudConnectionsTable.createdAt,
-      }).from(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId)),
+      }).from(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.userId, userId),
+        isNull(cloudConnectionsTable.pendingNonceHash),
+      )),
       db.select({
         id: referralsTable.id, referredName: referralsTable.referredName,
         status: referralsTable.status, createdAt: referralsTable.createdAt,
@@ -173,9 +197,22 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
 });
 
 // GDPR: delete account and all associated data
-router.delete("/users/me", requireAuth, async (req, res) => {
+// Re-authentication (password, plus TOTP/backup code when 2FA is on) is
+// required so a stolen session token alone can't destroy the account. Wrong
+// credentials are 403 — never 401, which would sign the app out.
+router.delete("/users/me", requireAuth, deleteAccountLimiter, async (req, res) => {
   try {
     const userId = req.userId!;
+
+    const parsed = deleteAccountSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    const reauth = await verifyReauth(user, parsed.data.password, parsed.data.totpCode);
+    if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
 
     // Billing is IAP-only; the user cancels the subscription store-side (App Store
     // / Play). Deleting the account here just removes our data — RevenueCat stops

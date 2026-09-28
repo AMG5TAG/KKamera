@@ -50,13 +50,13 @@ export default function AffiliateScreen() {
   };
 
   if (statsLoading) {
-    return <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>;
+    return <View style={styles.center}><ActivityIndicator color={PRIMARY} accessibilityLabel="Loading" /></View>;
   }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
     </TouchableOpacity>
     <ScrollView
       style={{ flex: 1 }}
@@ -68,12 +68,12 @@ export default function AffiliateScreen() {
         <Text style={styles.code}>{stats?.referralCode ?? "—"}</Text>
         {referralLink && (
           <View style={styles.linkRow}>
-            <Ionicons name="link-outline" size={14} color="#888" />
+            <Ionicons name="link-outline" size={14} color="#888" accessible={false} />
             <Text style={styles.linkText} numberOfLines={1}>{referralLink}</Text>
           </View>
         )}
-        <TouchableOpacity style={styles.shareBtn} onPress={handleShare}>
-          <Ionicons name="share-outline" size={18} color="white" />
+        <TouchableOpacity style={styles.shareBtn} onPress={handleShare} accessibilityRole="button">
+          <Ionicons name="share-outline" size={18} color="white" accessible={false} />
           <Text style={styles.shareBtnText}>Share Link & Code</Text>
         </TouchableOpacity>
       </View>
@@ -100,7 +100,13 @@ export default function AffiliateScreen() {
           <Text style={styles.progressTitle}>Progress to Next Free Year</Text>
           <Text style={styles.progressFrac}>{progress} / {nextMilestone}</Text>
         </View>
-        <View style={styles.progressTrack}>
+        <View
+          style={styles.progressTrack}
+          accessible
+          accessibilityRole="progressbar"
+          accessibilityLabel="Progress to next free year"
+          accessibilityValue={{ min: 0, max: nextMilestone, now: progress }}
+        >
           <View style={[styles.progressFill, { width: `${(progress / nextMilestone) * 100}%` as any }]} />
         </View>
         <Text style={styles.progressSub}>
@@ -109,7 +115,7 @@ export default function AffiliateScreen() {
       </View>
 
       {/* How it works */}
-      <Text style={styles.sectionTitle}>How It Works</Text>
+      <Text style={styles.sectionTitle} accessibilityRole="header">How It Works</Text>
       {[
         { step: "1", text: "Share your unique referral code with friends and family." },
         { step: "2", text: "They sign up with your code and get a free 14-day trial." },
@@ -126,7 +132,7 @@ export default function AffiliateScreen() {
       {/* Referrals list */}
       {referrals && referrals.length > 0 && (
         <>
-          <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Recent Referrals</Text>
+          <Text style={[styles.sectionTitle, { marginTop: 24 }]} accessibilityRole="header">Recent Referrals</Text>
           {referrals.slice(0, 10).map(r => (
             <View key={r.id} style={styles.refRow}>
               <View style={styles.refAvatar}><Text style={styles.refAvatarText}>{r.referredName[0]?.toUpperCase()}</Text></View>

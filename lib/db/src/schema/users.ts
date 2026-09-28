@@ -31,6 +31,13 @@ export const usersTable = pgTable("users", {
   inviteWindowStart: timestamp("invite_window_start", { withTimezone: true }),
   inviteCount: integer("invite_count").notNull().default(0),
   // When the "trial ending soon" email was sent, so it goes out at most once.
+  // Bumped to revoke every session at once ("sign out everywhere", 2FA changes).
+  // JWTs carry the version they were issued with; older versions are rejected.
+  tokenVersion: integer("token_version").notNull().default(0),
+  // Per-account failed sign-in tracking, so password guessing is throttled even
+  // from rotating IPs (the per-IP limiter alone can't do that).
+  failedLoginCount: integer("failed_login_count").notNull().default(0),
+  loginLockedUntil: timestamp("login_locked_until", { withTimezone: true }),
   trialReminderSentAt: timestamp("trial_reminder_sent_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

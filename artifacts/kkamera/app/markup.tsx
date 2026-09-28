@@ -20,6 +20,12 @@ const BG = "#0d0b08";
 
 const COLOURS = ["#ffffff", "#b19870", "#ef4444", "#22c55e", "#60a5fa", "#f59e0b", "#000000"];
 const BRUSH_SIZES = [3, 6, 10, 16];
+// Spoken names for the swatches and brush sizes (screen readers).
+const COLOUR_NAMES: Record<string, string> = {
+  "#ffffff": "White", "#b19870": "Gold", "#ef4444": "Red", "#22c55e": "Green",
+  "#60a5fa": "Blue", "#f59e0b": "Orange", "#000000": "Black",
+};
+const BRUSH_NAMES = ["Fine", "Medium", "Thick", "Extra thick"];
 
 /** Long-edge cap (px) for the exported marked-up image. */
 const MAX_EXPORT_EDGE = 4096;
@@ -335,11 +341,25 @@ export default function MarkupScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn} disabled={isUploading}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={styles.headerBtn}
+          disabled={isUploading}
+          accessibilityRole="button"
+          accessibilityLabel="Close markup"
+          accessibilityState={{ disabled: isUploading }}
+        >
           <Ionicons name="close" size={24} color="white" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Markup</Text>
-        <TouchableOpacity onPress={handleUndo} style={styles.headerBtn} disabled={paths.length === 0 || isUploading}>
+        <Text style={styles.headerTitle} accessibilityRole="header">Markup</Text>
+        <TouchableOpacity
+          onPress={handleUndo}
+          style={styles.headerBtn}
+          disabled={paths.length === 0 || isUploading}
+          accessibilityRole="button"
+          accessibilityLabel="Undo last stroke"
+          accessibilityState={{ disabled: paths.length === 0 || isUploading }}
+        >
           <Ionicons name="arrow-undo-outline" size={22} color={paths.length > 0 ? "white" : "#444"} />
         </TouchableOpacity>
       </View>
@@ -371,18 +391,36 @@ export default function MarkupScreen() {
               key={c}
               style={[styles.colourDot, { backgroundColor: c }, color === c && styles.colourDotActive]}
               onPress={() => setColor(c)}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={`${COLOUR_NAMES[c] ?? c} pen colour`}
+              accessibilityState={{ selected: color === c }}
             />
           ))}
         </ScrollView>
 
         {/* Brush sizes */}
         <View style={styles.brushRow}>
-          {BRUSH_SIZES.map(s => (
-            <TouchableOpacity key={s} style={[styles.brushBtn, brushSize === s && styles.brushBtnActive]} onPress={() => setBrushSize(s)}>
+          {BRUSH_SIZES.map((s, i) => (
+            <TouchableOpacity
+              key={s}
+              style={[styles.brushBtn, brushSize === s && styles.brushBtnActive]}
+              onPress={() => setBrushSize(s)}
+              hitSlop={4}
+              accessibilityRole="button"
+              accessibilityLabel={`${BRUSH_NAMES[i] ?? `Size ${s}`} brush`}
+              accessibilityState={{ selected: brushSize === s }}
+            >
               <View style={[styles.brushDot, { width: Math.min(s * 1.8, 24), height: Math.min(s * 1.8, 24), borderRadius: s, backgroundColor: brushSize === s ? "#0d0b08" : "white" }]} />
             </TouchableOpacity>
           ))}
-          <TouchableOpacity style={styles.clearBtn} onPress={handleClear}>
+          <TouchableOpacity
+            style={styles.clearBtn}
+            onPress={handleClear}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel="Clear all markup"
+          >
             <Ionicons name="trash-outline" size={18} color="#ef4444" />
           </TouchableOpacity>
         </View>
@@ -391,30 +429,45 @@ export default function MarkupScreen() {
       {/* Upload options */}
       <View style={[styles.uploadBar, { paddingBottom: insets.bottom + 12 }]}>
         {isUploading ? (
-          <View style={styles.uploadingRow}>
+          <View style={styles.uploadingRow} accessible accessibilityLabel="Uploading">
             <ActivityIndicator color={PRIMARY} />
             <Text style={styles.uploadingText}>Uploading…</Text>
           </View>
         ) : defaultMode === "original" ? (
-          <TouchableOpacity style={styles.uploadBtnFull} onPress={() => handleUpload("original")}>
-            <Ionicons name="cloud-upload-outline" size={18} color="white" />
+          <TouchableOpacity style={styles.uploadBtnFull} onPress={() => handleUpload("original")} accessibilityRole="button">
+            <Ionicons name="cloud-upload-outline" size={18} color="white" accessible={false} />
             <Text style={styles.uploadBtnText}>Upload Original</Text>
           </TouchableOpacity>
         ) : defaultMode === "marked" ? (
-          <TouchableOpacity style={styles.uploadBtnFull} onPress={() => handleUpload("marked")}>
-            <Ionicons name="cloud-upload-outline" size={18} color="white" />
+          <TouchableOpacity style={styles.uploadBtnFull} onPress={() => handleUpload("marked")} accessibilityRole="button">
+            <Ionicons name="cloud-upload-outline" size={18} color="white" accessible={false} />
             <Text style={styles.uploadBtnText}>Upload Marked Version</Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.uploadBtnRow}>
-            <TouchableOpacity style={styles.uploadBtnSmall} onPress={() => handleUpload("original")}>
+            <TouchableOpacity
+              style={styles.uploadBtnSmall}
+              onPress={() => handleUpload("original")}
+              accessibilityRole="button"
+              accessibilityLabel="Upload original only"
+            >
               <Text style={styles.uploadBtnSmallText}>Original</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.uploadBtnSmall, styles.uploadBtnSmallActive]} onPress={() => handleUpload("both")}>
-              <Ionicons name="cloud-upload-outline" size={16} color="white" />
+            <TouchableOpacity
+              style={[styles.uploadBtnSmall, styles.uploadBtnSmallActive]}
+              onPress={() => handleUpload("both")}
+              accessibilityRole="button"
+              accessibilityLabel="Upload both original and marked versions"
+            >
+              <Ionicons name="cloud-upload-outline" size={16} color="white" accessible={false} />
               <Text style={styles.uploadBtnText}>Upload Both</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.uploadBtnSmall} onPress={() => handleUpload("marked")}>
+            <TouchableOpacity
+              style={styles.uploadBtnSmall}
+              onPress={() => handleUpload("marked")}
+              accessibilityRole="button"
+              accessibilityLabel="Upload marked version only"
+            >
               <Text style={styles.uploadBtnSmallText}>Marked</Text>
             </TouchableOpacity>
           </View>
