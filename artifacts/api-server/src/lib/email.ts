@@ -1,6 +1,8 @@
+import { createHash } from "crypto";
 import { Resend } from "resend";
 import { logger } from "./logger.js";
 import { escapeHtml } from "./escapeHtml.js";
+import { getPublicBaseUrl } from "./appUrl.js";
 export { escapeHtml };
 
 const FROM = process.env["EMAIL_FROM"] ?? "KKamera <noreply@kkamera.app>";
@@ -15,31 +17,54 @@ function getClient(): Resend | null {
   return client;
 }
 
+/**
+ * Log-safe recipient descriptor: the domain plus a short one-way hash (enough to
+ * correlate log lines for one address) — never the address itself.
+ */
+function recipientForLog(to: string): { toDomain: string; toHash: string } {
+  const normalized = to.trim().toLowerCase();
+  const at = normalized.lastIndexOf("@");
+  return {
+    toDomain: at >= 0 ? normalized.slice(at + 1) : "(invalid)",
+    toHash: createHash("sha256").update(normalized).digest("hex").slice(0, 12),
+  };
+}
+
+/** Send an email via Resend. Never throws; resolves true only if it was accepted. */
 export async function sendEmail(opts: {
   to: string;
   subject: string;
   html: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const resend = getClient();
   if (!resend) {
     logger.warn("Email not sent — Resend not configured (RESEND_API_KEY)");
-    return;
+    return false;
   }
+  const recipient = recipientForLog(opts.to);
   try {
     const { error } = await resend.emails.send({ from: FROM, ...opts });
     if (error) {
-      logger.error({ error, to: opts.to }, "Failed to send email");
-      return;
+      logger.error({ error, ...recipient }, "Failed to send email");
+      return false;
     }
-    logger.info({ to: opts.to, subject: opts.subject }, "Email sent");
+    logger.info({ ...recipient, subject: opts.subject }, "Email sent");
+    return true;
   } catch (err) {
-    logger.error({ err, to: opts.to }, "Failed to send email");
+    logger.error({ err, ...recipient }, "Failed to send email");
+    return false;
   }
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
 
-function wrap(title: string, body: string): string {
+/** Shared footer brand line (also used by routes/passwordReset.ts). */
+export const EMAIL_BRAND_FOOTER =
+  `KKamera by Koastal Kollective &middot; <a href="https://www.koastal.com.au" style="color:#b19870">www.koastal.com.au</a>`;
+
+const DEFAULT_REASON = "You're receiving this because you have a KKamera account.";
+
+function wrap(title: string, body: string, reason: string = DEFAULT_REASON): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><style>
@@ -51,6 +76,8 @@ function wrap(title: string, body: string): string {
   p { color: #aaa; font-size: 15px; line-height: 24px; margin: 0 0 16px; }
   .btn { display: inline-block; background: #b19870; color: white; text-decoration: none; font-size: 15px; font-weight: 600; padding: 14px 28px; border-radius: 12px; margin: 16px 0; }
   .footer { color: #444; font-size: 12px; text-align: center; margin-top: 32px; line-height: 20px; }
+  .code { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 34px; font-weight: 700; letter-spacing: 6px; color: #b19870; text-align: center; background: #0d0b08; border-radius: 12px; padding: 18px 12px; margin: 8px 0 20px; }
+  .muted { color: #888; font-size: 13px; }
 </style></head>
 <body>
   <div class="outer">
@@ -60,19 +87,23 @@ function wrap(title: string, body: string): string {
       ${body}
     </div>
     <div class="footer">KKamera &mdash; Cloud Based Photography<br>
-    You're receiving this because you have a KKamera account.<br>
-    Questions? <a href="mailto:support@kkamera.app" style="color:#b19870">support@kkamera.app</a></div>
+    ${reason}<br>
+    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a><br>
+    ${EMAIL_BRAND_FOOTER}</div>
   </div>
 </body>
 </html>`;
 }
 
-export function welcomeEmail(name: string): { subject: string; html: string } {
+export function welcomeEmail(name: string, trialActive: boolean = true): { subject: string; html: string } {
+  const trialLine = trialActive
+    ? `<p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>`
+    : `<p>Subscribe from <strong>Settings → Subscription</strong> in the app whenever you're ready to start uploading.</p>`;
   return {
     subject: "Welcome to KKamera 📷",
     html: wrap("Welcome, " + escapeHtml(name) + "!", `
       <p>Your account is all set. KKamera captures your photos and videos and instantly uploads them to your cloud storage — leaving no trace on your device.</p>
-      <p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>
+      ${trialLine}
       <a href="https://app.kkamera.app" class="btn">Open KKamera</a>
       <p>Add your cloud connections (Google Drive, OneDrive, Dropbox, FTP, WebDAV) in Settings → Upload to start shooting.</p>
     `),
@@ -80,48 +111,29 @@ export function welcomeEmail(name: string): { subject: string; html: string } {
 }
 
 export function trialEndingEmail(name: string, daysLeft: number): { subject: string; html: string } {
+  const days = `${daysLeft} day${daysLeft !== 1 ? "s" : ""}`;
+  // No price here: it varies by App Store / Play storefront and country, so the
+  // store's own subscription sheet is the only accurate source.
   return {
-    subject: `Your KKamera trial ends in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`,
+    subject: `Your KKamera trial ends in ${days}`,
     html: wrap("Your trial is almost over", `
       <p>Hi ${escapeHtml(name)},</p>
-      <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</strong>.</p>
-      <p>Subscribe now to keep uploading directly to your cloud storage — just <strong>$25/year</strong>, less than 7¢ a day.</p>
-      <a href="https://app.kkamera.app/settings/subscription" class="btn">Subscribe — $25/year</a>
-      <p>Don't lose access to your camera uploads. Your existing cloud connections and settings will be preserved.</p>
-    `),
-  };
-}
-
-export function subscriptionActiveEmail(name: string): { subject: string; html: string } {
-  return {
-    subject: "KKamera subscription confirmed",
-    html: wrap("Subscription active", `
-      <p>Hi ${escapeHtml(name)},</p>
-      <p>Your KKamera subscription is now active. You have full access for the next 12 months.</p>
-      <p>Thank you for supporting KKamera — your subscription helps us keep the app ad-free and privacy-first.</p>
-      <a href="https://app.kkamera.app" class="btn">Open KKamera</a>
-    `),
-  };
-}
-
-export function subscriptionCancelledEmail(name: string, accessUntil: string): { subject: string; html: string } {
-  return {
-    subject: "KKamera subscription cancelled",
-    html: wrap("Subscription cancelled", `
-      <p>Hi ${escapeHtml(name)},</p>
-      <p>Your KKamera subscription has been cancelled. You'll retain full access until <strong style="color:#b19870">${escapeHtml(accessUntil)}</strong>.</p>
-      <p>If you change your mind, you can resubscribe anytime from Settings → Subscription.</p>
-      <a href="https://app.kkamera.app/settings/subscription" class="btn">Resubscribe</a>
+      <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${days}</strong>.</p>
+      <p>To keep uploading directly to your cloud storage, subscribe from <strong>Settings → Subscription</strong> in the KKamera app. You'll see the price for your country before you confirm.</p>
+      <a href="${getPublicBaseUrl()}/settings/subscription" class="btn">Open KKamera</a>
+      <p>Your cloud connections and settings are kept either way.</p>
     `),
   };
 }
 
 export function coworkerInviteEmail(inviterName: string, referralCode: string): { subject: string; html: string } {
-  const link = `https://app.kkamera.app/register?ref=${encodeURIComponent(referralCode)}`;
+  const link = `https://app.kkamera.app/auth/register?ref=${encodeURIComponent(referralCode)}`;
   const safeName = escapeHtml(inviterName);
   const safeCode = escapeHtml(referralCode);
+  // Strip CR/LF/tab from any user-derived value used in a header line (subject).
+  const subjectName = inviterName.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100) || "Someone";
   return {
-    subject: `${inviterName} invited you to KKamera 📷`,
+    subject: `${subjectName} invited you to KKamera 📷`,
     html: wrap(`${safeName} thinks you'd love KKamera`, `
       <p><strong style="color:#b19870">${safeName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
       <p>Sign up with their invite and you'll get a <strong style="color:#b19870">14-day free trial</strong> — no credit card required.</p>
@@ -139,6 +151,32 @@ export function referralRewardEmail(name: string, freeYearsTotal: number): { sub
       <p>You've reached 5 successful referrals — we've added <strong style="color:#b19870">1 free year</strong> to your KKamera subscription!</p>
       <p>You now have <strong>${freeYearsTotal} free year${freeYearsTotal !== 1 ? "s" : ""}</strong> banked. Keep sharing to earn more — there's no limit!</p>
       <a href="https://app.kkamera.app/settings/subscription" class="btn">View Your Subscription</a>
+    `),
+  };
+}
+
+export function verificationCodeEmail(name: string, code: string): { subject: string; html: string } {
+  // Codes are digits only, but escape anyway — nothing user-influenced goes in raw.
+  const display = escapeHtml(`${code.slice(0, 3)} ${code.slice(3)}`);
+  return {
+    subject: "Your KKamera verification code",
+    html: wrap("Verify your email", `
+      <p>Hi ${escapeHtml(name)},</p>
+      <p>Enter this code in the KKamera app to verify your email address:</p>
+      <div class="code">${display}</div>
+      <p>This code expires in <strong style="color:#b19870">30 minutes</strong>. Never share it — KKamera will never ask you for it.</p>
+      <p class="muted">If you didn't request this, ignore this email.</p>
+    `, "You're receiving this because this address was used to sign up for or sign in to KKamera."),
+  };
+}
+
+export function accountExistsEmail(name: string): { subject: string; html: string } {
+  return {
+    subject: "Someone tried to create a KKamera account with your email",
+    html: wrap("You already have an account", `
+      <p>Hi ${escapeHtml(name)},</p>
+      <p>Someone tried to create a KKamera account with your email. If this was you, sign in or reset your password in the KKamera app.</p>
+      <p class="muted">If this wasn't you, you can ignore this email — no account was created and nothing about your existing account has changed.</p>
     `),
   };
 }

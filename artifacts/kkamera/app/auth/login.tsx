@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Platform, Alert, Image, Linking,
+  Platform, Image,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,6 +9,7 @@ import { router } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useLogin, getUserFacingMessage } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import type { AuthUser } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
@@ -29,30 +30,56 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     setError("");
-    if (!email || !password) { setError("Please enter your email and password."); return; }
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) { setError("Please enter your email and password."); return; }
+    // Accept a TOTP code or a backup code (10 chars shown as XXXXX-XXXXX, or a
+    // legacy 8-hex code), optionally typed with dashes/spaces — the server
+    // compares the bare uppercase form.
+    const code = totp.replace(/[\s-]/g, "").toUpperCase();
+    if (requires2FA && !code) { setError("Enter your authenticator code or a backup code."); return; }
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
-      const result = await loginMutation.mutateAsync({ data: { email, password, totpCode: totp || null } });
+      const result = await loginMutation.mutateAsync({ data: { email: trimmedEmail, password, totpCode: code || null } });
       if ((result as any).requires2FA) {
         setRequires2FA(true);
         return;
       }
       if (result.token && result.user) {
-        await login(result.token, result.user as AuthUser);
-        router.replace(hasCompletedWizard ? "/camera" : "/wizard");
+        const loggedInUser = result.user as AuthUser;
+        await login(result.token, loggedInUser);
+        // Route on the account's onboarding flag from the login response — not a
+        // stale context value — so the wizard only ever shows for users who have
+        // not completed it, regardless of device or local storage.
+        router.replace(loggedInUser.onboardingCompleted || hasCompletedWizard ? "/camera" : "/wizard");
       }
     } catch (e) {
-      setError(getUserFacingMessage(e, "Login failed. Check your credentials."));
+      // Correct password, unverified email: the server emailed a code bound to
+      // this nonce — continue on the verification screen.
+      const unverified = emailNotVerifiedDetails(e);
+      if (unverified) {
+        router.push({ pathname: "/auth/verify-email", params: unverified });
+        return;
+      }
+      setError(getUserFacingMessage(e, requires2FA ? "That code didn't work. Try again." : "Login failed. Check your credentials."));
     }
+  };
+
+  // Leave the 2FA step: back to email/password (e.g. to use a different account).
+  const handleBackFrom2FA = () => {
+    setRequires2FA(false);
+    setTotp("");
+    setPassword("");
+    setError("");
   };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.homeBtn} onPress={() => Linking.openURL("https://app.kkamera.app")}>
-        <Ionicons name="chevron-back" size={18} color={PRIMARY} />
-        <Text style={styles.homeBtnText}>app.kkamera.app</Text>
-      </TouchableOpacity>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         {/* Logo */}
         <View style={styles.logoWrap}>
           <Image
@@ -63,12 +90,12 @@ export default function LoginScreen() {
           />
         </View>
 
-        <Text style={styles.title}>Welcome Back</Text>
+        <Text style={styles.title} accessibilityRole="header">Welcome Back</Text>
         <Text style={styles.subtitle}>Sign in to your account</Text>
 
         {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+          <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
@@ -80,6 +107,7 @@ export default function LoginScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="your@email.com"
+                accessibilityLabel="Email"
                 placeholderTextColor="#555"
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -95,6 +123,7 @@ export default function LoginScreen() {
                 <TextInput
                   style={[styles.input, { flex: 1, borderWidth: 0 }]}
                   placeholder="••••••••"
+                  accessibilityLabel="Password"
                   placeholderTextColor="#555"
                   secureTextEntry={!showPassword}
                   autoComplete="current-password"
@@ -107,6 +136,7 @@ export default function LoginScreen() {
                   style={styles.eyeBtn}
                   accessibilityRole="button"
                   accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                  hitSlop={12}
                 >
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                 </TouchableOpacity>
@@ -116,16 +146,25 @@ export default function LoginScreen() {
         ) : (
           <View style={styles.field}>
             <Text style={styles.label}>Two-Factor Code</Text>
-            <Text style={styles.twoFAHint}>? Open your authenticator app and enter the 6-digit code.</Text>
+            <Text style={styles.twoFAHint}>Enter the 6-digit code from your authenticator app, or a backup code.</Text>
             <TextInput
               style={[styles.input, styles.totpInput]}
               placeholder="000000"
+              accessibilityLabel="Two-factor code"
               placeholderTextColor="#555"
-              keyboardType="number-pad"
-              maxLength={6}
+              keyboardType="default"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              autoComplete="one-time-code"
+              textContentType="oneTimeCode"
+              autoFocus
+              maxLength={11}
               value={totp}
               onChangeText={setTotp}
+              onSubmitEditing={handleLogin}
+              returnKeyType="go"
             />
+            <Text style={styles.twoFAAccount}>Signing in as {email.trim()}</Text>
           </View>
         )}
 
@@ -133,32 +172,49 @@ export default function LoginScreen() {
           style={[styles.loginBtn, loginMutation.isPending && styles.loginBtnDisabled]}
           onPress={handleLogin}
           disabled={loginMutation.isPending}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: loginMutation.isPending, busy: loginMutation.isPending }}
         >
           <Text style={styles.loginText}>{loginMutation.isPending ? "Signing in..." : "Sign In"}</Text>
         </TouchableOpacity>
 
-        {!requires2FA && (
-          <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")}>
+        {!requires2FA ? (
+          <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")} accessibilityRole="link">
             <Text style={styles.forgotLinkText}>Forgot password?</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.forgotLink} onPress={handleBackFrom2FA} accessibilityRole="button">
+            <Text style={styles.forgotLinkText}>Back · Use a different account</Text>
           </TouchableOpacity>
         )}
 
-        <TouchableOpacity style={styles.registerLink} onPress={() => router.push("/auth/register")}>
+        <TouchableOpacity style={styles.registerLink} onPress={() => router.push("/auth/register")} accessibilityRole="link">
           <Text style={styles.registerLinkText}>Don't have an account? <Text style={{ color: PRIMARY }}>Create one free</Text></Text>
         </TouchableOpacity>
 
         <View style={styles.privacyRow}>
-          <TouchableOpacity onPress={() => router.push("/settings/privacy")}>
+          <TouchableOpacity onPress={() => router.push("/settings/privacy")} accessibilityRole="link" hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}>
             <Text style={styles.privacyLink}>Privacy Policy</Text>
           </TouchableOpacity>
           <Text style={styles.privacySep}>·</Text>
-          <TouchableOpacity onPress={() => router.push("/settings/terms")}>
+          <TouchableOpacity onPress={() => router.push("/settings/terms")} accessibilityRole="link" hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}>
             <Text style={styles.privacyLink}>Terms of Service</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
+}
+
+/** The 403 { code: "email_not_verified", nonce, email } login response, if that's what `e` is. */
+function emailNotVerifiedDetails(e: unknown): { nonce: string; email: string } | null {
+  const err = e as { status?: number; data?: unknown } | null;
+  if (err?.status !== 403 || !err.data || typeof err.data !== "object") return null;
+  const data = err.data as Record<string, unknown>;
+  if (data["code"] !== "email_not_verified") return null;
+  const nonce = data["nonce"];
+  const email = data["email"];
+  return typeof nonce === "string" && typeof email === "string" ? { nonce, email } : null;
 }
 
 const styles = StyleSheet.create({
@@ -176,7 +232,8 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: "row", alignItems: "center", backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.2)", paddingHorizontal: 16 },
   eyeBtn: { paddingLeft: 8 },
   twoFAHint: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 10 },
-  totpInput: { fontSize: 24, textAlign: "center", letterSpacing: 8, fontFamily: "Inter_700Bold", color: PRIMARY },
+  totpInput: { fontSize: 24, textAlign: "center", letterSpacing: 6, fontFamily: "Inter_700Bold", color: PRIMARY },
+  twoFAAccount: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", marginTop: 8, textAlign: "center" },
   loginBtn: { backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 16, alignItems: "center", marginTop: 8, marginBottom: 12 },
   forgotLink: { alignItems: "center", marginBottom: 16 },
   forgotLinkText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_400Regular" },
@@ -187,6 +244,4 @@ const styles = StyleSheet.create({
   privacyRow: { flexDirection: "row", justifyContent: "center", gap: 8, alignItems: "center" },
   privacyLink: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
   privacySep: { color: "#555" },
-  homeBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, gap: 2 },
-  homeBtnText: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium" },
 });

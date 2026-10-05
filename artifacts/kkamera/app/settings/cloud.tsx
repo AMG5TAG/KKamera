@@ -6,7 +6,7 @@ import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListCloudConnections, useDeleteCloudConnection, useUpdateCloudConnection,
-  useTestCloudConnection, getListCloudConnectionsQueryKey,
+  useTestCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage,
 } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -17,8 +17,17 @@ const ICONS: Record<string, { icon: string; color: string; set: "ion" | "mci" }>
   googledrive: { icon: "google-drive", color: "#4285F4", set: "mci" },
   onedrive: { icon: "microsoft-onedrive", color: "#0078D4", set: "mci" },
   dropbox: { icon: "dropbox", color: "#0061FF", set: "mci" },
+  nextcloud: { icon: "cloud-outline", color: "#0082C9", set: "ion" },
   webdav: { icon: "server-outline", color: "#6B7280", set: "ion" },
   ftp: { icon: "folder-outline", color: "#8B5CF6", set: "ion" },
+};
+
+// UI sub-flavours (`provider`) that override the base `type` icon + type label.
+const PROVIDER_ICONS: Record<string, { icon: string; color: string; set: "ion" | "mci" }> = {
+  synology: { icon: "nas", color: "#b19870", set: "mci" },
+};
+const PROVIDER_LABELS: Record<string, string> = {
+  synology: "SYNOLOGY",
 };
 
 export default function CloudScreen() {
@@ -53,8 +62,9 @@ export default function CloudScreen() {
     try {
       const result = await testMutation.mutateAsync({ id });
       Alert.alert(result.success ? "Connection OK" : "Connection Failed", result.message);
-    } catch {
-      Alert.alert("Error", "Could not test connection");
+    } catch (e) {
+      // e.g. the per-user test rate limit (429) — show the server's message.
+      Alert.alert("Error", getUserFacingMessage(e, "Could not test connection"));
     } finally {
       setTesting(null);
     }
@@ -74,17 +84,26 @@ export default function CloudScreen() {
         keyExtractor={item => String(item.id)}
         contentContainerStyle={{ padding: 16, gap: 12 }}
         ListHeaderComponent={(
-          <View style={styles.addRow}>
-            <TouchableOpacity style={[styles.addBtn, { flex: 1 }]} onPress={() => router.push("/settings/add-cloud")}>
-              <Ionicons name="add-circle-outline" size={20} color="white" />
-              <Text style={styles.addText}>Add New Connection</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.infoBtn}
-              onPress={() => Alert.alert("Multiple Connections", "Enable multiple connections to upload to all clouds simultaneously.")}
-            >
-              <Ionicons name="information-circle-outline" size={26} color={PRIMARY} />
-            </TouchableOpacity>
+          <View style={{ gap: 10 }}>
+            <View style={styles.addRow}>
+              <TouchableOpacity style={[styles.addBtn, { flex: 1 }]} onPress={() => router.push("/settings/add-cloud")}>
+                <Ionicons name="add-circle-outline" size={20} color="white" />
+                <Text style={styles.addText}>Add New Connection</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.infoBtn}
+                onPress={() => Alert.alert("Multiple Accounts", "Connect as many accounts as you like — even two of the same provider (e.g. a personal and a business OneDrive). Use “Upload destinations” to choose which ones each capture uploads to.")}
+              >
+                <Ionicons name="information-circle-outline" size={26} color={PRIMARY} />
+              </TouchableOpacity>
+            </View>
+            {(connections?.length ?? 0) > 0 && (
+              <TouchableOpacity style={styles.destBtn} onPress={() => router.push("/settings/upload-destinations")}>
+                <Ionicons name="git-branch-outline" size={18} color={PRIMARY} />
+                <Text style={styles.destText}>Upload Destination</Text>
+                <Ionicons name="chevron-forward" size={15} color="#555" style={{ marginLeft: "auto" }} />
+              </TouchableOpacity>
+            )}
           </View>
         )}
         ListEmptyComponent={(
@@ -95,7 +114,9 @@ export default function CloudScreen() {
           </View>
         )}
         renderItem={({ item }) => {
-          const cfg = ICONS[item.type] ?? { icon: "cloud-outline", color: PRIMARY, set: "ion" };
+          const cfg = (item.provider ? PROVIDER_ICONS[item.provider] : undefined)
+            ?? ICONS[item.type] ?? { icon: "cloud-outline", color: PRIMARY, set: "ion" as const };
+          const typeLabel = (item.provider ? PROVIDER_LABELS[item.provider] : undefined) ?? item.type.toUpperCase();
           return (
             <View style={styles.card}>
               <View style={[styles.cardTop, !item.active && styles.cardTopInactive]}>
@@ -107,7 +128,10 @@ export default function CloudScreen() {
                 </View>
                 <View style={styles.cardInfo}>
                   <Text style={styles.cardName}>{item.name}</Text>
-                  <Text style={styles.cardType}>{item.type.toUpperCase()} · {item.uploadPath || "/"}</Text>
+                  {item.accountLabel ? (
+                    <Text style={styles.cardAccount} numberOfLines={1}>{item.accountLabel}</Text>
+                  ) : null}
+                  <Text style={styles.cardType}>{typeLabel} · {item.uploadPath || "/"}</Text>
                 </View>
                 <TouchableOpacity onPress={() => handleToggleActive(item.id, item.active)} style={styles.toggleBtn}>
                   <Ionicons name={item.active ? "toggle" : "toggle-outline"} size={32} color={item.active ? PRIMARY : "#555"} />
@@ -124,6 +148,13 @@ export default function CloudScreen() {
                     : <Ionicons name="checkmark-circle-outline" size={16} color={PRIMARY} />
                   }
                   <Text style={styles.actionText}>Test</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.actionBtn}
+                  onPress={() => router.push({ pathname: "/settings/add-cloud", params: { edit: String(item.id) } })}
+                >
+                  <Ionicons name="create-outline" size={16} color={PRIMARY} />
+                  <Text style={styles.actionText}>Edit</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.actionBtn, styles.actionDelete]} onPress={() => handleDelete(item.id, item.name)}>
                   <Ionicons name="trash-outline" size={16} color="#ef4444" />
@@ -145,6 +176,12 @@ const styles = StyleSheet.create({
   addBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 14 },
   addText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   infoBtn: { padding: 6 },
+  destBtn: {
+    flexDirection: "row", alignItems: "center", gap: 10,
+    backgroundColor: CARD, borderRadius: 14, paddingVertical: 13, paddingHorizontal: 14,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.15)",
+  },
+  destText: { fontSize: 14, fontFamily: "Inter_500Medium", color: "white" },
   emptyWrap: { alignItems: "center", paddingVertical: 48 },
   emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", color: "#666", marginTop: 12, marginBottom: 8 },
   emptyText: { fontSize: 14, color: "#444", fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 20 },
@@ -154,6 +191,7 @@ const styles = StyleSheet.create({
   cardIcon: { width: 46, height: 46, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   cardInfo: { flex: 1 },
   cardName: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
+  cardAccount: { fontSize: 12, color: PRIMARY, fontFamily: "Inter_500Medium", marginBottom: 2 },
   cardType: { fontSize: 11, color: "#888", fontFamily: "Inter_500Medium", letterSpacing: 0.5 },
   toggleBtn: { padding: 4 },
   cardActions: { flexDirection: "row", gap: 10, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.06)", paddingTop: 12 },

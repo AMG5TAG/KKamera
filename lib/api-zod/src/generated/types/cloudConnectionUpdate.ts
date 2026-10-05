@@ -6,21 +6,42 @@
  * OpenAPI spec version: 0.1.0
  */
 
+/**
+ * Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default "/KKamera"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.
+ */
 export interface CloudConnectionUpdate {
-  /** @nullable */
-  name?: string | null;
-  /** @nullable */
-  active?: boolean | null;
-  /** @nullable */
+  /**
+   * @minLength 1
+   * @maxLength 100
+   */
+  name?: string;
+  active?: boolean;
+  /**
+   * Folder path; ".." segments are rejected.
+   * @maxLength 500
+   * @nullable
+   */
   uploadPath?: string | null;
-  /** @nullable */
-  host?: string | null;
-  /** @nullable */
+  /**
+   * Must not embed credentials (user:pass@host).
+   * @minLength 1
+   * @maxLength 500
+   */
+  host?: string;
+  /**
+   * @minimum 1
+   * @maximum 65535
+   * @nullable
+   */
   port?: number | null;
-  /** @nullable */
+  /**
+   * @maxLength 200
+   * @nullable
+   */
   username?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   password?: string | null;
-  /** @nullable */
-  oauthCode?: string | null;
 }

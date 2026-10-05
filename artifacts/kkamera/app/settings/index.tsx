@@ -3,13 +3,24 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Platform }
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import Constants from "expo-constants";
 import { useAuth } from "@/contexts/AuthContext";
-import { useGetSubscription, useGetMe } from "@workspace/api-client-react";
+import { useGetSubscription, useGetMe, getGetSubscriptionQueryKey, getGetMeQueryKey } from "@workspace/api-client-react";
+import { shareInvite } from "@/lib/shareInvite";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
+
+// App version from app.json; native build number when running a native build
+// (expo-application isn't installed, so read it from the embedded config).
+const APP_VERSION = Constants.expoConfig?.version ?? "—";
+const BUILD_NUMBER =
+  Platform.OS === "ios" ? Constants.expoConfig?.ios?.buildNumber :
+  Platform.OS === "android" ? Constants.expoConfig?.android?.versionCode?.toString() :
+  undefined;
+const VERSION_LABEL = `KKamera v${APP_VERSION}${BUILD_NUMBER ? ` (${BUILD_NUMBER})` : ""}`;
 
 function MenuRow({
   icon, iconSet = "ion", iconColor, label, hint, badge, value, onPress,
@@ -19,7 +30,13 @@ function MenuRow({
   onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole="button"
+      accessibilityLabel={[label, value, hint].filter(Boolean).join(", ")}
+    >
       <View style={[styles.rowIconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
         {iconSet === "mci"
           ? <MaterialCommunityIcons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
@@ -37,7 +54,7 @@ function MenuRow({
             <Text style={styles.badgeText}>{badge}</Text>
           </View>
         ) : null}
-        <Ionicons name="chevron-forward" size={15} color="#444" />
+        <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
       </View>
     </TouchableOpacity>
   );
@@ -46,17 +63,39 @@ function MenuRow({
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
-  const { data: sub } = useGetSubscription({ query: { enabled: !!user, queryKey: [] as any } });
-  const { data: me } = useGetMe({ query: { enabled: !!user, queryKey: [] as any } });
+  const { data: sub } = useGetSubscription({ query: { enabled: !!user, queryKey: getGetSubscriptionQueryKey() } });
+  const { data: me } = useGetMe({ query: { enabled: !!user, queryKey: getGetMeQueryKey() } });
 
   const subStatus = sub?.status ?? "none";
   const subLabel =
     subStatus === "trial" ? "14-Day Trial" :
-    subStatus === "active" ? "Active · $25/yr" :
+    // No price here: this screen has no access to the live store price, and a
+    // hardcoded one drifts the moment the store's price changes.
+    subStatus === "active" ? "Active" :
     subStatus === "cancelled" ? "Cancelled" : "Subscribe";
   const subBadge =
     subStatus === "trial" ? "TRIAL" :
     subStatus === "active" ? "ACTIVE" : undefined;
+
+  // Alert isn't implemented by react-native-web, so web feedback goes through
+  // the browser dialog (same split as handleLogout below).
+  const notify = (title: string, body: string) => {
+    if (Platform.OS === "web") window.alert(`${title}\n\n${body}`);
+    else Alert.alert(title, body);
+  };
+
+  // Tapping the referral code opens the OS share sheet — Messages, Mail,
+  // WhatsApp, social apps, whatever the user has installed.
+  const handleShareCode = async () => {
+    const code = user?.referralCode;
+    if (!code) return;
+    const result = await shareInvite(code);
+    if (result === "copied") {
+      notify("Invite copied", "Your invite link and code are on the clipboard — paste them anywhere.");
+    } else if (result === "unavailable") {
+      notify("Share unavailable", `Sharing isn't supported here. Your referral code is ${code}.`);
+    }
+  };
 
   const handleLogout = () => {
     if (Platform.OS === "web") {
@@ -75,8 +114,8 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView
@@ -93,13 +132,30 @@ export default function SettingsScreen() {
             <Text style={styles.profileName}>{displayName}</Text>
             <Text style={styles.profileEmail}>{displayEmail}</Text>
             {user?.referralCode ? (
-              <View style={styles.referralPill}>
-                <Ionicons name="people-outline" size={12} color={PRIMARY} />
+              <TouchableOpacity
+                style={styles.referralPill}
+                onPress={handleShareCode}
+                activeOpacity={0.65}
+                // The pill is deliberately small; widen the touch area rather
+                // than its padding so the layout is unchanged.
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityRole="button"
+                accessibilityLabel={`Share your referral code ${user.referralCode}`}
+                accessibilityHint="Opens the share sheet"
+              >
+                <Ionicons name="people-outline" size={12} color={PRIMARY} accessible={false} />
                 <Text style={styles.referralPillText}>Code: {user.referralCode}</Text>
-              </View>
+                <Ionicons name="share-outline" size={12} color={PRIMARY} accessible={false} />
+              </TouchableOpacity>
             ) : null}
           </View>
-          <TouchableOpacity style={styles.editBtn} onPress={() => router.push("/settings/subscription")}>
+          <TouchableOpacity
+            style={styles.editBtn}
+            onPress={() => router.push("/settings/subscription")}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Subscription"
+          >
             <Ionicons name="card-outline" size={18} color={PRIMARY} />
           </TouchableOpacity>
         </View>
@@ -109,14 +165,28 @@ export default function SettingsScreen() {
           <MenuRow
             icon="camera-outline"
             label="Camera"
-            hint="Format, quality, GPS, mirror"
+            hint="Video quality, grid, timer, GPS, stamps"
             onPress={() => router.push("/settings/camera")}
           />
           <View style={styles.divider} />
           <MenuRow
             icon="cloud-upload-outline"
+            label="Cloud Connections"
+            hint="FTP, WebDAV, Google Drive, OneDrive, Dropbox"
+            onPress={() => router.push("/settings/cloud")}
+          />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="git-branch-outline"
+            label="Upload Destination"
+            hint="Choose which accounts captures upload to"
+            onPress={() => router.push("/settings/upload-destinations")}
+          />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="settings-outline"
             label="Upload"
-            hint="Cloud connections, Wi-Fi, queue"
+            hint="Wi-Fi, history, queue"
             onPress={() => router.push("/settings/upload")}
           />
         </View>
@@ -125,12 +195,18 @@ export default function SettingsScreen() {
           <MenuRow
             icon="card-outline"
             label="Subscription"
-            hint="Plan, billing & referrals"
+            hint="Plan & billing"
             value={subLabel}
             badge={subBadge}
             onPress={() => router.push("/settings/subscription")}
           />
           <View style={styles.divider} />
+          <MenuRow
+            icon="people-outline"
+            label="Refer & Earn"
+            hint="Earn free years by inviting friends"
+            onPress={() => router.push("/settings/affiliate")}
+          />
           <View style={styles.divider} />
           <MenuRow
             icon="shield-checkmark-outline"
@@ -160,13 +236,14 @@ export default function SettingsScreen() {
 
         {/* Version */}
         <View style={styles.versionWrap}>
-          <Text style={styles.versionText}>KKamera v1.0.0</Text>
+          <Text style={styles.versionText}>{VERSION_LABEL}</Text>
           <Text style={styles.versionSub}>Cloud Based Photography</Text>
+          <Text style={styles.versionSub}>by Koastal Kollective</Text>
         </View>
 
         {/* Sign Out */}
-        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7}>
-          <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout} activeOpacity={0.7} accessibilityRole="button">
+          <Ionicons name="log-out-outline" size={18} color="#ef4444" accessible={false} />
           <Text style={styles.logoutText}>Sign Out</Text>
         </TouchableOpacity>
       </ScrollView>

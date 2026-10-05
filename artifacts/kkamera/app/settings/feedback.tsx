@@ -1,8 +1,9 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Platform, Alert, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Platform, Alert, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useSubmitFeedback } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -38,44 +39,59 @@ export default function FeedbackScreen() {
 
   if (sent) {
     return (
-      <View style={[styles.successWrap, { backgroundColor: BG }]}>
-        <TouchableOpacity style={[styles.backBtn, { alignSelf: "flex-start" }]} onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+          <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
         </TouchableOpacity>
-        <Ionicons name="checkmark-circle" size={64} color={PRIMARY} />
-        <Text style={styles.successTitle}>Thank You!</Text>
-        <Text style={styles.successText}>Your feedback has been submitted. We read every message and use it to make KKamera better.</Text>
-        <TouchableOpacity style={styles.doneBtn} onPress={() => setSent(false)}>
-          <Text style={styles.doneBtnText}>Send Another</Text>
-        </TouchableOpacity>
+        <View style={[styles.successWrap, { paddingBottom: 40 + insets.bottom }]}>
+          <Ionicons name="checkmark-circle" size={64} color={PRIMARY} accessible={false} />
+          <Text style={styles.successTitle} accessibilityRole="header">Thank You!</Text>
+          <Text style={styles.successText}>Your feedback has been submitted. We read every message and use it to make KKamera better.</Text>
+          <TouchableOpacity style={styles.doneBtn} onPress={() => setSent(false)} accessibilityRole="button">
+            <Text style={styles.doneBtnText}>Send Another</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
     </TouchableOpacity>
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }} showsVerticalScrollIndicator={false}>
+    <KeyboardAwareScrollViewCompat
+      style={{ flex: 1 }}
+      contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      bottomOffset={24}
+    >
       <Text style={styles.intro}>
         Found a bug? Have a great idea? Just want to share a thought? We'd love to hear from you.
       </Text>
 
-      <Text style={styles.sectionTitle}>Type of Feedback</Text>
+      <Text style={styles.sectionTitle} accessibilityRole="header">Type of Feedback</Text>
       {TYPES.map(t => (
-        <TouchableOpacity key={t.value} style={[styles.typeCard, type === t.value && styles.typeCardSelected]} onPress={() => setType(t.value as any)}>
-          <Ionicons name={t.icon as any} size={22} color={type === t.value ? PRIMARY : "#888"} />
+        <TouchableOpacity
+          key={t.value}
+          style={[styles.typeCard, type === t.value && styles.typeCardSelected]}
+          onPress={() => setType(t.value as any)}
+          accessibilityRole="radio"
+          accessibilityLabel={`${t.label}, ${t.desc}`}
+          accessibilityState={{ checked: type === t.value, selected: type === t.value }}
+        >
+          <Ionicons name={t.icon as any} size={22} color={type === t.value ? PRIMARY : "#888"} accessible={false} />
           <View style={{ flex: 1 }}>
             <Text style={[styles.typeLabel, type === t.value && { color: PRIMARY }]}>{t.label}</Text>
             <Text style={styles.typeDesc}>{t.desc}</Text>
           </View>
-          {type === t.value && <Ionicons name="checkmark-circle" size={20} color={PRIMARY} />}
+          {type === t.value && <Ionicons name="checkmark-circle" size={20} color={PRIMARY} accessible={false} />}
         </TouchableOpacity>
       ))}
 
-      <Text style={[styles.sectionTitle, { marginTop: 20 }]}>Your Message</Text>
-      <Text style={styles.hint}>? The more detail you provide, the better we can help.</Text>
+      <Text style={[styles.sectionTitle, { marginTop: 20 }]} accessibilityRole="header">Your Message</Text>
+      <Text style={styles.hint}>💡 The more detail you provide, the better we can help.</Text>
       <TextInput
         style={styles.messageInput}
         placeholder={
@@ -86,6 +102,8 @@ export default function FeedbackScreen() {
             : "Share your thoughts..."
         }
         placeholderTextColor="#555"
+        accessibilityLabel="Your message"
+        accessibilityHint="At least 10 characters"
         multiline
         numberOfLines={6}
         value={message}
@@ -98,15 +116,18 @@ export default function FeedbackScreen() {
         style={[styles.submitBtn, (submitMutation.isPending || message.length < 10) && styles.btnDisabled]}
         onPress={handleSubmit}
         disabled={submitMutation.isPending || message.length < 10}
+        accessibilityRole="button"
+        accessibilityLabel="Send Feedback"
+        accessibilityState={{ disabled: submitMutation.isPending || message.length < 10, busy: submitMutation.isPending }}
       >
         {submitMutation.isPending ? <ActivityIndicator color="white" /> : (
           <>
-            <Ionicons name="send-outline" size={18} color="white" />
+            <Ionicons name="send-outline" size={18} color="white" accessible={false} />
             <Text style={styles.submitBtnText}>Send Feedback</Text>
           </>
         )}
       </TouchableOpacity>
-    </ScrollView>
+    </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

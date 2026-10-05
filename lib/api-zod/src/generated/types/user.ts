@@ -12,5 +12,6 @@ export interface User {
   name: string;
   referralCode: string;
   twoFAEnabled: boolean;
+  onboardingCompleted: boolean;
   createdAt: string;
 }

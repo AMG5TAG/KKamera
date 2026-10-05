@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity,
   Switch, TextInput, Alert, Platform,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -8,8 +8,12 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { hashPin } from "@/lib/appLock";
+import { useUpload } from "@/contexts/UploadContext";
+import {
+  authenticateWithDevice, clearPin, hasPin, isBiometricEnrolled, isDeviceAuthAvailable, savePin, RELOCK_GRACE_MS,
+} from "@/lib/appLock";
 import { API_BASE_URL } from "@/lib/config";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -17,113 +21,164 @@ const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 const DANGER = "#ef4444";
 
-// Lazy-load expo-local-authentication so the module (and its native-only
-// dependency `invariant`) is never bundled/evaluated on web.
-async function getLocalAuth() {
-  const LocalAuthentication = await import("expo-local-authentication");
-  return LocalAuthentication;
+// Alert isn't implemented by react-native-web, so web feedback uses the browser dialog.
+function notify(title: string, body: string) {
+  if (Platform.OS === "web") window.alert(`${title}\n\n${body}`);
+  else Alert.alert(title, body);
 }
 
 export default function PrivacySecurityScreen() {
   const insets = useSafeAreaInsets();
-  const { settings, updateSetting } = useSettings();
-  const { logout } = useAuth();
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const { settings, updateSetting, resetSettings } = useSettings();
+  const { logout, token } = useAuth();
+  const { discardQueue } = useUpload();
+  const [deviceAuthAvailable, setDeviceAuthAvailable] = useState(false);
+  const [biometricEnrolled, setBiometricEnrolled] = useState(false);
+  const [pinStored, setPinStored] = useState(false);
   const [pinEntry, setPinEntry] = useState("");
   const [confirmPin, setConfirmPin] = useState("");
   const [pinStep, setPinStep] = useState<"idle" | "enter" | "confirm">("idle");
+  const [savingPin, setSavingPin] = useState(false);
 
   useEffect(() => {
-    if (Platform.OS === "web") return;
     void (async () => {
-      try {
-        const LocalAuthentication = await getLocalAuth();
-        const has = await LocalAuthentication.hasHardwareAsync();
-        if (has) {
-          const enrolled = await LocalAuthentication.isEnrolledAsync();
-          setBiometricAvailable(enrolled);
-        }
-      } catch {
-        // ignore
-      }
+      const [device, bio, stored] = await Promise.all([
+        isDeviceAuthAvailable(),
+        isBiometricEnrolled(),
+        hasPin(settings.appPin),
+      ]);
+      setDeviceAuthAvailable(device);
+      setBiometricEnrolled(bio);
+      setPinStored(stored);
     })();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const cancelPinSetup = () => {
+    setPinEntry(""); setConfirmPin(""); setPinStep("idle");
+  };
+
+  // Choosing biometric only takes effect after a successful prompt, so the lock
+  // can never be switched to a method this device can't satisfy.
+  const enableDeviceLock = async () => {
+    const result = await authenticateWithDevice("Confirm to use Face ID / Touch ID for KKamera");
+    if (result === "success") {
+      updateSetting("appLockType", "biometric");
+      updateSetting("appLockEnabled", true);
+      cancelPinSetup();
+    } else if (result === "unavailable") {
+      setDeviceAuthAvailable(false);
+      notify("Not available", "Biometric unlock isn't set up on this device. Set a PIN instead.");
+    }
+  };
 
   const handleToggleLock = (v: boolean) => {
     if (!v) {
       updateSetting("appLockEnabled", false);
+      cancelPinSetup();
       return;
     }
-    if (settings.appLockType === "biometric" && biometricAvailable) {
+    if (settings.appLockType === "pin" && pinStored) {
       updateSetting("appLockEnabled", true);
+    } else if (deviceAuthAvailable) {
+      void enableDeviceLock();
     } else {
+      // Nothing is enabled until a PIN has been entered, confirmed and saved.
       setPinStep("enter");
     }
   };
 
+  const handleSelectPin = () => {
+    if (pinStored && settings.appLockType !== "pin") {
+      updateSetting("appLockType", "pin");
+      return;
+    }
+    // No PIN yet (or re-tapping to change it): collect one first. The lock type
+    // only switches to "pin" once the new PIN is confirmed and saved.
+    setPinEntry(""); setConfirmPin(""); setPinStep("enter");
+  };
+
   const handlePinSubmit = async () => {
-    if (pinEntry.length !== 4) {
-      Alert.alert("Invalid PIN", "PIN must be exactly 4 digits.");
+    const value = pinStep === "enter" ? pinEntry : confirmPin;
+    if (!/^\d{4}$/.test(value)) {
+      notify("Invalid PIN", "PIN must be exactly 4 digits.");
       return;
     }
     if (pinStep === "enter") {
       setPinStep("confirm");
-    } else {
-      if (pinEntry !== confirmPin) {
-        Alert.alert("PINs don't match", "Try again.");
-        setPinEntry(""); setConfirmPin(""); setPinStep("enter");
-        return;
-      }
-      // Store only a salted hash, never the cleartext PIN.
-      updateSetting("appPin", await hashPin(pinEntry));
-      updateSetting("appLockEnabled", true);
-      updateSetting("appLockType", "pin");
-      setPinEntry(""); setConfirmPin(""); setPinStep("idle");
+      return;
     }
+    if (pinEntry !== confirmPin) {
+      notify("PINs don't match", "Try again.");
+      setPinEntry(""); setConfirmPin(""); setPinStep("enter");
+      return;
+    }
+    setSavingPin(true);
+    try {
+      // Stored as a salted hash in the OS keystore, never in cleartext.
+      await savePin(pinEntry);
+    } catch {
+      notify("Couldn't save PIN", "Your PIN could not be stored securely on this device. App lock was not changed.");
+      return;
+    } finally {
+      setSavingPin(false);
+    }
+    // Drop any legacy copy kept in the (AsyncStorage-backed) settings.
+    if (settings.appPin) updateSetting("appPin", "");
+    setPinStored(true);
+    updateSetting("appLockType", "pin");
+    updateSetting("appLockEnabled", true);
+    cancelPinSetup();
   };
 
   const handlePanic = () => {
-    Alert.alert(
-      "Panic Wipe",
-      "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign you out\n• Reset all settings\n\nThis cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Wipe Everything",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // Fire API calls to clear server-side data. API_BASE_URL is "" on
-              // web (same-origin) — a valid prefix — so DON'T gate on it being
-              // truthy, or the wipe silently no-ops for web users.
-              const auth = (await import("@react-native-async-storage/async-storage")).default;
-              const storedToken = await auth.getItem("kkamera_token");
-              if (storedToken) {
-                await Promise.allSettled([
-                  fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
-                  fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${storedToken}` } }),
-                ]);
-              }
-            } catch { /* best effort */ }
-            await logout();
-          },
-        },
-      ]
-    );
+    const message =
+      "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign you out\n• Reset all settings\n\nThis cannot be undone.";
+    const wipe = async () => {
+      try {
+        // Use the in-memory auth token from context. Reading it from
+        // AsyncStorage broke on native, where the token lives in SecureStore
+        // — so the server-side wipe silently no-op'd on the exact platforms
+        // we ship.
+        if (token) {
+          await Promise.allSettled([
+            fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+            fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+          ]);
+        }
+      } catch { /* best effort */ }
+      // Reset all local settings (clears the app-lock PIN too), as the
+      // confirmation dialog promises, then sign out.
+      await resetSettings();
+      await clearPin();
+      setPinStored(false);
+      await discardQueue();
+      await logout();
+    };
+    // Alert.alert is a no-op on react-native-web, so use the browser dialog there.
+    if (Platform.OS === "web") {
+      if (window.confirm(`Panic Wipe\n\n${message}`)) void wipe();
+      return;
+    }
+    Alert.alert("Panic Wipe", message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Wipe Everything", style: "destructive", onPress: () => { void wipe(); } },
+    ]);
   };
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={120}
       >
-        <Text style={styles.pageTitle}>Privacy & Security</Text>
+        <Text style={styles.pageTitle} accessibilityRole="header">Privacy & Security</Text>
 
         {/* App Lock */}
         <Text style={styles.sectionLabel}>App Lock</Text>
@@ -134,11 +189,12 @@ export default function PrivacySecurityScreen() {
             </View>
             <View style={styles.rowBody}>
               <Text style={styles.rowLabel}>Require unlock on open</Text>
-              <Text style={styles.rowHint}>Biometric or PIN</Text>
+              <Text style={styles.rowHint}>Biometric or PIN · re-locks after {RELOCK_GRACE_MS / 1000}s in the background</Text>
             </View>
             <Switch
               value={settings.appLockEnabled}
               onValueChange={handleToggleLock}
+              accessibilityLabel="Require unlock on open"
               trackColor={{ false: "#2a2720", true: PRIMARY }}
               thumbColor="white"
               ios_backgroundColor="#2a2720"
@@ -148,17 +204,23 @@ export default function PrivacySecurityScreen() {
           {settings.appLockEnabled && (
             <>
               <View style={styles.divider} />
-              {biometricAvailable && Platform.OS !== "web" && (
+              {deviceAuthAvailable && Platform.OS !== "web" && (
                 <>
                   <TouchableOpacity
                     style={styles.row}
-                    onPress={() => updateSetting("appLockType", "biometric")}
+                    onPress={() => { if (settings.appLockType !== "biometric") void enableDeviceLock(); }}
+                    accessibilityRole="radio"
+                    accessibilityLabel={biometricEnrolled ? "Unlock with biometrics" : "Unlock with device passcode"}
+                    accessibilityState={{ checked: settings.appLockType === "biometric", selected: settings.appLockType === "biometric" }}
                   >
                     <View style={styles.iconWrap}>
                       <Ionicons name="finger-print-outline" size={19} color={PRIMARY} />
                     </View>
                     <View style={styles.rowBody}>
-                      <Text style={styles.rowLabel}>Biometric (Face/Touch ID)</Text>
+                      <Text style={styles.rowLabel}>
+                        {biometricEnrolled ? "Biometric (Face/Touch ID)" : "Device passcode"}
+                      </Text>
+                      {pinStored && <Text style={styles.rowHint}>Your PIN also works as a fallback</Text>}
                     </View>
                     {settings.appLockType === "biometric" && (
                       <Ionicons name="checkmark-circle" size={20} color={PRIMARY} />
@@ -169,16 +231,21 @@ export default function PrivacySecurityScreen() {
               )}
               <TouchableOpacity
                 style={styles.row}
-                onPress={() => { updateSetting("appLockType", "pin"); setPinStep("enter"); }}
+                onPress={handleSelectPin}
+                accessibilityRole="radio"
+                accessibilityLabel={`Unlock with PIN code, ${pinStored ? (settings.appLockType === "pin" ? "PIN set, tap to change" : "PIN set") : "not set, tap to create"}`}
+                accessibilityState={{ checked: settings.appLockType === "pin" && pinStored, selected: settings.appLockType === "pin" && pinStored }}
               >
                 <View style={styles.iconWrap}>
                   <Ionicons name="keypad-outline" size={19} color={PRIMARY} />
                 </View>
                 <View style={styles.rowBody}>
                   <Text style={styles.rowLabel}>PIN Code</Text>
-                  <Text style={styles.rowHint}>{settings.appPin ? "PIN set" : "Not set"}</Text>
+                  <Text style={styles.rowHint}>
+                    {pinStored ? (settings.appLockType === "pin" ? "PIN set · tap to change" : "PIN set") : "Not set · tap to create"}
+                  </Text>
                 </View>
-                {settings.appLockType === "pin" && (
+                {settings.appLockType === "pin" && pinStored && (
                   <Ionicons name="checkmark-circle" size={20} color={PRIMARY} />
                 )}
               </TouchableOpacity>
@@ -188,23 +255,41 @@ export default function PrivacySecurityScreen() {
 
         {/* PIN setup */}
         {pinStep !== "idle" && (
-          <View style={styles.card}>
+          <View style={[styles.card, { marginTop: 12 }]}>
             <View style={{ padding: 16 }}>
               <Text style={styles.pinLabel}>
                 {pinStep === "enter" ? "Enter a 4-digit PIN" : "Confirm your PIN"}
               </Text>
               <TextInput
+                key={pinStep}
                 style={styles.pinInput}
                 keyboardType="number-pad"
                 maxLength={4}
                 secureTextEntry
+                autoFocus
                 value={pinStep === "enter" ? pinEntry : confirmPin}
-                onChangeText={pinStep === "enter" ? setPinEntry : setConfirmPin}
+                onChangeText={(t) => (pinStep === "enter" ? setPinEntry : setConfirmPin)(t.replace(/\D/g, ""))}
                 placeholder="••••"
+                accessibilityLabel={pinStep === "enter" ? "Enter a 4-digit PIN" : "Confirm your PIN"}
                 placeholderTextColor="#444"
               />
-              <TouchableOpacity style={styles.pinBtn} onPress={handlePinSubmit}>
+              <TouchableOpacity
+                style={[styles.pinBtn, savingPin && { opacity: 0.6 }]}
+                onPress={() => void handlePinSubmit()}
+                disabled={savingPin}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: savingPin, busy: savingPin }}
+              >
                 <Text style={styles.pinBtnText}>{pinStep === "enter" ? "Next" : "Set PIN"}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.pinCancelBtn}
+                onPress={cancelPinSetup}
+                disabled={savingPin}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: savingPin }}
+              >
+                <Text style={styles.pinCancelText}>Cancel</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -224,6 +309,7 @@ export default function PrivacySecurityScreen() {
             <Switch
               value={settings.deleteLocalAfterUpload}
               onValueChange={v => updateSetting("deleteLocalAfterUpload", v)}
+              accessibilityLabel="Delete local file after upload"
               trackColor={{ false: "#2a2720", true: PRIMARY }}
               thumbColor="white"
               ios_backgroundColor="#2a2720"
@@ -245,6 +331,8 @@ export default function PrivacySecurityScreen() {
             <Switch
               value={settings.witnessOnSuccess}
               onValueChange={v => updateSetting("witnessOnSuccess", v)}
+              accessibilityLabel="Notify a witness"
+              accessibilityHint="Emails a contact after each upload"
               trackColor={{ false: "#2a2720", true: PRIMARY }}
               thumbColor="white"
               ios_backgroundColor="#2a2720"
@@ -260,6 +348,7 @@ export default function PrivacySecurityScreen() {
                 <TextInput
                   style={styles.inlineInput}
                   placeholder="witness@example.com"
+                  accessibilityLabel="Witness email address"
                   placeholderTextColor="#555"
                   keyboardType="email-address"
                   autoCapitalize="none"
@@ -274,7 +363,12 @@ export default function PrivacySecurityScreen() {
         {/* 2FA */}
         <Text style={styles.sectionLabel}>Two-Factor Authentication</Text>
         <View style={styles.card}>
-          <TouchableOpacity style={styles.row} onPress={() => router.push("/settings/security")}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push("/settings/security")}
+            accessibilityRole="button"
+            accessibilityLabel="Two-Factor Authentication, TOTP via authenticator app"
+          >
             <View style={styles.iconWrap}>
               <Ionicons name="shield-checkmark-outline" size={19} color={PRIMARY} />
             </View>
@@ -282,14 +376,20 @@ export default function PrivacySecurityScreen() {
               <Text style={styles.rowLabel}>Two-Factor Authentication</Text>
               <Text style={styles.rowHint}>TOTP via authenticator app</Text>
             </View>
-            <Ionicons name="chevron-forward" size={15} color="#444" />
+            <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
         </View>
 
         {/* Danger zone */}
         <Text style={[styles.sectionLabel, { color: DANGER + "aa" }]}>Danger Zone</Text>
         <View style={[styles.card, { borderColor: "rgba(239,68,68,0.2)" }]}>
-          <TouchableOpacity style={styles.row} onPress={handlePanic}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={handlePanic}
+            accessibilityRole="button"
+            accessibilityLabel="Panic Wipe"
+            accessibilityHint="Disconnects all clouds, clears history and signs out"
+          >
             <View style={[styles.iconWrap, { backgroundColor: "rgba(239,68,68,0.12)" }]}>
               <Ionicons name="nuclear-outline" size={19} color={DANGER} />
             </View>
@@ -297,10 +397,16 @@ export default function PrivacySecurityScreen() {
               <Text style={[styles.rowLabel, { color: DANGER }]}>Panic Wipe</Text>
               <Text style={styles.rowHint}>Disconnect all clouds, clear history, sign out</Text>
             </View>
-            <Ionicons name="chevron-forward" size={15} color="#444" />
+            <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
           <View style={styles.divider} />
-          <TouchableOpacity style={styles.row} onPress={() => router.push("/settings/delete-account")}>
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => router.push("/settings/delete-account")}
+            accessibilityRole="button"
+            accessibilityLabel="Delete Account"
+            accessibilityHint="Permanently delete your account and all data"
+          >
             <View style={[styles.iconWrap, { backgroundColor: "rgba(239,68,68,0.12)" }]}>
               <Ionicons name="person-remove-outline" size={19} color={DANGER} />
             </View>
@@ -308,10 +414,10 @@ export default function PrivacySecurityScreen() {
               <Text style={[styles.rowLabel, { color: DANGER }]}>Delete Account</Text>
               <Text style={styles.rowHint}>Permanently delete your account and all data</Text>
             </View>
-            <Ionicons name="chevron-forward" size={15} color="#444" />
+            <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
         </View>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }
@@ -344,6 +450,8 @@ const styles = StyleSheet.create({
   },
   pinBtn: { backgroundColor: PRIMARY, borderRadius: 12, paddingVertical: 13, alignItems: "center" },
   pinBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
+  pinCancelBtn: { alignItems: "center", paddingVertical: 12, marginTop: 4 },
+  pinCancelText: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular" },
   inlineInput: {
     flex: 1, color: "white", fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 4,
   },

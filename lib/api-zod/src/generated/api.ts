@@ -14,11 +14,56 @@ export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
 
+/**
+ * 200 once database migrations have been applied; 503 while they are still running (status "pending") or after they have definitively failed (status "failed"). /healthz stays 200 regardless (liveness).
+ * @summary Readiness check
+ */
+export const ReadinessCheckResponse = zod.object({
+  status: zod.string(),
+});
+
+/**
+ * Never signs in. Always answers 202 with the same shape (whether the address is new, registered-but-unverified, or already verified) so it can't be used to discover accounts. A 6-digit code is emailed when appropriate; redeem it with the returned `nonce` at /auth/verify-email.
+ */
 export const RegisterBody = zod.object({
   email: zod.string(),
   password: zod.string(),
   name: zod.string(),
   referralCode: zod.string().nullish(),
+});
+
+/**
+ * Requires the `nonce` from the register / login / resend response that requested the code plus the 6-digit `code` from the email. Codes expire after 30 minutes and die after 5 wrong attempts. On success the email is verified, the free trial starts if eligible, and a session is issued.
+ * @summary Redeem an emailed verification code and sign in
+ */
+export const VerifyEmailBody = zod.object({
+  nonce: zod.string(),
+  code: zod.string().describe("The 6-digit code from the email."),
+});
+
+export const VerifyEmailResponse = zod.object({
+  token: zod.string(),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
+});
+
+/**
+ * Always 200 with a nonce (a dummy one when there's nothing to resend). Store the returned nonce — it replaces the previous one. Sends are throttled per account (min 60 s apart, max 5 per hour).
+ * @summary Email a new verification code
+ */
+export const ResendVerificationBody = zod.object({
+  nonce: zod.string(),
+});
+
+export const ResendVerificationResponse = zod.object({
+  nonce: zod.string(),
 });
 
 export const LoginBody = zod.object({
@@ -35,12 +80,33 @@ export const LoginResponse = zod.object({
     name: zod.string(),
     referralCode: zod.string(),
     twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
     createdAt: zod.string(),
   }),
 });
 
 export const LogoutResponse = zod.object({
   message: zod.string(),
+});
+
+/**
+ * Revokes every existing session for the account and returns a fresh token so the calling device stays signed in.
+ * @summary Sign out of all other devices
+ */
+export const LogoutAllResponse = zod.object({
+  message: zod.string(),
+  token: zod
+    .string()
+    .describe("Fresh session token — other sessions have been revoked."),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
 });
 
 export const ForgotPasswordBody = zod.object({
@@ -62,26 +128,106 @@ export const ResetPasswordResponse = zod.object({
   message: zod.string(),
 });
 
+/**
+ * Verifies the current password (and a TOTP or backup code when 2FA is enabled), sets the new password, and signs out every other session. Returns a fresh token so the calling device stays signed in. Errors are 400 (never 401) so a mistyped password doesn't end the session.
+ * @summary Change the signed-in user's password
+ */
+export const changePasswordBodyNewPasswordMin = 8;
+
+export const ChangePasswordBody = zod.object({
+  currentPassword: zod.string(),
+  newPassword: zod
+    .string()
+    .min(changePasswordBodyNewPasswordMin)
+    .describe("At least 8 characters and at most 72 bytes (UTF-8)."),
+  totpCode: zod
+    .string()
+    .nullish()
+    .describe(
+      "Required when 2FA is enabled — a 6-digit TOTP or a backup code.",
+    ),
+});
+
+export const ChangePasswordResponse = zod.object({
+  token: zod.string(),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
+});
+
+/**
+ * @summary Start 2FA setup (requires the current password)
+ */
+export const Setup2FABody = zod.object({
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
+});
+
 export const Setup2FAResponse = zod.object({
   secret: zod.string(),
   qrCodeUrl: zod.string(),
   backupCodes: zod.array(zod.string()),
 });
 
+/**
+ * Enabling 2FA signs out every other session; the response carries a fresh token for this device.
+ * @summary Enable 2FA (requires the current password and a TOTP code)
+ */
 export const Verify2FABody = zod.object({
-  code: zod.string(),
+  code: zod.string().describe("6-digit TOTP from the authenticator app."),
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
 });
 
 export const Verify2FAResponse = zod.object({
   message: zod.string(),
+  token: zod
+    .string()
+    .describe("Fresh session token — other sessions have been revoked."),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
 });
 
+/**
+ * Disabling 2FA signs out every other session; the response carries a fresh token for this device.
+ * @summary Disable 2FA (requires the current password and a TOTP or backup code)
+ */
 export const Disable2FABody = zod.object({
-  code: zod.string(),
+  code: zod.string().describe("6-digit TOTP or a backup code."),
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
 });
 
 export const Disable2FAResponse = zod.object({
   message: zod.string(),
+  token: zod
+    .string()
+    .describe("Fresh session token — other sessions have been revoked."),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
 });
 
 export const GetMeResponse = zod.object({
@@ -90,11 +236,13 @@ export const GetMeResponse = zod.object({
   name: zod.string(),
   referralCode: zod.string(),
   twoFAEnabled: zod.boolean(),
+  onboardingCompleted: zod.boolean(),
   createdAt: zod.string(),
 });
 
 export const UpdateMeBody = zod.object({
   name: zod.string().nullish(),
+  onboardingCompleted: zod.boolean().optional(),
 });
 
 export const UpdateMeResponse = zod.object({
@@ -103,7 +251,43 @@ export const UpdateMeResponse = zod.object({
   name: zod.string(),
   referralCode: zod.string(),
   twoFAEnabled: zod.boolean(),
+  onboardingCompleted: zod.boolean(),
   createdAt: zod.string(),
+});
+
+/**
+ * Requires re-authentication: the current password, plus a TOTP or backup code when 2FA is enabled. Wrong credentials are 403 (never 401).
+ * @summary Permanently delete the account and all associated data
+ */
+export const DeleteMeBody = zod.object({
+  password: zod
+    .string()
+    .describe("The account's current password (re-authentication)."),
+  totpCode: zod
+    .string()
+    .nullish()
+    .describe(
+      "Required when 2FA is enabled — a 6-digit TOTP or a backup code.",
+    ),
+});
+
+export const DeleteMeResponse = zod.object({
+  message: zod.string(),
+});
+
+export const GetUploadTargetResponse = zod.object({
+  mode: zod.enum(["all", "selected", "none"]),
+  connectionIds: zod.array(zod.number()),
+});
+
+export const SetUploadTargetBody = zod.object({
+  mode: zod.enum(["all", "selected", "none"]),
+  connectionIds: zod.array(zod.number()).optional(),
+});
+
+export const SetUploadTargetResponse = zod.object({
+  mode: zod.enum(["all", "selected", "none"]),
+  connectionIds: zod.array(zod.number()),
 });
 
 export const GetSubscriptionResponse = zod.object({
@@ -138,12 +322,24 @@ export const StartTrialResponse = zod.object({
   createdAt: zod.string(),
 });
 
-export const CreateCheckoutResponse = zod.object({
-  url: zod.string(),
-});
-
-export const CancelSubscriptionResponse = zod.object({
-  message: zod.string(),
+/**
+ * Re-reads the caller's `pro` entitlement from the RevenueCat REST API and upserts the local mirror (upgrade-only). Called by the app after a purchase, a restore, and once after RevenueCat logIn. Rate-limited per user.
+ * @summary Reconcile the caller's subscription from RevenueCat
+ */
+export const SyncSubscriptionResponse = zod.object({
+  id: zod.number(),
+  userId: zod.number(),
+  status: zod.enum([
+    "trial",
+    "active",
+    "cancelled",
+    "expired",
+    "past_due",
+    "none",
+  ]),
+  trialEnd: zod.string().nullish(),
+  currentPeriodEnd: zod.string().nullish(),
+  createdAt: zod.string(),
 });
 
 export const GetAffiliateStatsResponse = zod.object({
@@ -177,10 +373,44 @@ export const InviteCoworkersResponse = zod.object({
 export const ListCloudConnectionsResponseItem = zod.object({
   id: zod.number(),
   userId: zod.number(),
-  type: zod.enum(["ftp", "webdav", "onedrive", "googledrive", "dropbox"]),
+  type: zod.enum([
+    "ftp",
+    "webdav",
+    "nextcloud",
+    "onedrive",
+    "googledrive",
+    "dropbox",
+  ]),
+  provider: zod
+    .string()
+    .nullish()
+    .describe(
+      'Optional UI sub-flavour hint (e.g. \"synology\"); upload logic uses `type`.',
+    ),
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  host: zod
+    .string()
+    .nullish()
+    .describe(
+      "Server URL for self-hosted types (nextcloud\/webdav\/ftp); null for OAuth providers.",
+    ),
+  port: zod
+    .number()
+    .nullish()
+    .describe("Explicit port for self-hosted types; null = protocol default."),
+  username: zod
+    .string()
+    .nullish()
+    .describe("Login for self-hosted types (never the password)."),
+  hasPassword: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Whether a password is saved (the password itself is never returned).",
+    ),
+  accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),
 });
@@ -188,39 +418,131 @@ export const ListCloudConnectionsResponse = zod.array(
   ListCloudConnectionsResponseItem,
 );
 
-export const CreateCloudConnectionBody = zod.object({
-  type: zod.enum(["ftp", "webdav", "onedrive", "googledrive", "dropbox"]),
-  name: zod.string(),
-  host: zod.string().nullish(),
-  port: zod.number().nullish(),
-  username: zod.string().nullish(),
-  password: zod.string().nullish(),
-  uploadPath: zod.string().nullish(),
-  oauthCode: zod.string().nullish(),
+export const createCloudConnectionBodyProviderMax = 50;
+
+export const createCloudConnectionBodyNameMax = 100;
+
+export const createCloudConnectionBodyHostMax = 500;
+
+export const createCloudConnectionBodyPortMax = 65535;
+
+export const createCloudConnectionBodyUsernameMax = 200;
+
+export const createCloudConnectionBodyPasswordMax = 500;
+
+export const createCloudConnectionBodyUploadPathMax = 500;
+
+export const CreateCloudConnectionBody = zod
+  .object({
+    type: zod.enum(["ftp", "webdav", "nextcloud"]),
+    provider: zod
+      .string()
+      .max(createCloudConnectionBodyProviderMax)
+      .nullish()
+      .describe(
+        'Optional UI sub-flavour hint (e.g. \"synology\"); upload logic uses `type`.',
+      ),
+    name: zod.string().min(1).max(createCloudConnectionBodyNameMax),
+    host: zod.string().max(createCloudConnectionBodyHostMax).nullish(),
+    port: zod.number().min(1).max(createCloudConnectionBodyPortMax).nullish(),
+    username: zod.string().max(createCloudConnectionBodyUsernameMax).nullish(),
+    password: zod.string().max(createCloudConnectionBodyPasswordMax).nullish(),
+    uploadPath: zod
+      .string()
+      .max(createCloudConnectionBodyUploadPathMax)
+      .nullish(),
+  })
+  .describe(
+    "Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (\/oauth\/initiate → callback → \/oauth\/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).",
+  );
+
+/**
+ * @summary Delete all of the current user's cloud connections (panic wipe)
+ */
+export const DeleteAllCloudConnectionsResponse = zod.object({
+  message: zod.string(),
 });
 
 export const UpdateCloudConnectionParams = zod.object({
   id: zod.coerce.number(),
 });
 
-export const UpdateCloudConnectionBody = zod.object({
-  name: zod.string().nullish(),
-  active: zod.boolean().nullish(),
-  uploadPath: zod.string().nullish(),
-  host: zod.string().nullish(),
-  port: zod.number().nullish(),
-  username: zod.string().nullish(),
-  password: zod.string().nullish(),
-  oauthCode: zod.string().nullish(),
-});
+export const updateCloudConnectionBodyNameMax = 100;
+
+export const updateCloudConnectionBodyUploadPathMax = 500;
+
+export const updateCloudConnectionBodyHostMax = 500;
+
+export const updateCloudConnectionBodyPortMax = 65535;
+
+export const updateCloudConnectionBodyUsernameMax = 200;
+
+export const updateCloudConnectionBodyPasswordMax = 500;
+
+export const UpdateCloudConnectionBody = zod
+  .object({
+    name: zod.string().min(1).max(updateCloudConnectionBodyNameMax).optional(),
+    active: zod.boolean().optional(),
+    uploadPath: zod
+      .string()
+      .max(updateCloudConnectionBodyUploadPathMax)
+      .nullish()
+      .describe('Folder path; \"..\" segments are rejected.'),
+    host: zod
+      .string()
+      .min(1)
+      .max(updateCloudConnectionBodyHostMax)
+      .optional()
+      .describe("Must not embed credentials (user:pass@host)."),
+    port: zod.number().min(1).max(updateCloudConnectionBodyPortMax).nullish(),
+    username: zod.string().max(updateCloudConnectionBodyUsernameMax).nullish(),
+    password: zod.string().max(updateCloudConnectionBodyPasswordMax).nullish(),
+  })
+  .describe(
+    'Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default \"\/KKamera\"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.',
+  );
 
 export const UpdateCloudConnectionResponse = zod.object({
   id: zod.number(),
   userId: zod.number(),
-  type: zod.enum(["ftp", "webdav", "onedrive", "googledrive", "dropbox"]),
+  type: zod.enum([
+    "ftp",
+    "webdav",
+    "nextcloud",
+    "onedrive",
+    "googledrive",
+    "dropbox",
+  ]),
+  provider: zod
+    .string()
+    .nullish()
+    .describe(
+      'Optional UI sub-flavour hint (e.g. \"synology\"); upload logic uses `type`.',
+    ),
   name: zod.string(),
   active: zod.boolean(),
   uploadPath: zod.string().nullish(),
+  host: zod
+    .string()
+    .nullish()
+    .describe(
+      "Server URL for self-hosted types (nextcloud\/webdav\/ftp); null for OAuth providers.",
+    ),
+  port: zod
+    .number()
+    .nullish()
+    .describe("Explicit port for self-hosted types; null = protocol default."),
+  username: zod
+    .string()
+    .nullish()
+    .describe("Login for self-hosted types (never the password)."),
+  hasPassword: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Whether a password is saved (the password itself is never returned).",
+    ),
+  accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
   createdAt: zod.string(),
 });
@@ -257,6 +579,12 @@ export const ListUploadsResponseItem = zod.object({
   ]),
   connectionIds: zod.string().nullish(),
   error: zod.string().nullish(),
+  clientUploadId: zod
+    .string()
+    .nullish()
+    .describe(
+      "The app's per-capture id sent to \/uploads\/execute, when there was one",
+    ),
   createdAt: zod.string(),
 });
 export const ListUploadsResponse = zod.array(ListUploadsResponseItem);
@@ -295,6 +623,12 @@ export const UpdateUploadResponse = zod.object({
   ]),
   connectionIds: zod.string().nullish(),
   error: zod.string().nullish(),
+  clientUploadId: zod
+    .string()
+    .nullish()
+    .describe(
+      "The app's per-capture id sent to \/uploads\/execute, when there was one",
+    ),
   createdAt: zod.string(),
 });
 
@@ -308,5 +642,220 @@ export const DeleteUploadResponse = zod.object({
 
 export const SubmitFeedbackBody = zod.object({
   type: zod.enum(["bug", "feature", "other"]),
+  message: zod.string(),
+});
+
+/**
+ * @summary Begin an OAuth authorization flow for a cloud provider
+ */
+export const InitiateOAuthParams = zod.object({
+  provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
+});
+
+export const InitiateOAuthBody = zod.object({
+  name: zod.string().optional(),
+  platform: zod.enum(["web", "native"]).optional(),
+  uploadPath: zod.string().optional(),
+});
+
+export const InitiateOAuthResponse = zod.object({
+  authorizeUrl: zod.string(),
+  state: zod.string(),
+  nonce: zod
+    .string()
+    .describe(
+      "One-time secret for POST \/oauth\/complete. Keep it on the device that started the flow; never put it in a URL.",
+    ),
+});
+
+/**
+ * Browser redirect target for the provider (not called programmatically by the client). The provider appends `code` + `state` query params on success or `error` on failure; the server exchanges the code, stores the tokens on a PENDING connection (inactive, not listed, never used for uploads, expires after 10 minutes) and 302-redirects to the app with `connectionId` (the pending id), `code` (a one-time callback code) and `provider`. The app must then call POST /oauth/complete with that code and the nonce from /oauth/{provider}/initiate to confirm the connection.
+ * @summary OAuth provider redirect target; exchanges the code and stores a pending connection
+ */
+export const OauthCallbackParams = zod.object({
+  provider: zod.enum(["googledrive", "onedrive", "dropbox"]),
+});
+
+/**
+ * Binds the OAuth result to the initiating device: requires the `nonce` returned by /oauth/{provider}/initiate (kept on the device) and the one-time `code` from the callback redirect. On success the pending row is either activated as a new connection or, when the same provider account is already connected, its tokens are moved onto that connection and the pending row is removed.
+ * @summary Confirm a pending OAuth connection from the device that started the flow
+ */
+export const CompleteOAuthBody = zod.object({
+  nonce: zod
+    .string()
+    .describe("The nonce returned by \/oauth\/{provider}\/initiate"),
+  code: zod.string().describe("The one-time `code` from the callback redirect"),
+  connectionId: zod
+    .number()
+    .optional()
+    .describe("The pending `connectionId` from the callback redirect"),
+});
+
+export const CompleteOAuthResponse = zod.object({
+  connectionId: zod.number(),
+  type: zod.string(),
+  name: zod.string(),
+  accountLabel: zod.string().nullable(),
+});
+
+/**
+ * @summary Report which OAuth providers are configured on the server
+ */
+export const GetOAuthStatusResponse = zod
+  .record(
+    zod.string(),
+    zod.object({
+      label: zod.string(),
+      configured: zod.boolean(),
+    }),
+  )
+  .describe("Map keyed by provider id (googledrive, onedrive, dropbox)");
+
+/**
+ * @summary Export all personal data for the current user (GDPR)
+ */
+export const ExportMyDataResponse = zod.object({
+  exportedAt: zod.string(),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
+  uploadTarget: zod.object({
+    mode: zod.enum(["all", "selected", "none"]),
+    connectionIds: zod.array(zod.number()),
+  }),
+  subscription: zod
+    .union([
+      zod.object({
+        status: zod.string(),
+        trialStart: zod.string().nullish(),
+        trialEnd: zod.string().nullish(),
+        currentPeriodEnd: zod.string().nullish(),
+        freeYearsAwarded: zod.number(),
+        createdAt: zod.string().nullish(),
+      }),
+      zod.null(),
+    ])
+    .optional(),
+  cloudConnections: zod
+    .array(
+      zod.object({
+        id: zod.number(),
+        type: zod.string(),
+        provider: zod.string().nullish(),
+        name: zod.string(),
+        host: zod.string().nullish(),
+        port: zod.number().nullish(),
+        username: zod.string().nullish(),
+        uploadPath: zod.string().nullish(),
+        accountLabel: zod.string().nullish(),
+        active: zod.boolean(),
+        createdAt: zod.string().nullish(),
+      }),
+    )
+    .describe(
+      "Connection metadata only — credentials and tokens are never exported.",
+    ),
+  referrals: zod.array(
+    zod.object({
+      id: zod.number(),
+      referredName: zod.string(),
+      status: zod.enum(["pending", "completed"]),
+      createdAt: zod.string(),
+    }),
+  ),
+  referredBy: zod
+    .array(
+      zod.object({
+        id: zod.number(),
+        status: zod.string(),
+        createdAt: zod.string().nullish(),
+      }),
+    )
+    .describe("Referral rows in which this user is the referred party."),
+  uploads: zod.array(
+    zod.object({
+      id: zod.number(),
+      fileName: zod.string(),
+      fileType: zod.string(),
+      status: zod.string(),
+      createdAt: zod.string().nullish(),
+    }),
+  ),
+  feedback: zod.array(
+    zod.object({
+      id: zod.number(),
+      type: zod.enum(["bug", "feature", "other"]),
+      message: zod.string(),
+      createdAt: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * Requires an active subscription. Retries of the same capture are de-duplicated by `clientUploadId`: a capture that already finished returns its previous result without re-uploading, a capture another request is still uploading returns 409, and any other previous attempt (partial/failed/queued) is updated in place rather than duplicated. When retrying a partial upload, send only the failed `connectionIds`; the stored status combines both attempts.
+
+ * @summary Upload one capture to the user's active cloud connections
+ */
+export const executeUploadBodyFileNameMax = 255;
+
+export const executeUploadBodyClientUploadIdMax = 100;
+
+export const executeUploadBodyClientUploadIdRegExp = new RegExp(
+  "^[A-Za-z0-9_-]+$",
+);
+
+export const ExecuteUploadBody = zod.object({
+  file: zod.string().describe("The image or video file part (max 200 MB)"),
+  fileName: zod.string().max(executeUploadBodyFileNameMax).optional(),
+  mimeType: zod.string().optional().describe("image\/\* or video\/\*"),
+  connectionIds: zod
+    .string()
+    .optional()
+    .describe(
+      "JSON array of connection IDs; omit to upload to every active connection",
+    ),
+  clientUploadId: zod
+    .string()
+    .max(executeUploadBodyClientUploadIdMax)
+    .regex(executeUploadBodyClientUploadIdRegExp)
+    .optional()
+    .describe("Stable per-capture id used to de-duplicate retries"),
+});
+
+export const ExecuteUploadResponse = zod.object({
+  uploadId: zod.number().optional(),
+  status: zod.enum(["done", "partial", "failed", "queued"]),
+  results: zod.array(
+    zod.object({
+      connectionId: zod.number(),
+      success: zod.boolean(),
+      error: zod.string().optional(),
+    }),
+  ),
+  duplicate: zod
+    .boolean()
+    .optional()
+    .describe(
+      "True when this capture had already been uploaded and nothing was re-sent",
+    ),
+});
+
+/**
+ * @summary Email a witness that a file was captured and uploaded
+ */
+export const notifyWitnessBodyFileNameMax = 500;
+
+export const NotifyWitnessBody = zod.object({
+  witnessEmail: zod.string().email(),
+  fileName: zod.string().min(1).max(notifyWitnessBodyFileNameMax),
+});
+
+export const NotifyWitnessResponse = zod.object({
   message: zod.string(),
 });

@@ -1,4 +1,4 @@
-import { boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -12,8 +12,40 @@ export const usersTable = pgTable("users", {
   twoFASecret: text("two_fa_secret"),
   twoFAEnabled: boolean("two_fa_enabled").notNull().default(false),
   twoFABackupCodes: text("two_fa_backup_codes"),
+  // Last TOTP time step accepted for this user, so a code can't be replayed
+  // within its 30-second window.
+  totpLastStep: bigint("totp_last_step", { mode: "number" }),
+  // Set once the user finishes (or skips) the first-run setup wizard. Tracked on
+  // the account — not device-local storage — so onboarding shows exactly once per
+  // user, regardless of which device or browser they sign in from.
+  // When the user proved they own `email` (verification code, or a completed
+  // password reset). Sign-in and the free trial require it. Existing accounts
+  // were backfilled as verified when this column was added.
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+  onboardingCompleted: boolean("onboarding_completed").notNull().default(false),
   // Bumped whenever the password changes; tokens issued before this are rejected.
   passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+  // Default upload destination when multiple cloud accounts are connected:
+  //  - "all"      → every active connection (the historical behaviour)
+  //  - "selected" → only the connection ids listed in uploadTargetIds
+  //  - "none"     → capture only, don't upload (personal use)
+  uploadTargetMode: text("upload_target_mode").notNull().default("all"),
+  // CSV of cloud_connections.id used when uploadTargetMode = "selected".
+  uploadTargetIds: text("upload_target_ids"),
+  // Rolling per-user cap on referral-invite emails (spam/phishing-relay guard),
+  // enforced under a row lock so it holds across autoscale instances where an
+  // in-memory / per-IP limiter can be bypassed by rotating IPs.
+  inviteWindowStart: timestamp("invite_window_start", { withTimezone: true }),
+  inviteCount: integer("invite_count").notNull().default(0),
+  // When the "trial ending soon" email was sent, so it goes out at most once.
+  // Bumped to revoke every session at once ("sign out everywhere", 2FA changes).
+  // JWTs carry the version they were issued with; older versions are rejected.
+  tokenVersion: integer("token_version").notNull().default(0),
+  // Per-account failed sign-in tracking, so password guessing is throttled even
+  // from rotating IPs (the per-IP limiter alone can't do that).
+  failedLoginCount: integer("failed_login_count").notNull().default(0),
+  loginLockedUntil: timestamp("login_locked_until", { withTimezone: true }),
+  trialReminderSentAt: timestamp("trial_reminder_sent_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

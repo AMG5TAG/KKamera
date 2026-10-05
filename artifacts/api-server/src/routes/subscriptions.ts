@@ -1,131 +1,104 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
-import { subscriptionsTable, usersTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { subscriptionsTable, usersTable, trialHistoryTable } from "@workspace/db";
+import { eq, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { getUncachableStripeClient, getStripePublishableKey } from "../stripeClient.js";
-import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { emailTrialHashes } from "../lib/emailHash.js";
+import { RevenueCatNotConfiguredError, syncUserFromRevenueCat } from "../lib/revenueCatApi.js";
+
+// Billing is IAP-only (App Store / Play via RevenueCat). Purchases, renewals and
+// cancellations happen store-side and are mirrored into subscriptionsTable by the
+// RevenueCat webhook (routes/revenuecat.ts). These endpoints only read local
+// state and start the 14-day trial; there is no server-side checkout/cancel.
+// POST /subscriptions/sync reconciles from the RevenueCat REST API when the app
+// knows a purchase/restore just happened (webhooks can lag or be missed).
 
 const router = Router();
 
+async function subscriptionJson(userId: number) {
+  const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
+  if (!sub) {
+    return { id: 0, userId, status: "none", trialEnd: null, currentPeriodEnd: null, createdAt: new Date().toISOString() };
+  }
+  return {
+    id: sub.id, userId: sub.userId, status: sub.status,
+    trialEnd: sub.trialEnd?.toISOString() ?? null,
+    currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null,
+    createdAt: sub.createdAt.toISOString(),
+  };
+}
+
+// Each sync is an outbound RevenueCat API call — cap it per user.
+const syncLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many subscription refreshes. Please try again shortly." },
+});
+
 router.get("/subscriptions/me", requireAuth, async (req, res) => {
   try {
-    const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-    if (!sub) {
-      res.json({ id: 0, userId: req.userId!, status: "none", trialEnd: null, currentPeriodEnd: null, createdAt: new Date().toISOString() });
-      return;
-    }
-    res.json({
-      id: sub.id, userId: sub.userId, status: sub.status,
-      trialEnd: sub.trialEnd?.toISOString() ?? null,
-      currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null,
-      createdAt: sub.createdAt.toISOString(),
-    });
+    res.json(await subscriptionJson(req.userId!));
   } catch (err) {
     req.log.error({ err }, "Get subscription error");
     res.status(500).json({ message: "Failed to get subscription" });
   }
 });
 
+// Not used by the app (email verification grants the trial); kept as API surface.
+// Race-safe: concurrent calls insert with ON CONFLICT (user_id) DO NOTHING and
+// then read back whichever row won, instead of 500ing on the unique key.
 router.post("/subscriptions/trial", requireAuth, async (req, res) => {
   try {
-    const existing = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-    if (existing.length > 0) {
-      const sub = existing[0]!;
-      res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
-      return;
+    const userId = req.userId!;
+    const [existing] = await db.select({ id: subscriptionsTable.id }).from(subscriptionsTable)
+      .where(eq(subscriptionsTable.userId, userId)).limit(1);
+    if (!existing) {
+      // Only grant a trial if this email has never had one (see trial_history).
+      const [u] = await db.select({ email: usersTable.email }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+      // Check both the legacy hash and the alias-normalised one (Gmail dots, +tags).
+      const emailHashes = u ? emailTrialHashes(u.email) : [];
+      const prior = emailHashes.length > 0
+        ? await db.select({ id: trialHistoryTable.id }).from(trialHistoryTable).where(inArray(trialHistoryTable.emailHash, emailHashes)).limit(1)
+        : [];
+      if (prior.length > 0) {
+        await db.insert(subscriptionsTable).values({ userId, status: "none" })
+          .onConflictDoNothing({ target: subscriptionsTable.userId });
+      } else {
+        const trialEnd = new Date();
+        trialEnd.setDate(trialEnd.getDate() + 14);
+        const inserted = await db.insert(subscriptionsTable)
+          .values({ userId, status: "trial", trialStart: new Date(), trialEnd })
+          .onConflictDoNothing({ target: subscriptionsTable.userId })
+          .returning({ id: subscriptionsTable.id });
+        // Record the trial only if this call actually granted it.
+        if (inserted.length > 0 && emailHashes.length > 0) {
+          await db.insert(trialHistoryTable).values(emailHashes.map(emailHash => ({ emailHash }))).onConflictDoNothing();
+        }
+      }
     }
-    const trialEnd = new Date();
-    trialEnd.setDate(trialEnd.getDate() + 14);
-    const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "trial", trialStart: new Date(), trialEnd }).returning();
-    if (!sub) { res.status(500).json({ message: "Failed to start trial" }); return; }
-    res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
+    res.json(await subscriptionJson(userId));
   } catch (err) {
     req.log.error({ err }, "Start trial error");
     res.status(500).json({ message: "Failed to start trial" });
   }
 });
 
-router.post("/subscriptions/checkout", requireAuth, async (req, res) => {
+router.post("/subscriptions/sync", requireAuth, syncLimiter, async (req, res) => {
   try {
-    const stripe = await getUncachableStripeClient();
-
-    const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-
-    let customerId = sub?.stripeCustomerId ?? undefined;
-    if (!customerId) {
-      const [user] = await db.select({ email: usersTable.email, name: usersTable.name })
-        .from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
-      const customer = await stripe.customers.create({
-        ...(user?.email ? { email: user.email } : {}),
-        ...(user?.name ? { name: user.name } : {}),
-        metadata: { userId: String(req.userId) },
-      });
-      customerId = customer.id;
-      if (sub) {
-        await db.update(subscriptionsTable).set({ stripeCustomerId: customerId }).where(eq(subscriptionsTable.userId, req.userId!));
-      } else {
-        await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "none", stripeCustomerId: customerId });
-      }
-    }
-
-    // The price is server-controlled ONLY. Never trust a client-supplied price
-    // ID — a user could otherwise check out against a cheaper/$0 price that
-    // exists in the Stripe account and still be marked "active" by the webhook.
-    const priceId: string = process.env["STRIPE_PRICE_ID"] || "";
-    if (!priceId) {
-      res.status(503).json({ message: "No Stripe price configured. Contact support." });
+    await syncUserFromRevenueCat(req.userId!);
+    res.json(await subscriptionJson(req.userId!));
+  } catch (err) {
+    if (err instanceof RevenueCatNotConfiguredError) {
+      req.log.warn("Subscription sync requested but REVENUECAT_SECRET_API_KEY is unset");
+      res.status(503).json({ message: "Subscription sync is temporarily unavailable." });
       return;
     }
-
-    // Redirect back to the canonical app origin (app.kkamera.app), not the Replit
-    // preview domain — so checkout always returns to the real app.
-    const origin = getPublicBaseUrl();
-    const session = await stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: "subscription",
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: `${origin}/settings/subscription?success=true`,
-      cancel_url: `${origin}/settings/subscription?cancelled=true`,
-      metadata: { userId: String(req.userId) },
-    });
-
-    res.json({ url: session.url || "" });
-  } catch (err) {
-    req.log.error({ err }, "Checkout error");
-    res.status(500).json({ message: "Failed to create checkout" });
-  }
-});
-
-router.post("/subscriptions/cancel", requireAuth, async (req, res) => {
-  try {
-    const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-
-    // Cancel the live Stripe subscription at period end so the user keeps the
-    // access they've already paid for. The webhook flips local status to
-    // "expired" when it actually ends — we do NOT revoke access here.
-    if (sub?.stripeSubscriptionId) {
-      const stripe = await getUncachableStripeClient();
-      await stripe.subscriptions.update(sub.stripeSubscriptionId, { cancel_at_period_end: true });
-      res.json({ message: "Subscription will not renew. You keep access until the end of the current period." });
-      return;
-    }
-
-    // No active Stripe subscription (e.g. trial only) — nothing to bill, mark cancelled.
-    await db.update(subscriptionsTable).set({ status: "cancelled" }).where(eq(subscriptionsTable.userId, req.userId!));
-    res.json({ message: "Subscription cancelled" });
-  } catch (err) {
-    req.log.error({ err }, "Cancel subscription error");
-    res.status(500).json({ message: "Failed to cancel subscription" });
-  }
-});
-
-router.get("/subscriptions/publishable-key", async (_req, res) => {
-  try {
-    const key = await getStripePublishableKey();
-    res.json({ publishableKey: key });
-  } catch {
-    res.status(503).json({ message: "Stripe not configured" });
+    req.log.error({ err }, "Subscription sync error");
+    res.status(503).json({ message: "Couldn't reach the store to refresh your subscription. Please try again." });
   }
 });
 

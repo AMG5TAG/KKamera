@@ -35,11 +35,12 @@ test("malformed / empty input returns '' rather than throwing", () => {
   }
 });
 
-test("legacy AES-256-CBC values still decrypt (backward compat)", () => {
+test("legacy unauthenticated AES-256-CBC values are rejected (not decrypted)", () => {
   const key = Buffer.from(process.env.SESSION_SECRET!.slice(0, 32).padEnd(32, "\0").slice(0, 32));
   const iv = randomBytes(16);
   const cipher = createCipheriv("aes-256-cbc", key, iv);
   const data = Buffer.concat([cipher.update("legacy-credential"), cipher.final()]);
   const legacy = `${iv.toString("hex")}:${data.toString("hex")}`;
-  assert.equal(decrypt(legacy), "legacy-credential");
+  // CBC support was removed — a CBC-format value no longer decrypts (returns "").
+  assert.equal(decrypt(legacy), "");
 });

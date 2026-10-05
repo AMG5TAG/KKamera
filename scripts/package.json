@@ -4,9 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "hello": "tsx ./src/hello.ts",
-    "seed:stripe": "tsx ./src/seedStripe.ts",
     "seed:revenuecat": "tsx ./src/seedRevenueCat.ts",
+    "seed:revenuecat-webhook": "tsx ./src/setupRevenueCatWebhook.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
@@ -14,7 +13,6 @@
     "tsx": "catalog:"
   },
   "dependencies": {
-    "stripe": "catalog:",
     "@replit/revenuecat-sdk": "catalog:"
   }
 }

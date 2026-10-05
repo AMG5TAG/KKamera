@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { router } from "expo-router";
 import { useForgotPassword } from "@workspace/api-client-react";
 
@@ -38,24 +38,29 @@ export default function ForgotPasswordScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={18} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button">
+        <Ionicons name="chevron-back" size={18} color={PRIMARY} accessible={false} />
         <Text style={styles.backBtnText}>Back to Sign In</Text>
       </TouchableOpacity>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         <View style={styles.iconWrap}>
-          <Ionicons name="lock-closed-outline" size={48} color={PRIMARY} />
+          <Ionicons name="lock-closed-outline" size={48} color={PRIMARY} accessible={false} />
         </View>
 
-        <Text style={styles.title}>Forgot Password</Text>
+        <Text style={styles.title} accessibilityRole="header">Forgot Password</Text>
         <Text style={styles.subtitle}>
           Enter your email and we'll send you a reset link if an account exists.
         </Text>
 
         {sent ? (
-          <View style={styles.successBox}>
-            <Ionicons name="checkmark-circle-outline" size={20} color="#22c55e" />
+          <View style={styles.successBox} accessibilityLiveRegion="polite">
+            <Ionicons name="checkmark-circle-outline" size={20} color="#22c55e" accessible={false} />
             <Text style={styles.successText}>
               If an account exists for that email, a reset link has been sent. Check your inbox.
             </Text>
@@ -63,8 +68,8 @@ export default function ForgotPasswordScreen() {
         ) : (
           <>
             {error ? (
-              <View style={styles.errorBox}>
-                <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+              <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+                <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
                 <Text style={styles.errorText}>{error}</Text>
               </View>
             ) : null}
@@ -74,6 +79,7 @@ export default function ForgotPasswordScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="your@email.com"
+                accessibilityLabel="Email address"
                 placeholderTextColor="#555"
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -87,16 +93,18 @@ export default function ForgotPasswordScreen() {
               style={[styles.submitBtn, loading && styles.submitBtnDisabled]}
               onPress={handleSubmit}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: loading, busy: loading }}
             >
               <Text style={styles.submitText}>{loading ? "Sending..." : "Send Reset Link"}</Text>
             </TouchableOpacity>
           </>
         )}
 
-        <TouchableOpacity style={styles.backLink} onPress={() => router.replace("/auth/login")}>
+        <TouchableOpacity style={styles.backLink} onPress={() => router.replace("/auth/login")} accessibilityRole="button">
           <Text style={styles.backLinkText}>Return to <Text style={{ color: PRIMARY }}>Sign In</Text></Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

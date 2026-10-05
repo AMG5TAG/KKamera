@@ -21,6 +21,7 @@ export const UPLOAD_STATUS = {
 export const CLOUD_PROVIDER = {
   FTP: "ftp",
   WEBDAV: "webdav",
+  NEXTCLOUD: "nextcloud",
   GOOGLEDRIVE: "googledrive",
   ONEDRIVE: "onedrive",
   DROPBOX: "dropbox",

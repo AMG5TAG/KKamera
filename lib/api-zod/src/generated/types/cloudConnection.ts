@@ -11,10 +11,34 @@ export interface CloudConnection {
   id: number;
   userId: number;
   type: CloudConnectionType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @nullable
+   */
+  provider?: string | null;
   name: string;
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  /**
+   * Server URL for self-hosted types (nextcloud/webdav/ftp); null for OAuth providers.
+   * @nullable
+   */
+  host?: string | null;
+  /**
+   * Explicit port for self-hosted types; null = protocol default.
+   * @nullable
+   */
+  port?: number | null;
+  /**
+   * Login for self-hosted types (never the password).
+   * @nullable
+   */
+  username?: string | null;
+  /** Whether a password is saved (the password itself is never returned). */
+  hasPassword?: boolean;
+  /** @nullable */
+  accountLabel?: string | null;
   hasCredentials: boolean;
   createdAt: string;
 }

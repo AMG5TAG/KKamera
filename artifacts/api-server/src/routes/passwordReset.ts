@@ -2,64 +2,119 @@ import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
 import bcryptjs from "bcryptjs";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
-import { eq, and, gt, isNull } from "drizzle-orm";
-import { sendEmail, escapeHtml } from "../lib/email.js";
+import { eq, and, gt, lt, isNull, count, sql } from "drizzle-orm";
+import { sendEmail, escapeHtml, EMAIL_BRAND_FOOTER } from "../lib/email.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { grantTrialIfEligible, invalidateUnusedVerifications } from "../lib/emailVerificationStore.js";
+import {
+  newPasswordSchema, normalizedEmailSchema, RESET_EMAILS_PER_WINDOW, RESET_EMAIL_WINDOW_MS,
+} from "../lib/accountRules.js";
 
 const router = Router();
 
+// Unauthenticated + email-sending / token-guessing endpoints — rate limit per IP
+// so they can't be used to email-bomb a victim, burn Resend quota, or brute-force
+// reset tokens.
+const forgotPasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many password reset requests. Please try again in an hour." },
+});
+
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+});
+
+const GENERIC_FORGOT_RESPONSE = "If an account with that email exists, a reset link has been sent.";
+
 const forgotSchema = z.object({
-  email: z.string().email("Invalid email address"),
+  // Match the normalisation applied at register/login so a reset lookup finds
+  // the account regardless of the case/whitespace the user types.
+  email: normalizedEmailSchema,
 });
 
 const resetSchema = z.object({
   token: z.string().min(1, "Token is required"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
+  // Shared rule: min 8 chars, max 72 BYTES (bcrypt's truncation limit).
+  password: newPasswordSchema,
 });
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-router.post("/auth/forgot-password", async (req, res) => {
-  // Always respond 200 to avoid email enumeration
+router.post("/auth/forgot-password", forgotPasswordLimiter, (req, res) => {
   const parsed = forgotSchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.json({ message: "If an account with that email exists, a reset link has been sent." });
-    return;
-  }
 
+  // Respond identically and BEFORE any account-dependent work. Doing the lookup /
+  // token write / email send after the response (fire-and-forget) means the
+  // response latency is the same whether or not the email is registered — closing
+  // the timing side-channel that would otherwise reveal account existence despite
+  // the constant response body.
+  res.json({ message: GENERIC_FORGOT_RESPONSE });
+
+  if (!parsed.success) return;
   const { email } = parsed.data;
 
-  try {
-    const [user] = await db
-      .select({ id: usersTable.id, name: usersTable.name })
-      .from(usersTable)
-      .where(eq(usersTable.email, email))
-      .limit(1);
+  void (async () => {
+    try {
+      const [user] = await db
+        .select({ id: usersTable.id, name: usersTable.name })
+        .from(usersTable)
+        .where(eq(usersTable.email, email))
+        .limit(1);
+      if (!user) return;
 
-    if (user) {
       const token = randomBytes(32).toString("hex");
       const tokenHash = hashToken(token);
-      const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 60 * 60 * 1000); // 1 hour
 
-      // Invalidate any existing unused tokens for this user
-      await db
-        .delete(passwordResetTokensTable)
-        .where(
-          and(
+      // Per-account throttle (the per-IP limiter can't stop a distributed
+      // email-bomb of one victim): at most RESET_EMAILS_PER_WINDOW links per
+      // hour. Superseded tokens are voided (usedAt set) rather than deleted so
+      // they still count. The user row lock serialises concurrent requests so
+      // they can't all pass the count. Beyond the cap this silently no-ops —
+      // the response above is already sent and identical either way.
+      const issued = await db.transaction(async (tx) => {
+        await tx.select({ id: usersTable.id }).from(usersTable)
+          .where(eq(usersTable.id, user.id)).for("update");
+        const [recent] = await tx.select({ n: count() }).from(passwordResetTokensTable)
+          .where(and(
             eq(passwordResetTokensTable.userId, user.id),
-            isNull(passwordResetTokensTable.usedAt)
-          )
-        );
+            gt(passwordResetTokensTable.createdAt, new Date(now.getTime() - RESET_EMAIL_WINDOW_MS)),
+          ));
+        if ((recent?.n ?? 0) >= RESET_EMAILS_PER_WINDOW) return false;
 
-      await db.insert(passwordResetTokensTable).values({
-        userId: user.id,
-        tokenHash,
-        expiresAt,
+        // Invalidate any existing unused tokens for this user
+        await tx.update(passwordResetTokensTable)
+          .set({ usedAt: now })
+          .where(and(
+            eq(passwordResetTokensTable.userId, user.id),
+            isNull(passwordResetTokensTable.usedAt),
+          ));
+        // Housekeeping: old rows no longer matter for the throttle window.
+        await tx.delete(passwordResetTokensTable)
+          .where(and(
+            eq(passwordResetTokensTable.userId, user.id),
+            lt(passwordResetTokensTable.createdAt, new Date(now.getTime() - 24 * RESET_EMAIL_WINDOW_MS)),
+          ));
+        await tx.insert(passwordResetTokensTable).values({ userId: user.id, tokenHash, expiresAt });
+        return true;
       });
+      if (!issued) {
+        req.log.warn({ userId: user.id }, "Password reset email suppressed (per-account limit)");
+        return;
+      }
 
       const resetUrl = `${getPublicBaseUrl()}/auth/reset-password?token=${token}`;
       await sendEmail({
@@ -67,16 +122,13 @@ router.post("/auth/forgot-password", async (req, res) => {
         subject: "Reset your KKamera password",
         html: passwordResetEmail(user.name, resetUrl).html,
       }).catch(() => {});
+    } catch (err: any) {
+      req.log.error({ err }, "Forgot password background error");
     }
-
-    res.json({ message: "If an account with that email exists, a reset link has been sent." });
-  } catch (err: any) {
-    req.log.error({ err }, "Forgot password error");
-    res.json({ message: "If an account with that email exists, a reset link has been sent." });
-  }
+  })();
 });
 
-router.post("/auth/reset-password", async (req, res) => {
+router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
   const parsed = resetSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
@@ -87,32 +139,55 @@ router.post("/auth/reset-password", async (req, res) => {
   const tokenHash = hashToken(token);
 
   try {
-    const [record] = await db
-      .select()
-      .from(passwordResetTokensTable)
-      .where(
-        and(
-          eq(passwordResetTokensTable.tokenHash, tokenHash),
-          isNull(passwordResetTokensTable.usedAt),
-          gt(passwordResetTokensTable.expiresAt, new Date())
-        )
-      )
-      .limit(1);
+    // Hash first so the transaction below stays short (bcrypt is ~250ms).
+    const passwordHash = await bcryptjs.hash(password, 12);
 
-    if (!record) {
+    // Consume the token atomically: a single conditional UPDATE ... RETURNING
+    // means two concurrent requests with the same token can't both succeed, and
+    // the password write commits (or rolls back) together with the consumption.
+    const userId = await db.transaction(async (tx) => {
+      const now = new Date();
+      const [consumed] = await tx
+        .update(passwordResetTokensTable)
+        .set({ usedAt: now })
+        .where(
+          and(
+            eq(passwordResetTokensTable.tokenHash, tokenHash),
+            isNull(passwordResetTokensTable.usedAt),
+            gt(passwordResetTokensTable.expiresAt, now)
+          )
+        )
+        .returning({ userId: passwordResetTokensTable.userId });
+      if (!consumed) return null;
+
+      const [before] = await tx.select({ emailVerifiedAt: usersTable.emailVerifiedAt })
+        .from(usersTable).where(eq(usersTable.id, consumed.userId)).for("update").limit(1);
+      const [updated] = await tx.update(usersTable)
+        .set({
+          passwordHash,
+          passwordChangedAt: now,
+          // Revoke every session and clear any sign-in lockout: the owner has
+          // just proven control of the mailbox.
+          tokenVersion: sql`${usersTable.tokenVersion} + 1`,
+          failedLoginCount: 0,
+          loginLockedUntil: null,
+          // Following an emailed link proves the address too.
+          emailVerifiedAt: before?.emailVerifiedAt ?? now,
+        })
+        .where(eq(usersTable.id, consumed.userId))
+        .returning({ id: usersTable.id, email: usersTable.email });
+      // Pending verification codes may carry another registration's password —
+      // they must not be able to overwrite the one just set.
+      await invalidateUnusedVerifications(tx, consumed.userId, now);
+      // First proof of the address: start the free trial if the mailbox never had one.
+      if (updated && before && !before.emailVerifiedAt) await grantTrialIfEligible(tx, updated);
+      return consumed.userId;
+    });
+
+    if (userId === null) {
       res.status(400).json({ message: "Reset link is invalid or has expired. Request a new one." });
       return;
     }
-
-    const passwordHash = await bcryptjs.hash(password, 12);
-
-    await Promise.all([
-      db.update(usersTable).set({ passwordHash, passwordChangedAt: new Date() }).where(eq(usersTable.id, record.userId)),
-      db
-        .update(passwordResetTokensTable)
-        .set({ usedAt: new Date() })
-        .where(eq(passwordResetTokensTable.id, record.id)),
-    ]);
 
     res.json({ message: "Password updated successfully. You can now sign in." });
   } catch (err: any) {
@@ -147,7 +222,8 @@ function passwordResetEmail(name: string, resetUrl: string): { html: string } {
       <p class="warn">If you didn't request this, you can safely ignore this email. Your password won't change.</p>
     </div>
     <div class="footer">KKamera &mdash; Cloud Based Photography<br>
-    Questions? <a href="mailto:support@kkamera.app" style="color:#b19870">support@kkamera.app</a></div>
+    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a><br>
+    ${EMAIL_BRAND_FOOTER}</div>
   </div>
 </body>
 </html>`,

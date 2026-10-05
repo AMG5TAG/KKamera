@@ -1,16 +1,21 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
   ScrollView, Platform, Alert, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
-import { useCreateCloudConnection, getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
+import {
+  useCreateCloudConnection, useUpdateCloudConnection, useListCloudConnections,
+  getListCloudConnectionsQueryKey, getUserFacingMessage,
+  type CloudConnectionUpdate,
+} from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { API_BASE_URL } from "@/lib/config";
+import { completeOAuthConnection, forgetOAuthNonce, rememberOAuthNonce } from "@/lib/oauthPending";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -20,7 +25,31 @@ const CARD = "#1a1710";
 
 const BASE_URL = API_BASE_URL;
 
-const CLOUD_TYPES = [
+// `type` is the card's identity in this screen. `backendType` (when set) is what
+// the server actually stores — e.g. Synology reuses the WebDAV upload path.
+type CloudType = {
+  type: string;
+  backendType?: string;
+  provider?: string;
+  label: string;
+  icon: string;
+  color: string;
+  set: "mci" | "ion";
+  oAuth: boolean;
+  desc: string;
+  hostLabel?: string;
+  hostHint?: string;
+  portHint?: string;
+  defaultPort?: string;
+  usernameHint?: string;
+  /** Username is part of the server path (Nextcloud), so it can't be left blank. */
+  requiresUsername?: boolean;
+  passwordLabel?: string;
+  passwordHint?: string;
+  note?: string;
+};
+
+const CLOUD_TYPES: CloudType[] = [
   {
     type: "googledrive", label: "Google Drive", icon: "google-drive", color: "#4285F4", set: "mci", oAuth: true,
     desc: "Connect via your Google account — no tokens to copy.",
@@ -34,12 +63,46 @@ const CLOUD_TYPES = [
     desc: "Connect via your Dropbox account — secure OAuth 2 flow.",
   },
   {
-    type: "webdav", label: "WebDAV Server", icon: "server-outline", color: "#6B7280", set: "ion", oAuth: false,
-    desc: "Connect to any WebDAV server (Nextcloud, ownCloud, etc.).",
+    type: "synology", backendType: "webdav", provider: "synology", label: "Synology NAS", icon: "nas", color: "#b19870", set: "mci", oAuth: false,
+    desc: "Upload to a Synology DiskStation over WebDAV.",
+    hostHint: "e.g. https://<your-nas-address> — your DDNS name or public address (not QuickConnect)",
+    portHint: "Default: 5006 (WebDAV over HTTPS)", defaultPort: "5006",
+    note:
+      "Enable the “WebDAV Server” package in DSM (Package Center) and turn on HTTPS on port 5006. " +
+      "Then use your DSM username and password below.\n\n" +
+      "The NAS must be reachable from the internet on port 5006 (e.g. a Synology DDNS name with that port forwarded). " +
+      "QuickConnect addresses won’t work — QuickConnect doesn’t relay WebDAV.\n\n" +
+      "Note: Synology BeeStation appliances are not supported directly — they don’t offer WebDAV, FTP, or an upload API. " +
+      "For a BeeStation, connect Google Drive / Dropbox / OneDrive instead and set the BeeStation to pull from that folder.",
   },
   {
-    type: "ftp", label: "FTP / SFTP", icon: "folder-outline", color: "#8B5CF6", set: "ion", oAuth: false,
-    desc: "Connect to an FTP server to upload photos and videos.",
+    type: "nextcloud", label: "Nextcloud", icon: "cloud-outline", color: "#0082C9", set: "ion", oAuth: false,
+    desc: "Upload straight to your own Nextcloud server.",
+    hostLabel: "Server URL",
+    hostHint: "e.g. https://cloud.example.com — the address you sign in at",
+    portHint: "Default: 443 — leave blank unless your server uses a custom port", defaultPort: "",
+    usernameHint: "Your Nextcloud login — it forms part of your files' address",
+    requiresUsername: true,
+    passwordLabel: "App Password",
+    passwordHint: "Stored encrypted on the server",
+    note:
+      "Use an app password, not your account password: in Nextcloud go to Settings → Security → " +
+      "“Create new app password”, name it KKamera, and paste the generated password below. " +
+      "This is the only way that works when two-factor authentication is enabled, and you can revoke " +
+      "it from that same screen without changing your account password.\n\n" +
+      "Just enter your server address — the upload folder is created inside your Files automatically.",
+  },
+  {
+    type: "webdav", label: "WebDAV Server", icon: "server-outline", color: "#6B7280", set: "ion", oAuth: false,
+    desc: "Connect to any other WebDAV server (ownCloud, Seafile, etc.).",
+    hostHint: "e.g. https://cloud.example.com/dav",
+    portHint: "Default: 443", defaultPort: "",
+  },
+  {
+    type: "ftp", label: "FTP / FTPS", icon: "folder-outline", color: "#8B5CF6", set: "ion", oAuth: false,
+    desc: "Connect to an FTP server over FTPS (FTP over TLS). SFTP is not supported.",
+    hostHint: "e.g. ftp.example.com",
+    portHint: "Default: 21", defaultPort: "",
   },
 ];
 
@@ -48,6 +111,16 @@ export default function AddCloudScreen() {
   const queryClient = useQueryClient();
   const { token } = useAuth();
   const createMutation = useCreateCloudConnection();
+  const updateMutation = useUpdateCloudConnection();
+
+  // `?edit=<id>` opens this screen as the edit form for an existing connection.
+  const { edit } = useLocalSearchParams<{ edit?: string }>();
+  const editId = edit && /^\d+$/.test(edit) ? Number(edit) : null;
+  const { data: connections } = useListCloudConnections({
+    query: { enabled: editId != null, queryKey: getListCloudConnectionsQueryKey() },
+  });
+  const editing = editId != null ? connections?.find(c => c.id === editId) : undefined;
+  const prefilled = useRef(false);
 
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -59,6 +132,22 @@ export default function AddCloudScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthStatus, setOauthStatus] = useState<Record<string, boolean>>({});
+  // Edit mode: a blank password field keeps the saved one; this clears it.
+  const [clearPassword, setClearPassword] = useState(false);
+
+  useEffect(() => {
+    if (!editing || prefilled.current) return;
+    prefilled.current = true;
+    const cardType = CLOUD_TYPES.find(t => t.provider && t.provider === editing.provider)?.type ?? editing.type;
+    setSelectedType(cardType);
+    setName(editing.name);
+    setHost(editing.host ?? "");
+    setPort(editing.port != null ? String(editing.port) : "");
+    setUsername(editing.username ?? "");
+    setPassword("");
+    setClearPassword(false);
+    setUploadPath(editing.uploadPath ?? "/KKamera");
+  }, [editing]);
 
   const selected = CLOUD_TYPES.find(t => t.type === selectedType);
 
@@ -82,10 +171,11 @@ export default function AddCloudScreen() {
 
   const handleOAuth = async () => {
     if (!selectedType || !token) return;
+    const provider = selectedType;
     setOauthLoading(true);
     try {
       const platform = Platform.OS === "web" ? "web" : "native";
-      const res = await fetch(`${BASE_URL}/api/oauth/${selectedType}/initiate`, {
+      const res = await fetch(`${BASE_URL}/api/oauth/${provider}/initiate`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -110,29 +200,65 @@ export default function AddCloudScreen() {
         return;
       }
 
-      const { authorizeUrl } = data as { authorizeUrl: string };
+      const { authorizeUrl, nonce } = data as { authorizeUrl?: string; nonce?: string };
+      if (!authorizeUrl || !nonce) {
+        Alert.alert("Error", "The server did not return a sign-in link. Please try again.");
+        return;
+      }
+      // The nonce never goes into a URL: it stays on this device until the
+      // browser comes back, then proves to /oauth/complete that this device
+      // started the flow (see lib/oauthPending.ts).
+      await rememberOAuthNonce(provider, nonce);
 
       if (Platform.OS === "web") {
-        // Web: navigate same window — OAuth returns to /oauth-success
+        // Web: navigate same window — OAuth returns to /oauth-success, which
+        // completes the connection with the nonce from sessionStorage.
         window.location.href = authorizeUrl;
       } else {
         // Native: open in-app browser, intercept kkamera:// deep link
         const result = await WebBrowser.openAuthSessionAsync(authorizeUrl, "kkamera://");
         if (result.type === "success" && result.url) {
+          // The server deep-links back to kkamera://oauth-success (with the
+          // pending connectionId + one-time code) on success, or
+          // kkamera://oauth-error (with an error) on failure — both close the
+          // auth browser, so inspect which one we got. searchParams.get()
+          // already percent-decodes; decoding again threw URIError on a
+          // literal "%" in the message.
           const url = new URL(result.url);
-          const connectionId = url.searchParams.get("connectionId");
-          const connName = url.searchParams.get("name");
-          if (connectionId) {
+          const code = url.searchParams.get("code");
+          const connectionIdParam = url.searchParams.get("connectionId");
+          const errParam = url.searchParams.get("error");
+          const isSuccess = /^kkamera:\/\/\/?oauth-success\b/.test(result.url);
+          if (isSuccess && code) {
+            // The account is only added once the server confirms it with this
+            // device's nonce; until then nothing is listed or uploaded to.
+            const completion = await completeOAuthConnection({
+              provider,
+              code,
+              connectionId: connectionIdParam && /^\d+$/.test(connectionIdParam) ? Number(connectionIdParam) : null,
+            });
             queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
-            Alert.alert(
-              "Connected!",
-              `"${decodeURIComponent(connName ?? selected?.label ?? "Connection")}" added successfully.`,
-              [{ text: "Done", onPress: () => router.back() }]
-            );
+            if (completion.ok) {
+              Alert.alert(
+                "Connected!",
+                `"${completion.name}" added successfully.`,
+                [{ text: "Done", onPress: () => router.back() }]
+              );
+            } else {
+              Alert.alert("Connection Failed", completion.message);
+            }
+          } else if (errParam) {
+            void forgetOAuthNonce(provider);
+            Alert.alert("Connection Failed", errParam.slice(0, 300));
+          } else {
+            void forgetOAuthNonce(provider);
+            Alert.alert("Connection Failed", "The connection did not complete. Please try again.");
           }
-        } else if (result.type === "cancel") {
-          // User cancelled — do nothing
+        } else if (result.type === "cancel" || result.type === "dismiss") {
+          // User cancelled — nothing was added.
+          void forgetOAuthNonce(provider);
         } else {
+          void forgetOAuthNonce(provider);
           Alert.alert("Auth Error", "OAuth flow did not complete. Please try again.");
         }
       }
@@ -152,23 +278,74 @@ export default function AddCloudScreen() {
       Alert.alert("Missing Info", "Please enter the server host / URL.");
       return;
     }
+    if (selected?.requiresUsername && !username.trim()) {
+      Alert.alert("Missing Info", `Please enter your ${selected.label} username.`);
+      return;
+    }
     try {
       await createMutation.mutateAsync({
         data: {
-          type: selectedType as any,
+          type: (selected?.backendType ?? selectedType) as any,
+          provider: selected?.provider ?? null,
           name: name.trim(),
           host: host || null,
           port: port ? parseInt(port) : null,
           username: username || null,
           password: password || null,
           uploadPath: uploadPath || "/KKamera",
-          oauthCode: null,
         },
       });
       queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
       Alert.alert("Connection Added", `"${name}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
     } catch (e: any) {
-      Alert.alert("Error", e?.response?.data?.message || "Failed to add connection.");
+      // This client throws ApiError (custom fetch mutator), not an axios error —
+      // there is no `e.response.data`, so read the server's `{ message }` through
+      // the shared helper or validation failures show up as a bare generic error.
+      Alert.alert("Error", getUserFacingMessage(e, "Failed to add connection."));
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editing || !selected) return;
+    if (!name.trim()) {
+      Alert.alert("Missing Info", "Please give the connection a name.");
+      return;
+    }
+    const data: CloudConnectionUpdate = {
+      name: name.trim(),
+      // Blank folder → null → the server resets it to the default folder.
+      uploadPath: uploadPath.trim() || null,
+    };
+    if (!selected.oAuth) {
+      if (!host.trim()) {
+        Alert.alert("Missing Info", "Please enter the server host / URL.");
+        return;
+      }
+      if (selected.requiresUsername && !username.trim()) {
+        Alert.alert("Missing Info", `Please enter your ${selected.label} username.`);
+        return;
+      }
+      const portNum = port.trim() ? parseInt(port, 10) : null;
+      if (portNum !== null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
+        Alert.alert("Invalid Port", "Port must be a number between 1 and 65535.");
+        return;
+      }
+      data.host = host.trim();
+      // Explicit null clears a saved port / username (the server treats a
+      // missing field as "unchanged" and null as "clear").
+      data.port = portNum;
+      data.username = username.trim() || null;
+      // Blank password = keep the saved one (field omitted); "Clear saved
+      // password" sends null; anything typed replaces it.
+      if (clearPassword) data.password = null;
+      else if (password) data.password = password;
+    }
+    try {
+      await updateMutation.mutateAsync({ id: editing.id, data });
+      queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+      Alert.alert("Connection Updated", `"${name.trim()}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
+    } catch (e: any) {
+      Alert.alert("Error", getUserFacingMessage(e, "Failed to update connection."));
     }
   };
 
@@ -180,13 +357,18 @@ export default function AddCloudScreen() {
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Text style={styles.sectionTitle}>Choose Storage Type</Text>
+        <Text style={styles.sectionTitle}>{editId != null ? "Edit Connection" : "Choose Storage Type"}</Text>
 
-        {CLOUD_TYPES.map(opt => (
+        {editId != null && !editing && (
+          <ActivityIndicator color={PRIMARY} style={{ marginVertical: 24 }} />
+        )}
+
+        {CLOUD_TYPES.filter(opt => editId == null || opt.type === selectedType).map(opt => (
           <TouchableOpacity
             key={opt.type}
             style={[styles.typeCard, selectedType === opt.type && styles.typeCardSelected]}
-            onPress={() => { setSelectedType(opt.type); setName(opt.label); }}
+            disabled={editId != null}
+            onPress={() => { setSelectedType(opt.type); setName(opt.label); setPort(opt.defaultPort ?? ""); }}
           >
             <View style={[styles.typeIcon, { backgroundColor: opt.color + "22" }]}>
               {opt.set === "mci"
@@ -206,6 +388,13 @@ export default function AddCloudScreen() {
           <>
             <Text style={[styles.sectionTitle, { marginTop: 24 }]}>Connection Details</Text>
 
+            {selected.note && (
+              <View style={styles.infoCard}>
+                <Ionicons name="information-circle-outline" size={18} color={PRIMARY} />
+                <Text style={styles.infoText}>{selected.note}</Text>
+              </View>
+            )}
+
             <Field label="Connection Name">
               <TextInput
                 style={styles.input} value={name} onChangeText={setName}
@@ -223,6 +412,22 @@ export default function AddCloudScreen() {
             {/* ── OAuth providers ── */}
             {selected.oAuth && (
               <>
+                {editing && (
+                  <TouchableOpacity
+                    style={[styles.saveBtn, { marginBottom: 16 }, updateMutation.isPending && { opacity: 0.6 }]}
+                    onPress={handleSaveEdit}
+                    disabled={updateMutation.isPending}
+                  >
+                    {updateMutation.isPending
+                      ? <ActivityIndicator color="white" />
+                      : <>
+                          <Ionicons name="save-outline" size={18} color="white" />
+                          <Text style={styles.saveText}>Save Changes</Text>
+                        </>
+                    }
+                  </TouchableOpacity>
+                )}
+
                 {!isOAuthConfigured && (
                   <View style={styles.warnCard}>
                     <Ionicons name="warning-outline" size={18} color="#f59e0b" />
@@ -246,7 +451,7 @@ export default function AddCloudScreen() {
                           ? <MaterialCommunityIcons name={selected.icon as any} size={20} color="white" />
                           : <Ionicons name={selected.icon as any} size={20} color="white" />
                         }
-                        <Text style={styles.oauthBtnText}>Connect with {selected.label}</Text>
+                        <Text style={styles.oauthBtnText}>{editing ? "Reconnect" : "Connect with"} {selected.label}</Text>
                       </>
                   }
                 </TouchableOpacity>
@@ -261,8 +466,8 @@ export default function AddCloudScreen() {
             {!selected.oAuth && (
               <>
                 <Field
-                  label="Server Host / URL"
-                  hint={selectedType === "webdav" ? "e.g. https://cloud.example.com/dav" : "e.g. ftp.example.com"}
+                  label={selected.hostLabel ?? "Server Host / URL"}
+                  hint={selected.hostHint ?? "host or URL"}
                 >
                   <TextInput
                     style={styles.input} value={host} onChangeText={setHost}
@@ -271,7 +476,7 @@ export default function AddCloudScreen() {
                   />
                 </Field>
 
-                <Field label="Port (optional)" hint={selectedType === "ftp" ? "Default: 21" : "Default: 443"}>
+                <Field label="Port (optional)" hint={selected.portHint ?? "Leave blank for default"}>
                   <TextInput
                     style={styles.input} value={port} onChangeText={setPort}
                     placeholder="Leave blank for default" placeholderTextColor="#555"
@@ -279,19 +484,29 @@ export default function AddCloudScreen() {
                   />
                 </Field>
 
-                <Field label="Username">
+                <Field label="Username" hint={selected.usernameHint}>
                   <TextInput
                     style={styles.input} value={username} onChangeText={setUsername}
                     placeholder="username" placeholderTextColor="#555" autoCapitalize="none"
                   />
                 </Field>
 
-                <Field label="Password" hint="Stored encrypted on the server">
+                <Field
+                  label={selected.passwordLabel ?? "Password"}
+                  hint={selected.passwordHint ?? "Stored encrypted on the server"}
+                >
                   <View style={styles.inputRow}>
                     <TextInput
                       style={[styles.input, { flex: 1, borderWidth: 0 }]}
-                      value={password} onChangeText={setPassword}
-                      placeholder="password" placeholderTextColor="#555"
+                      value={password}
+                      onChangeText={(v) => { setPassword(v); if (v) setClearPassword(false); }}
+                      editable={!clearPassword}
+                      placeholder={
+                        clearPassword ? "Saved password will be removed"
+                          : editing?.hasPassword ? "Leave blank to keep the saved password"
+                          : "password"
+                      }
+                      placeholderTextColor="#555"
                       secureTextEntry={!showPassword}
                       autoComplete="off"
                       textContentType="password"
@@ -305,21 +520,37 @@ export default function AddCloudScreen() {
                       <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                     </TouchableOpacity>
                   </View>
+                  {editing?.hasPassword && (
+                    <TouchableOpacity
+                      style={styles.clearPwBtn}
+                      onPress={() => { setClearPassword(v => !v); setPassword(""); }}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked: clearPassword }}
+                    >
+                      <Ionicons name={clearPassword ? "checkbox" : "square-outline"} size={18} color={clearPassword ? "#ef4444" : "#888"} />
+                      <Text style={styles.clearPwText}>Clear saved password</Text>
+                    </TouchableOpacity>
+                  )}
                 </Field>
 
-                <TouchableOpacity
-                  style={[styles.saveBtn, createMutation.isPending && { opacity: 0.6 }]}
-                  onPress={handleSaveFtpWebdav}
-                  disabled={createMutation.isPending}
-                >
-                  {createMutation.isPending
-                    ? <ActivityIndicator color="white" />
-                    : <>
-                        <Ionicons name="cloud-upload-outline" size={18} color="white" />
-                        <Text style={styles.saveText}>Save Connection</Text>
-                      </>
-                  }
-                </TouchableOpacity>
+                {(() => {
+                  const pending = editing ? updateMutation.isPending : createMutation.isPending;
+                  return (
+                    <TouchableOpacity
+                      style={[styles.saveBtn, pending && { opacity: 0.6 }]}
+                      onPress={editing ? handleSaveEdit : handleSaveFtpWebdav}
+                      disabled={pending || (editId != null && !editing)}
+                    >
+                      {pending
+                        ? <ActivityIndicator color="white" />
+                        : <>
+                            <Ionicons name={editing ? "save-outline" : "cloud-upload-outline"} size={18} color="white" />
+                            <Text style={styles.saveText}>{editing ? "Save Changes" : "Save Connection"}</Text>
+                          </>
+                      }
+                    </TouchableOpacity>
+                  );
+                })()}
               </>
             )}
           </>
@@ -362,6 +593,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(245,158,11,0.25)",
   },
   warnText: { flex: 1, fontSize: 12, color: "#d4a800", fontFamily: "Inter_400Regular", lineHeight: 17 },
+  infoCard: {
+    flexDirection: "row", alignItems: "flex-start", gap: 10,
+    backgroundColor: "rgba(177,152,112,0.08)", borderRadius: 10, padding: 12, marginBottom: 14,
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.25)",
+  },
+  infoText: { flex: 1, fontSize: 12, color: "#c3b091", fontFamily: "Inter_400Regular", lineHeight: 17 },
   oauthBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     borderRadius: 14, paddingVertical: 15, marginTop: 4,
@@ -383,6 +620,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: "rgba(177,152,112,0.18)", paddingHorizontal: 14,
   },
   eyeBtn: { paddingLeft: 8 },
+  clearPwBtn: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 },
+  clearPwText: { fontSize: 13, color: "#aaa", fontFamily: "Inter_400Regular" },
   saveBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 15, marginTop: 8,

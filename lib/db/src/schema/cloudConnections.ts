@@ -1,12 +1,25 @@
-import { boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { boolean, index, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { usersTable } from "./users";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
 export const cloudConnectionsTable = pgTable("cloud_connections", {
   id: serial("id").primaryKey(),
-  userId: integer("user_id").notNull(),
+  userId: integer("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   type: text("type").notNull(),
+  // Optional UI hint for a sub-flavour of `type` — e.g. "synology" for a NAS
+  // connected over WebDAV. Purely presentational (icon/label in the list); the
+  // upload logic always switches on `type`. Null for plain connections.
+  provider: text("provider"),
   name: text("name").notNull(),
+  // Stable provider account identifier (Google permissionId/email, Microsoft
+  // drive/owner id, Dropbox account_id). Lets a personal and a business account
+  // of the same provider coexist, and reconnecting the SAME account refresh its
+  // tokens instead of stacking a duplicate. Null when identity lookup failed.
+  accountId: text("account_id"),
+  // Human-readable account label (email or display name) shown in the UI so the
+  // user can tell their connected accounts apart. Best-effort; may be null.
+  accountLabel: text("account_label"),
   host: text("host"),
   port: integer("port"),
   username: text("username"),
@@ -16,9 +29,14 @@ export const cloudConnectionsTable = pgTable("cloud_connections", {
   refreshToken: text("refresh_token"),
   tokenExpiry: timestamp("token_expiry", { withTimezone: true }),
   active: boolean("active").notNull().default(true),
+  // Set while an OAuth connection awaits confirmation from the device that
+  // started the flow (hash of a one-time nonce). Null once confirmed; pending
+  // rows are never used for uploads and expire at pendingExpiresAt.
+  pendingNonceHash: text("pending_nonce_hash"),
+  pendingExpiresAt: timestamp("pending_expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
-});
+}, (t) => [index("cloud_connections_user_idx").on(t.userId)]);
 
 export const insertCloudConnectionSchema = createInsertSchema(cloudConnectionsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertCloudConnection = z.infer<typeof insertCloudConnectionSchema>;

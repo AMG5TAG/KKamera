@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import { Text, StyleSheet, TouchableOpacity } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -22,8 +22,11 @@ export function TrialBanner({ daysLeft }: Props) {
       style={[styles.banner, urgent && styles.bannerUrgent]}
       onPress={() => router.push("/settings/subscription")}
       activeOpacity={0.8}
+      accessibilityRole="button"
+      accessibilityLabel={`${message}. Subscribe.`}
+      accessibilityHint="Opens subscription settings"
     >
-      <Ionicons name="time-outline" size={16} color={urgent ? "#ef4444" : PRIMARY} />
+      <Ionicons name="time-outline" size={16} color={urgent ? "#ef4444" : PRIMARY} accessible={false} />
       <Text style={[styles.text, urgent && styles.textUrgent]}>{message}</Text>
       <Text style={[styles.cta, urgent && styles.ctaUrgent]}>Subscribe →</Text>
     </TouchableOpacity>

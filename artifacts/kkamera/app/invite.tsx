@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from "react";
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity,
   TextInput, Platform, Share, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -8,6 +8,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useGetAffiliateStats, useInviteCoworkers } from "@workspace/api-client-react";
+import { inviteMessage } from "@/lib/shareInvite";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
 const SECONDARY = "#c3b091";
@@ -17,7 +19,7 @@ const CARD = "#1a1710";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const BENEFITS = [
-  { icon: "gift-outline", title: "Earn free years", text: "Every 5 co-workers who subscribe adds 1 free year to your plan — no limit." },
+  { icon: "gift-outline", title: "Earn free years", text: "Every 5 co-workers who start a paid subscription adds 1 free year to your plan — no limit." },
   { icon: "time-outline", title: "They start free", text: "Everyone you invite gets a full 14-day trial. No credit card needed." },
   { icon: "cloud-done-outline", title: "Same workflow, whole team", text: "Shots upload straight to each person's own cloud storage — nothing left on devices." },
 ];
@@ -47,7 +49,6 @@ export default function InviteScreen() {
 
   const canPickContacts = Platform.OS === "web" && !!(navigator as any)?.contacts?.select;
   const referralCode = stats?.referralCode ?? "";
-  const referralLink = referralCode ? `https://app.kkamera.app/register?ref=${referralCode}` : "";
 
   const addEmail = useCallback((raw: string) => {
     const e = raw.trim().toLowerCase();
@@ -93,7 +94,7 @@ export default function InviteScreen() {
     if (!referralCode) return;
     try {
       await Share.share({
-        message: `Join me on KKamera — the privacy-first camera app that uploads photos & videos straight to your own cloud storage.\n\nSign up with my invite for a free 14-day trial:\n${referralLink}\n\nOr use code: ${referralCode}`,
+        message: inviteMessage(referralCode),
       });
     } catch { /* user dismissed */ }
   };
@@ -109,18 +110,19 @@ export default function InviteScreen() {
         >
           <Ionicons name="chevron-back" size={24} color={PRIMARY} />
         </TouchableOpacity>
-        <Text style={styles.heading}>Invite Co-Workers</Text>
+        <Text style={styles.heading} accessibilityRole="header">Invite Co-Workers</Text>
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView
+      <KeyboardAwareScrollViewCompat
         contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + 40 }}
         keyboardShouldPersistTaps="handled"
+        bottomOffset={80}
         showsVerticalScrollIndicator={false}
       >
         {celebrate === "1" && (
           <View style={styles.celebrateCard}>
-            <Ionicons name="checkmark-circle" size={22} color="#22c55e" />
+            <Ionicons name="checkmark-circle" size={22} color="#22c55e" accessible={false} />
             <View style={{ flex: 1 }}>
               <Text style={styles.celebrateTitle}>Payment successful — welcome aboard!</Text>
               <Text style={styles.celebrateText}>Know someone who'd love KKamera? Invite them and earn free years.</Text>
@@ -133,7 +135,7 @@ export default function InviteScreen() {
         {BENEFITS.map((b, i) => (
           <View key={i} style={styles.benefitRow}>
             <View style={styles.benefitIcon}>
-              <Ionicons name={b.icon as any} size={20} color={PRIMARY} />
+              <Ionicons name={b.icon as any} size={20} color={PRIMARY} accessible={false} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.benefitTitle}>{b.title}</Text>
@@ -151,9 +153,9 @@ export default function InviteScreen() {
 
         {sentCount !== null && (
           <View style={styles.sentCard}>
-            <Ionicons name="paper-plane" size={20} color="#22c55e" />
+            <Ionicons name="paper-plane" size={20} color="#22c55e" accessible={false} />
             <Text style={styles.sentText}>
-              Invites sent to {sentCount} contact{sentCount !== 1 ? "s" : ""}! You'll see them in your affiliate dashboard once they sign up.
+              Invites sent to {sentCount} contact{sentCount !== 1 ? "s" : ""}! They'll appear in Refer & Earn once they sign up, and count toward your free year when they start a paid subscription.
             </Text>
           </View>
         )}
@@ -168,6 +170,7 @@ export default function InviteScreen() {
                 <Text style={styles.chipText}>{e}</Text>
                 <TouchableOpacity
                   onPress={() => setEmails(prev => prev.filter(x => x !== e))}
+                  hitSlop={14}
                   accessibilityRole="button"
                   accessibilityLabel={`Remove ${e}`}
                 >
@@ -182,6 +185,7 @@ export default function InviteScreen() {
           <TextInput
             style={styles.input}
             placeholder="coworker@company.com"
+            accessibilityLabel="Co-worker's email address"
             placeholderTextColor="#555"
             keyboardType="email-address"
             autoCapitalize="none"
@@ -194,6 +198,7 @@ export default function InviteScreen() {
           <TouchableOpacity
             style={styles.addBtn}
             onPress={() => addEmail(draft)}
+            hitSlop={6}
             accessibilityRole="button"
             accessibilityLabel="Add email"
           >
@@ -202,15 +207,15 @@ export default function InviteScreen() {
         </View>
 
         {canPickContacts && (
-          <TouchableOpacity style={styles.contactsBtn} onPress={handlePickContacts}>
-            <Ionicons name="people-outline" size={18} color={PRIMARY} />
+          <TouchableOpacity style={styles.contactsBtn} onPress={handlePickContacts} accessibilityRole="button">
+            <Ionicons name="people-outline" size={18} color={PRIMARY} accessible={false} />
             <Text style={styles.contactsBtnText}>Choose from Contacts</Text>
           </TouchableOpacity>
         )}
 
         {error ? (
-          <View style={styles.errorBox}>
-            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+          <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
             <Text style={styles.errorText}>{error}</Text>
           </View>
         ) : null}
@@ -219,11 +224,14 @@ export default function InviteScreen() {
           style={[styles.sendBtn, (inviteMutation.isPending || (emails.length === 0 && !draft.trim())) && styles.btnDisabled]}
           onPress={handleSend}
           disabled={inviteMutation.isPending}
+          accessibilityRole="button"
+          accessibilityLabel={inviteMutation.isPending ? "Sending invites" : undefined}
+          accessibilityState={{ disabled: inviteMutation.isPending, busy: inviteMutation.isPending }}
         >
           {inviteMutation.isPending
             ? <ActivityIndicator color="white" />
             : <>
-                <Ionicons name="paper-plane-outline" size={18} color="white" />
+                <Ionicons name="paper-plane-outline" size={18} color="white" accessible={false} />
                 <Text style={styles.sendBtnText}>
                   Send Invite{emails.length > 1 ? `s (${emails.length})` : ""}
                 </Text>
@@ -232,15 +240,19 @@ export default function InviteScreen() {
         </TouchableOpacity>
 
         {/* Share-sheet fallback (SMS, WhatsApp, etc.) */}
-        <TouchableOpacity style={styles.shareBtn} onPress={handleShareInstead}>
-          <Ionicons name="share-outline" size={18} color={PRIMARY} />
+        <TouchableOpacity style={styles.shareBtn} onPress={handleShareInstead} accessibilityRole="button">
+          <Ionicons name="share-outline" size={18} color={PRIMARY} accessible={false} />
           <Text style={styles.shareBtnText}>Share invite link another way</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.skipBtn} onPress={() => (router.canGoBack() ? router.back() : router.replace("/camera"))}>
+        <TouchableOpacity
+          style={styles.skipBtn}
+          onPress={() => (router.canGoBack() ? router.back() : router.replace("/camera"))}
+          accessibilityRole="button"
+        >
           <Text style={styles.skipBtnText}>Maybe later</Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

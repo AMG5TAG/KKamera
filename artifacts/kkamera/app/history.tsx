@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   Alert, ActivityIndicator, RefreshControl,
@@ -11,6 +11,7 @@ import {
   useListUploads, useDeleteUpload, useClearUploads, getListUploadsQueryKey,
 } from "@workspace/api-client-react";
 import { useSettings } from "@/contexts/SettingsContext";
+import { useUpload, type QueuedUpload } from "@/contexts/UploadContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -55,10 +56,27 @@ export default function HistoryScreen() {
   const clearMutation = useClearUploads();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [isClearing, setIsClearing] = useState(false);
+  const { queuedItems, retryItem, discardItem } = useUpload();
 
   const sorted = [...(uploads ?? [])].sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
+
+  // A capture still held on this device (e.g. a partial upload being retried)
+  // is shown once, in "On this device" — hide its server row until it leaves
+  // the local queue. The server reuses one row per clientUploadId (the queue
+  // item id), so after that there is exactly one server row for it.
+  const localIds = useMemo(() => new Set(queuedItems.map(i => i.id)), [queuedItems]);
+  const visible = sorted.filter(u => !u.clientUploadId || !localIds.has(u.clientUploadId));
+
+  // When a capture leaves the local queue (uploaded, or discarded) refresh the
+  // server list so its final row appears without a manual pull-to-refresh.
+  const prevLocalIds = useRef(localIds);
+  useEffect(() => {
+    const left = [...prevLocalIds.current].some(id => !localIds.has(id));
+    prevLocalIds.current = localIds;
+    if (left) queryClient.invalidateQueries({ queryKey: getListUploadsQueryKey() });
+  }, [localIds, queryClient]);
 
   const handleDelete = (id: number, fileName: string) => {
     Alert.alert("Remove Record", `Remove "${fileName}" from history?`, [
@@ -101,19 +119,93 @@ export default function HistoryScreen() {
     );
   }, [sorted.length, queryClient, clearMutation]);
 
+  const handleDiscard = (item: QueuedUpload) => {
+    Alert.alert(
+      "Discard Capture",
+      `"${item.fileName}" hasn't been uploaded. Discarding deletes the only copy on this device. This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Discard", style: "destructive", onPress: () => { void discardItem(item.id); } },
+      ]
+    );
+  };
+
+  const renderQueuedItem = (item: QueuedUpload) => {
+    const cfg = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.queued;
+    const uploading = item.status === "uploading";
+    return (
+      <View key={item.id} style={styles.card}>
+        <View style={[styles.typeIcon, { backgroundColor: cfg.color + "22" }]}>
+          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} accessible={false} />
+        </View>
+        <View style={styles.cardBody}>
+          <Text style={styles.fileName} numberOfLines={1}>{item.fileName}</Text>
+          <View style={styles.metaRow}>
+            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} accessible={false} />
+            <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
+            <Text style={styles.dotSep}>·</Text>
+            <Text style={styles.dateText}>{formatDate(new Date(item.createdAt).toISOString())}</Text>
+          </View>
+          {!!item.error && (
+            <Text
+              style={item.status === "failed" || item.status === "partial" ? styles.errorText : styles.queueNote}
+              numberOfLines={2}
+            >
+              {item.error}
+            </Text>
+          )}
+        </View>
+        {uploading ? (
+          <ActivityIndicator size="small" color={PRIMARY} style={styles.deleteBtn} accessibilityLabel="Uploading" />
+        ) : (
+          <>
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => retryItem(item.id)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Retry upload of ${item.fileName}`}
+            >
+              <Ionicons name="refresh-outline" size={18} color={PRIMARY} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => handleDiscard(item)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Discard ${item.fileName}`}
+            >
+              <Ionicons name="trash-outline" size={18} color="#ef4444" />
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+    );
+  };
+
+  const deviceSection = queuedItems.length > 0 ? (
+    <View style={styles.deviceSection}>
+      <Text style={styles.countText}>
+        On this device · {queuedItems.length} not uploaded
+      </Text>
+      {queuedItems.map(renderQueuedItem)}
+    </View>
+  ) : null;
+
   if (!settings.recordHistory) {
     return (
       <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
+        {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
         <View style={styles.center}>
-          <Ionicons name="eye-off-outline" size={48} color="#333" />
+          <Ionicons name="eye-off-outline" size={48} color="#333" accessible={false} />
           <Text style={styles.emptyTitle}>History is disabled</Text>
           <Text style={styles.emptyText}>
             Enable "Record History" in Settings → Upload to start tracking uploads.
           </Text>
-          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload" as any)}>
+          <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload" as any)} accessibilityRole="button">
             <Text style={styles.settingsBtnText}>Open Upload Settings</Text>
           </TouchableOpacity>
         </View>
@@ -129,12 +221,12 @@ export default function HistoryScreen() {
     return (
       <View style={[styles.card, isDeleting && { opacity: 0.5 }]}>
         <View style={[styles.typeIcon, { backgroundColor: cfg.color + "22" }]}>
-          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} />
+          <Ionicons name={fileIcon(item.fileType, item.fileName) as any} size={20} color={cfg.color} accessible={false} />
         </View>
         <View style={styles.cardBody}>
           <Text style={styles.fileName} numberOfLines={1}>{item.fileName}</Text>
           <View style={styles.metaRow}>
-            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} />
+            <Ionicons name={cfg.icon as any} size={12} color={cfg.color} accessible={false} />
             <Text style={[styles.statusText, { color: cfg.color }]}>{cfg.label}</Text>
             <Text style={styles.dotSep}>·</Text>
             <Text style={styles.dateText}>{formatDate(item.createdAt)}</Text>
@@ -147,6 +239,10 @@ export default function HistoryScreen() {
           style={styles.deleteBtn}
           onPress={() => handleDelete(item.id, item.fileName)}
           disabled={isDeleting}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${item.fileName} from history`}
+          accessibilityState={{ disabled: isDeleting, busy: isDeleting }}
         >
           {isDeleting
             ? <ActivityIndicator size="small" color="#ef4444" />
@@ -160,17 +256,25 @@ export default function HistoryScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
       <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
-        <Text style={styles.heading}>Upload History</Text>
-        {sorted.length > 0 && (
-          <TouchableOpacity onPress={handleClearAll} disabled={isClearing} style={styles.clearAllBtn}>
+        <Text style={styles.heading} accessibilityRole="header">Upload History</Text>
+        {visible.length > 0 && (
+          <TouchableOpacity
+            onPress={handleClearAll}
+            disabled={isClearing}
+            style={styles.clearAllBtn}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="Clear all upload history"
+            accessibilityState={{ disabled: isClearing, busy: isClearing }}
+          >
             {isClearing
               ? <ActivityIndicator size="small" color="#ef4444" />
               : (
                 <>
-                  <Ionicons name="trash-outline" size={15} color="#ef4444" />
+                  <Ionicons name="trash-outline" size={15} color="#ef4444" accessible={false} />
                   <Text style={styles.clearAllText}>Clear</Text>
                 </>
               )
@@ -180,23 +284,31 @@ export default function HistoryScreen() {
       </View>
 
       {isLoading ? (
-        <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
+        <>
+          {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
+          <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
+        </>
       ) : (
         <FlatList
-          data={sorted}
+          data={visible}
           keyExtractor={item => String(item.id)}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 40 }}
           refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={PRIMARY} />}
-          ListHeaderComponent={sorted.length > 0 ? (
-            <Text style={styles.countText}>{sorted.length} record{sorted.length !== 1 ? "s" : ""}</Text>
+          ListHeaderComponent={(deviceSection || visible.length > 0) ? (
+            <>
+              {deviceSection}
+              {visible.length > 0 && (
+                <Text style={styles.countText}>{visible.length} record{visible.length !== 1 ? "s" : ""}</Text>
+              )}
+            </>
           ) : null}
           ListEmptyComponent={(
             <View style={styles.emptyWrap}>
-              <Ionicons name="cloud-upload-outline" size={52} color="#333" />
+              <Ionicons name="cloud-upload-outline" size={52} color="#333" accessible={false} />
               <Text style={styles.emptyTitle}>No uploads yet</Text>
               <Text style={styles.emptyText}>Photos, videos, and scans you upload will appear here.</Text>
-              <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera" as any)}>
-                <Ionicons name="camera-outline" size={18} color="white" />
+              <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera" as any)} accessibilityRole="button">
+                <Ionicons name="camera-outline" size={18} color="white" accessible={false} />
                 <Text style={styles.cameraBtnText}>Open Camera</Text>
               </TouchableOpacity>
             </View>
@@ -240,6 +352,8 @@ const styles = StyleSheet.create({
   dateText: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
   errorText: { fontSize: 11, color: "#ef444488", fontFamily: "Inter_400Regular", marginTop: 2 },
   deleteBtn: { padding: 8 },
+  deviceSection: { gap: 10, marginBottom: 20 },
+  queueNote: { fontSize: 11, color: "#888", fontFamily: "Inter_400Regular", marginTop: 2 },
   emptyWrap: { alignItems: "center", paddingVertical: 60, paddingHorizontal: 32 },
   emptyTitle: { fontSize: 20, fontFamily: "Inter_600SemiBold", color: "#555", marginTop: 16, marginBottom: 8 },
   emptyText: { fontSize: 14, color: "#444", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20, marginBottom: 24 },

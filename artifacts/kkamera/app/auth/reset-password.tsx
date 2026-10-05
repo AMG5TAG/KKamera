@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { router, useLocalSearchParams } from "expo-router";
 import { useResetPassword, getUserFacingMessage } from "@workspace/api-client-react";
 
@@ -44,39 +44,44 @@ export default function ResetPasswordScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.replace("/auth/login")}>
-        <Ionicons name="chevron-back" size={18} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.replace("/auth/login")} accessibilityRole="button">
+        <Ionicons name="chevron-back" size={18} color={PRIMARY} accessible={false} />
         <Text style={styles.backBtnText}>Back to Sign In</Text>
       </TouchableOpacity>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollViewCompat
+        contentContainerStyle={[styles.content, { paddingBottom: 40 + insets.bottom }]}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        bottomOffset={24}
+      >
         <View style={styles.iconWrap}>
-          <Ionicons name="key-outline" size={48} color={PRIMARY} />
+          <Ionicons name="key-outline" size={48} color={PRIMARY} accessible={false} />
         </View>
 
-        <Text style={styles.title}>Reset Password</Text>
+        <Text style={styles.title} accessibilityRole="header">Reset Password</Text>
 
         {done ? (
           <>
-            <View style={styles.successBox}>
-              <Ionicons name="checkmark-circle-outline" size={20} color="#22c55e" />
+            <View style={styles.successBox} accessibilityLiveRegion="polite">
+              <Ionicons name="checkmark-circle-outline" size={20} color="#22c55e" accessible={false} />
               <Text style={styles.successText}>
                 Your password has been updated. Sign in with your new password.
               </Text>
             </View>
-            <TouchableOpacity style={styles.submitBtn} onPress={() => router.replace("/auth/login")}>
+            <TouchableOpacity style={styles.submitBtn} onPress={() => router.replace("/auth/login")} accessibilityRole="button">
               <Text style={styles.submitText}>Go to Sign In</Text>
             </TouchableOpacity>
           </>
         ) : missingToken ? (
           <>
-            <View style={styles.errorBox}>
-              <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+            <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+              <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
               <Text style={styles.errorText}>
                 This reset link is missing its token. Open the link from your email, or request a new one.
               </Text>
             </View>
-            <TouchableOpacity style={styles.submitBtn} onPress={() => router.replace("/auth/forgot-password")}>
+            <TouchableOpacity style={styles.submitBtn} onPress={() => router.replace("/auth/forgot-password")} accessibilityRole="button">
               <Text style={styles.submitText}>Request New Link</Text>
             </TouchableOpacity>
           </>
@@ -87,8 +92,8 @@ export default function ResetPasswordScreen() {
             </Text>
 
             {error ? (
-              <View style={styles.errorBox}>
-                <Ionicons name="alert-circle-outline" size={16} color="#ef4444" />
+              <View style={styles.errorBox} accessibilityRole="alert" accessibilityLiveRegion="polite">
+                <Ionicons name="alert-circle-outline" size={16} color="#ef4444" accessible={false} />
                 <Text style={styles.errorText}>{error}</Text>
               </View>
             ) : null}
@@ -99,6 +104,7 @@ export default function ResetPasswordScreen() {
                 <TextInput
                   style={styles.inputFlex}
                   placeholder="At least 8 characters"
+                  accessibilityLabel="New password"
                   placeholderTextColor="#555"
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
@@ -106,7 +112,12 @@ export default function ResetPasswordScreen() {
                   value={password}
                   onChangeText={setPassword}
                 />
-                <TouchableOpacity onPress={() => setShowPassword(s => !s)} style={styles.eyeBtn}>
+                <TouchableOpacity
+                  onPress={() => setShowPassword(s => !s)}
+                  style={styles.eyeBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+                >
                   <Ionicons name={showPassword ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
                 </TouchableOpacity>
               </View>
@@ -117,6 +128,7 @@ export default function ResetPasswordScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="Repeat new password"
+                accessibilityLabel="Confirm new password"
                 placeholderTextColor="#555"
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
@@ -130,16 +142,18 @@ export default function ResetPasswordScreen() {
               style={[styles.submitBtn, loading && styles.submitBtnDisabled]}
               onPress={handleSubmit}
               disabled={loading}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: loading, busy: loading }}
             >
               <Text style={styles.submitText}>{loading ? "Updating..." : "Update Password"}</Text>
             </TouchableOpacity>
           </>
         )}
 
-        <TouchableOpacity style={styles.backLink} onPress={() => router.replace("/auth/login")}>
+        <TouchableOpacity style={styles.backLink} onPress={() => router.replace("/auth/login")} accessibilityRole="button">
           <Text style={styles.backLinkText}>Return to <Text style={{ color: PRIMARY }}>Sign In</Text></Text>
         </TouchableOpacity>
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

@@ -16,15 +16,21 @@ function SettingRow({
   icon: string; iconColor?: string; label: string; hint?: string; onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole="button"
+      accessibilityLabel={hint ? `${label}, ${hint}` : label}
+    >
       <View style={[styles.iconWrap, { backgroundColor: (iconColor ?? PRIMARY) + "22" }]}>
-        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
+        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} accessible={false} />
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
         {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
       </View>
-      <Ionicons name="chevron-forward" size={15} color="#444" />
+      <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
     </TouchableOpacity>
   );
 }
@@ -38,7 +44,7 @@ function ToggleRow({
   return (
     <View style={styles.row}>
       <View style={[styles.iconWrap, { backgroundColor: (iconColor ?? PRIMARY) + "22" }]}>
-        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
+        <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} accessible={false} />
       </View>
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
@@ -47,6 +53,8 @@ function ToggleRow({
       <Switch
         value={value}
         onValueChange={onToggle}
+        accessibilityLabel={label}
+        accessibilityHint={hint}
         trackColor={{ false: "#2a2720", true: PRIMARY }}
         thumbColor="white"
         ios_backgroundColor="#2a2720"
@@ -61,7 +69,14 @@ function RadioRow({
   label: string; hint?: string; selected: boolean; onPress: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole="radio"
+      accessibilityLabel={hint ? `${label}, ${hint}` : label}
+      accessibilityState={{ checked: selected, selected }}
+    >
       <View style={styles.rowBody}>
         <Text style={styles.rowLabel}>{label}</Text>
         {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
@@ -79,8 +94,8 @@ export default function UploadScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView
@@ -88,24 +103,13 @@ export default function UploadScreen() {
         contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Destinations */}
-        <Text style={styles.sectionLabel}>Destinations</Text>
-        <View style={styles.card}>
-          <SettingRow
-            icon="cloud-upload-outline"
-            label="Cloud Connections"
-            hint="FTP, WebDAV, Google Drive, OneDrive, Dropbox"
-            onPress={() => router.push("/settings/cloud")}
-          />
-        </View>
-
         {/* History */}
         <Text style={styles.sectionLabel}>History</Text>
         <View style={styles.card}>
           <ToggleRow
             icon="time-outline"
             label="Record Upload History"
-            hint="Track and view past uploads"
+            hint="Keep a list of past uploads. The camera always shows upload status and failures."
             value={settings.recordHistory}
             onToggle={v => updateSetting("recordHistory", v)}
           />
@@ -128,7 +132,7 @@ export default function UploadScreen() {
           <ToggleRow
             icon="pencil-outline"
             label="Enable Photo Markup"
-            hint="Annotate photos before uploading"
+            hint="Annotate photos before uploading (burst shots upload unmarked)"
             value={settings.photoMarkup}
             onToggle={v => updateSetting("photoMarkup", v)}
           />
@@ -168,10 +172,22 @@ export default function UploadScreen() {
           <ToggleRow
             icon="wifi-outline"
             label="Wi-Fi Only"
-            hint="Upload only when connected to Wi-Fi"
+            hint="Off Wi-Fi, captures wait in the queue and upload once you're on Wi-Fi"
             value={settings.uploadOnlyOnWifi}
             onToggle={v => updateSetting("uploadOnlyOnWifi", v)}
           />
+          {Platform.OS !== "web" && (
+            <>
+              <View style={styles.divider} />
+              <ToggleRow
+                icon="images-outline"
+                label="Save to Photos"
+                hint={"Also keep a copy of every capture in your photo library. With \u201cDon't upload\u201d selected, captures are always saved here."}
+                value={settings.saveToCameraRoll}
+                onToggle={v => updateSetting("saveToCameraRoll", v)}
+              />
+            </>
+          )}
           <View style={styles.divider} />
           <ToggleRow
             icon="help-circle-outline"

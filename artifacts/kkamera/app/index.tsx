@@ -9,7 +9,7 @@ export default function IndexScreen() {
   if (isLoading) {
     return (
       <View style={{ flex: 1, backgroundColor: "#0d0b08", alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color="#b19870" size="large" />
+        <ActivityIndicator color="#b19870" size="large" accessibilityLabel="Loading" />
       </View>
     );
   }

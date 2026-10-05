@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -9,13 +9,24 @@ const BG = "#0d0b08";
 const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 
+const WEBSITE_URL = "https://www.koastal.com.au";
+
 function MenuRow({
-  icon, iconColor, label, hint, onPress,
+  icon, iconColor, label, hint, onPress, external,
 }: {
-  icon: string; iconColor?: string; label: string; hint?: string; onPress: () => void;
+  icon: string; iconColor?: string; label: string; hint?: string;
+  onPress: () => void;
+  /** Leaves the app — shown with an open-in-new glyph instead of a chevron. */
+  external?: boolean;
 }) {
   return (
-    <TouchableOpacity style={styles.row} onPress={onPress} activeOpacity={0.65}>
+    <TouchableOpacity
+      style={styles.row}
+      onPress={onPress}
+      activeOpacity={0.65}
+      accessibilityRole={external ? "link" : "button"}
+      accessibilityLabel={hint ? `${label}, ${hint}` : label}
+    >
       <View style={[styles.iconWrap, iconColor ? { backgroundColor: iconColor + "22" } : null]}>
         <Ionicons name={icon as any} size={19} color={iconColor ?? PRIMARY} />
       </View>
@@ -23,7 +34,7 @@ function MenuRow({
         <Text style={styles.rowLabel}>{label}</Text>
         {hint ? <Text style={styles.rowHint}>{hint}</Text> : null}
       </View>
-      <Ionicons name="chevron-forward" size={15} color="#444" />
+      <Ionicons name={external ? "open-outline" : "chevron-forward"} size={15} color="#444" />
     </TouchableOpacity>
   );
 }
@@ -33,8 +44,8 @@ export default function SupportScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
       </TouchableOpacity>
 
       <ScrollView
@@ -49,6 +60,16 @@ export default function SupportScreen() {
             label="Feedback & Bug Reports"
             hint="Help us improve KKamera"
             onPress={() => router.push("/settings/feedback")}
+          />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="globe-outline"
+            label="Visit Our Website"
+            hint="Koastal Kollective · www.koastal.com.au"
+            external
+            // openURL rejects when no handler can take the URL; swallow it so a
+            // tap can't surface an unhandled rejection.
+            onPress={() => { Linking.openURL(WEBSITE_URL).catch(() => {}); }}
           />
         </View>
 

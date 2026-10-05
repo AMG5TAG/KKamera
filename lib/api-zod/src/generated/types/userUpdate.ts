@@ -9,4 +9,5 @@
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
+  onboardingCompleted?: boolean;
 }

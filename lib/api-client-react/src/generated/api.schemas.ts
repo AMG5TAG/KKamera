@@ -9,6 +9,193 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface SuccessResponse {
+  success: boolean;
+}
+
+export type OAuthInitiateInputPlatform =
+  (typeof OAuthInitiateInputPlatform)[keyof typeof OAuthInitiateInputPlatform];
+
+export const OAuthInitiateInputPlatform = {
+  web: "web",
+  native: "native",
+} as const;
+
+export interface OAuthInitiateInput {
+  name?: string;
+  platform?: OAuthInitiateInputPlatform;
+  uploadPath?: string;
+}
+
+export interface OAuthInitiateResult {
+  authorizeUrl: string;
+  state: string;
+  /** One-time secret for POST /oauth/complete. Keep it on the device that started the flow; never put it in a URL. */
+  nonce: string;
+}
+
+export interface OAuthCompleteInput {
+  /** The nonce returned by /oauth/{provider}/initiate */
+  nonce: string;
+  /** The one-time `code` from the callback redirect */
+  code: string;
+  /** The pending `connectionId` from the callback redirect */
+  connectionId?: number;
+}
+
+export interface OAuthCompleteResult {
+  connectionId: number;
+  type: string;
+  name: string;
+  /** @nullable */
+  accountLabel: string | null;
+}
+
+export interface OAuthNotConfigured {
+  message: string;
+  missingEnv: string[];
+}
+
+export interface OAuthProviderStatus {
+  label: string;
+  configured: boolean;
+}
+
+/**
+ * Map keyed by provider id (googledrive, onedrive, dropbox)
+ */
+export interface OAuthStatus {
+  [key: string]: OAuthProviderStatus;
+}
+
+export interface WitnessNotifyInput {
+  witnessEmail: string;
+  /**
+   * @minLength 1
+   * @maxLength 500
+   */
+  fileName: string;
+}
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  referralCode: string;
+  twoFAEnabled: boolean;
+  onboardingCompleted: boolean;
+  createdAt: string;
+}
+
+export type UploadTargetMode =
+  (typeof UploadTargetMode)[keyof typeof UploadTargetMode];
+
+export const UploadTargetMode = {
+  all: "all",
+  selected: "selected",
+  none: "none",
+} as const;
+
+export interface UploadTarget {
+  mode: UploadTargetMode;
+  connectionIds: number[];
+}
+
+export interface ExportSubscription {
+  status: string;
+  /** @nullable */
+  trialStart?: string | null;
+  /** @nullable */
+  trialEnd?: string | null;
+  /** @nullable */
+  currentPeriodEnd?: string | null;
+  freeYearsAwarded: number;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export interface ExportCloudConnection {
+  id: number;
+  type: string;
+  /** @nullable */
+  provider?: string | null;
+  name: string;
+  /** @nullable */
+  host?: string | null;
+  /** @nullable */
+  port?: number | null;
+  /** @nullable */
+  username?: string | null;
+  /** @nullable */
+  uploadPath?: string | null;
+  /** @nullable */
+  accountLabel?: string | null;
+  active: boolean;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export type ReferralStatus =
+  (typeof ReferralStatus)[keyof typeof ReferralStatus];
+
+export const ReferralStatus = {
+  pending: "pending",
+  completed: "completed",
+} as const;
+
+export interface Referral {
+  id: number;
+  referredName: string;
+  status: ReferralStatus;
+  createdAt: string;
+}
+
+export interface ExportReferredBy {
+  id: number;
+  status: string;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export interface ExportUpload {
+  id: number;
+  fileName: string;
+  fileType: string;
+  status: string;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export type FeedbackItemType =
+  (typeof FeedbackItemType)[keyof typeof FeedbackItemType];
+
+export const FeedbackItemType = {
+  bug: "bug",
+  feature: "feature",
+  other: "other",
+} as const;
+
+export interface FeedbackItem {
+  id: number;
+  type: FeedbackItemType;
+  message: string;
+  createdAt: string;
+}
+
+export interface UserDataExport {
+  exportedAt: string;
+  user: User;
+  uploadTarget: UploadTarget;
+  subscription?: ExportSubscription | null;
+  /** Connection metadata only — credentials and tokens are never exported. */
+  cloudConnections: ExportCloudConnection[];
+  referrals: Referral[];
+  /** Referral rows in which this user is the referred party. */
+  referredBy: ExportReferredBy[];
+  uploads: ExportUpload[];
+  feedback: FeedbackItem[];
+}
+
 export interface MessageResponse {
   message: string;
 }
@@ -19,6 +206,48 @@ export interface RegisterInput {
   name: string;
   /** @nullable */
   referralCode?: string | null;
+}
+
+export type VerificationRequiredStatus =
+  (typeof VerificationRequiredStatus)[keyof typeof VerificationRequiredStatus];
+
+export const VerificationRequiredStatus = {
+  verification_required: "verification_required",
+} as const;
+
+export interface VerificationRequired {
+  status: VerificationRequiredStatus;
+  /** Binds the emailed code to this client. Never emailed. */
+  nonce: string;
+  email: string;
+}
+
+export interface VerifyEmailInput {
+  nonce: string;
+  /** The 6-digit code from the email. */
+  code: string;
+}
+
+export interface ResendVerificationInput {
+  nonce: string;
+}
+
+export interface ResendVerificationResult {
+  nonce: string;
+}
+
+export type EmailNotVerifiedCode =
+  (typeof EmailNotVerifiedCode)[keyof typeof EmailNotVerifiedCode];
+
+export const EmailNotVerifiedCode = {
+  email_not_verified: "email_not_verified",
+} as const;
+
+export interface EmailNotVerified {
+  code: EmailNotVerifiedCode;
+  nonce: string;
+  email: string;
+  message: string;
 }
 
 export interface LoginInput {
@@ -38,6 +267,20 @@ export interface ResetPasswordInput {
   password: string;
 }
 
+export interface ChangePasswordInput {
+  currentPassword: string;
+  /**
+   * At least 8 characters and at most 72 bytes (UTF-8).
+   * @minLength 8
+   */
+  newPassword: string;
+  /**
+   * Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+   * @nullable
+   */
+  totpCode?: string | null;
+}
+
 export interface InviteCoworkersInput {
   /**
    * @minItems 1
@@ -46,23 +289,29 @@ export interface InviteCoworkersInput {
   emails: string[];
 }
 
-export interface User {
-  id: number;
-  email: string;
-  name: string;
-  referralCode: string;
-  twoFAEnabled: boolean;
-  createdAt: string;
-}
-
 export interface AuthResponse {
   token: string;
   user: User;
 }
 
+export type UploadTargetInputMode =
+  (typeof UploadTargetInputMode)[keyof typeof UploadTargetInputMode];
+
+export const UploadTargetInputMode = {
+  all: "all",
+  selected: "selected",
+  none: "none",
+} as const;
+
+export interface UploadTargetInput {
+  mode: UploadTargetInputMode;
+  connectionIds?: number[];
+}
+
 export interface UserUpdate {
   /** @nullable */
   name?: string | null;
+  onboardingCompleted?: boolean;
 }
 
 export interface TwoFASetup {
@@ -71,8 +320,40 @@ export interface TwoFASetup {
   backupCodes: string[];
 }
 
-export interface TwoFAVerifyInput {
+export interface PasswordConfirmInput {
+  /** The account's current password (re-authentication). */
+  password: string;
+}
+
+export interface TwoFAEnableInput {
+  /** 6-digit TOTP from the authenticator app. */
   code: string;
+  /** The account's current password (re-authentication). */
+  password: string;
+}
+
+export interface TwoFADisableInput {
+  /** 6-digit TOTP or a backup code. */
+  code: string;
+  /** The account's current password (re-authentication). */
+  password: string;
+}
+
+export interface DeleteAccountInput {
+  /** The account's current password (re-authentication). */
+  password: string;
+  /**
+   * Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+   * @nullable
+   */
+  totpCode?: string | null;
+}
+
+export interface SessionRefreshResponse {
+  message: string;
+  /** Fresh session token — other sessions have been revoked. */
+  token: string;
+  user: User;
 }
 
 export type SubscriptionStatus =
@@ -98,30 +379,11 @@ export interface Subscription {
   createdAt: string;
 }
 
-export interface CheckoutSession {
-  url: string;
-}
-
 export interface AffiliateStats {
   referralCode: string;
   totalReferrals: number;
   completedReferrals: number;
   yearsEarned: number;
-}
-
-export type ReferralStatus =
-  (typeof ReferralStatus)[keyof typeof ReferralStatus];
-
-export const ReferralStatus = {
-  pending: "pending",
-  completed: "completed",
-} as const;
-
-export interface Referral {
-  id: number;
-  referredName: string;
-  status: ReferralStatus;
-  createdAt: string;
 }
 
 export type CloudConnectionType =
@@ -130,6 +392,7 @@ export type CloudConnectionType =
 export const CloudConnectionType = {
   ftp: "ftp",
   webdav: "webdav",
+  nextcloud: "nextcloud",
   onedrive: "onedrive",
   googledrive: "googledrive",
   dropbox: "dropbox",
@@ -139,10 +402,34 @@ export interface CloudConnection {
   id: number;
   userId: number;
   type: CloudConnectionType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @nullable
+   */
+  provider?: string | null;
   name: string;
   active: boolean;
   /** @nullable */
   uploadPath?: string | null;
+  /**
+   * Server URL for self-hosted types (nextcloud/webdav/ftp); null for OAuth providers.
+   * @nullable
+   */
+  host?: string | null;
+  /**
+   * Explicit port for self-hosted types; null = protocol default.
+   * @nullable
+   */
+  port?: number | null;
+  /**
+   * Login for self-hosted types (never the password).
+   * @nullable
+   */
+  username?: string | null;
+  /** Whether a password is saved (the password itself is never returned). */
+  hasPassword?: boolean;
+  /** @nullable */
+  accountLabel?: string | null;
   hasCredentials: boolean;
   createdAt: string;
 }
@@ -153,45 +440,91 @@ export type CloudConnectionInputType =
 export const CloudConnectionInputType = {
   ftp: "ftp",
   webdav: "webdav",
-  onedrive: "onedrive",
-  googledrive: "googledrive",
-  dropbox: "dropbox",
+  nextcloud: "nextcloud",
 } as const;
 
+/**
+ * Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (/oauth/initiate → callback → /oauth/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).
+ */
 export interface CloudConnectionInput {
   type: CloudConnectionInputType;
+  /**
+   * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @maxLength 50
+   * @nullable
+   */
+  provider?: string | null;
+  /**
+   * @minLength 1
+   * @maxLength 100
+   */
   name: string;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   host?: string | null;
-  /** @nullable */
+  /**
+   * @minimum 1
+   * @maximum 65535
+   * @nullable
+   */
   port?: number | null;
-  /** @nullable */
+  /**
+   * @maxLength 200
+   * @nullable
+   */
   username?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   password?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   uploadPath?: string | null;
-  /** @nullable */
-  oauthCode?: string | null;
 }
 
+/**
+ * Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default "/KKamera"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.
+ */
 export interface CloudConnectionUpdate {
-  /** @nullable */
-  name?: string | null;
-  /** @nullable */
-  active?: boolean | null;
-  /** @nullable */
+  /**
+   * @minLength 1
+   * @maxLength 100
+   */
+  name?: string;
+  active?: boolean;
+  /**
+   * Folder path; ".." segments are rejected.
+   * @maxLength 500
+   * @nullable
+   */
   uploadPath?: string | null;
-  /** @nullable */
-  host?: string | null;
-  /** @nullable */
+  /**
+   * Must not embed credentials (user:pass@host).
+   * @minLength 1
+   * @maxLength 500
+   */
+  host?: string;
+  /**
+   * @minimum 1
+   * @maximum 65535
+   * @nullable
+   */
   port?: number | null;
-  /** @nullable */
+  /**
+   * @maxLength 200
+   * @nullable
+   */
   username?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   password?: string | null;
-  /** @nullable */
-  oauthCode?: string | null;
 }
 
 export interface TestResult {
@@ -221,7 +554,53 @@ export interface UploadItem {
   connectionIds?: string | null;
   /** @nullable */
   error?: string | null;
+  /**
+   * The app's per-capture id sent to /uploads/execute, when there was one
+   * @nullable
+   */
+  clientUploadId?: string | null;
   createdAt: string;
+}
+
+export interface ExecuteUploadInput {
+  /** The image or video file part (max 200 MB) */
+  file: string;
+  /** @maxLength 255 */
+  fileName?: string;
+  /** image/* or video/* */
+  mimeType?: string;
+  /** JSON array of connection IDs; omit to upload to every active connection */
+  connectionIds?: string;
+  /**
+   * Stable per-capture id used to de-duplicate retries
+   * @maxLength 100
+   * @pattern ^[A-Za-z0-9_-]+$
+   */
+  clientUploadId?: string;
+}
+
+export interface ExecuteUploadConnectionResult {
+  connectionId: number;
+  success: boolean;
+  error?: string;
+}
+
+export type ExecuteUploadResultStatus =
+  (typeof ExecuteUploadResultStatus)[keyof typeof ExecuteUploadResultStatus];
+
+export const ExecuteUploadResultStatus = {
+  done: "done",
+  partial: "partial",
+  failed: "failed",
+  queued: "queued",
+} as const;
+
+export interface ExecuteUploadResult {
+  uploadId?: number;
+  status: ExecuteUploadResultStatus;
+  results: ExecuteUploadConnectionResult[];
+  /** True when this capture had already been uploaded and nothing was re-sent */
+  duplicate?: boolean;
 }
 
 export interface UploadInput {

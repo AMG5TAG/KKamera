@@ -1,19 +1,45 @@
 import { Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
   cloudConnectionsTable, uploadsTable, feedbackTable,
-  pushSubscriptionsTable, passwordResetTokensTable,
+  passwordResetTokensTable,
 } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { eq, and, ne, inArray, isNull } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
-import { getUncachableStripeClient } from "../stripeClient.js";
+import { verifyReauth } from "./auth.js";
+import { buildUserExport, parseTargetIds } from "../lib/accountRules.js";
 
 const router = Router();
 
+// Account deletion re-verifies the password (+2FA) — bound guesses per account.
+const deleteAccountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+});
+
+const deleteAccountSchema = z.object({
+  password: z.string({ required_error: "Enter your password to delete your account." })
+    .min(1, "Enter your password to delete your account."),
+  // Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+  totpCode: z.string().nullish(),
+});
+
 const updateMeSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
+  // Trimmed so a whitespace-only name is rejected; null (allowed by the spec) = no change.
+  name: z.string().trim().min(1, "Name is required").max(100, "Name must be at most 100 characters").nullish(),
+  onboardingCompleted: z.boolean().optional(),
+}).strict();
+
+const uploadTargetSchema = z.object({
+  mode: z.enum(["all", "selected", "none"]),
+  connectionIds: z.array(z.number().int().positive()).max(50).optional(),
 }).strict();
 
 router.get("/users/me", requireAuth, async (req, res) => {
@@ -23,6 +49,7 @@ router.get("/users/me", requireAuth, async (req, res) => {
     res.json({
       id: user.id, email: user.email, name: user.name,
       referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled,
+      onboardingCompleted: user.onboardingCompleted,
       createdAt: user.createdAt.toISOString(),
     });
   } catch (err) {
@@ -38,13 +65,20 @@ router.patch("/users/me", requireAuth, async (req, res) => {
       res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
       return;
     }
-    const updates: Partial<{ name: string }> = {};
-    if (parsed.data.name) updates.name = parsed.data.name;
+    const updates: Partial<{ name: string; onboardingCompleted: boolean }> = {};
+    if (parsed.data.name != null) updates.name = parsed.data.name;
+    if (parsed.data.onboardingCompleted !== undefined) updates.onboardingCompleted = parsed.data.onboardingCompleted;
+    // Drizzle throws "No values to set" on an empty SET — that's a client error.
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ message: "Nothing to update" });
+      return;
+    }
     const [user] = await db.update(usersTable).set(updates).where(eq(usersTable.id, req.userId!)).returning();
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
     res.json({
       id: user.id, email: user.email, name: user.name,
       referralCode: user.referralCode, twoFAEnabled: user.twoFAEnabled,
+      onboardingCompleted: user.onboardingCompleted,
       createdAt: user.createdAt.toISOString(),
     });
   } catch (err) {
@@ -53,14 +87,95 @@ router.patch("/users/me", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Upload target default ────────────────────────────────────────────────────
+// Which connected cloud accounts a capture uploads to by default when the user
+// has more than one: "all" active, a "selected" subset, or "none" (capture only).
+
+router.get("/users/upload-target", requireAuth, async (req, res) => {
+  try {
+    const [user] = await db.select({
+      mode: usersTable.uploadTargetMode, ids: usersTable.uploadTargetIds,
+    }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
+    if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    res.json({ mode: user.mode, connectionIds: parseTargetIds(user.ids) });
+  } catch (err) {
+    req.log.error({ err }, "Get upload target error");
+    res.status(500).json({ message: "Failed to get upload target" });
+  }
+});
+
+router.put("/users/upload-target", requireAuth, async (req, res) => {
+  try {
+    const parsed = uploadTargetSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const { mode, connectionIds } = parsed.data;
+
+    // Only persist ids that actually belong to this user, so a stale/foreign id
+    // can never be stored or later uploaded to.
+    let ownedIds: number[] = [];
+    if (connectionIds?.length) {
+      const owned = await db.select({ id: cloudConnectionsTable.id })
+        .from(cloudConnectionsTable)
+        .where(and(
+          eq(cloudConnectionsTable.userId, req.userId!),
+          inArray(cloudConnectionsTable.id, connectionIds),
+          // Unconfirmed OAuth connections can't be chosen as destinations.
+          isNull(cloudConnectionsTable.pendingNonceHash),
+        ));
+      const ownedSet = new Set(owned.map(c => c.id));
+      ownedIds = connectionIds.filter(id => ownedSet.has(id));
+    }
+
+    await db.update(usersTable).set({
+      uploadTargetMode: mode,
+      uploadTargetIds: ownedIds.length ? ownedIds.join(",") : null,
+    }).where(eq(usersTable.id, req.userId!));
+
+    res.json({ mode, connectionIds: ownedIds });
+  } catch (err) {
+    req.log.error({ err }, "Set upload target error");
+    res.status(500).json({ message: "Failed to set upload target" });
+  }
+});
+
 // GDPR: export all personal data
 router.get("/users/me/export", requireAuth, async (req, res) => {
   try {
     const userId = req.userId!;
-    const [user, subscriptions, referrals, uploads, feedback] = await Promise.all([
-      db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1),
-      db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)),
-      db.select().from(referralsTable).where(eq(referralsTable.referrerId, userId)),
+    // Every query is scoped to this user, and only non-secret columns are
+    // selected (no password/TOTP hashes, tokens or encrypted credentials).
+    const [user, subscriptions, cloudConnections, referralsMade, referredBy, uploads, feedback] = await Promise.all([
+      db.select({
+        id: usersTable.id, email: usersTable.email, name: usersTable.name,
+        referralCode: usersTable.referralCode, twoFAEnabled: usersTable.twoFAEnabled,
+        onboardingCompleted: usersTable.onboardingCompleted,
+        uploadTargetMode: usersTable.uploadTargetMode, uploadTargetIds: usersTable.uploadTargetIds,
+        createdAt: usersTable.createdAt,
+      }).from(usersTable).where(eq(usersTable.id, userId)).limit(1),
+      db.select({
+        status: subscriptionsTable.status, trialStart: subscriptionsTable.trialStart,
+        trialEnd: subscriptionsTable.trialEnd, currentPeriodEnd: subscriptionsTable.currentPeriodEnd,
+        freeYearsAwarded: subscriptionsTable.freeYearsAwarded, createdAt: subscriptionsTable.createdAt,
+      }).from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1),
+      db.select({
+        id: cloudConnectionsTable.id, type: cloudConnectionsTable.type, provider: cloudConnectionsTable.provider,
+        name: cloudConnectionsTable.name, host: cloudConnectionsTable.host, port: cloudConnectionsTable.port,
+        username: cloudConnectionsTable.username, uploadPath: cloudConnectionsTable.uploadPath,
+        accountLabel: cloudConnectionsTable.accountLabel, active: cloudConnectionsTable.active,
+        createdAt: cloudConnectionsTable.createdAt,
+      }).from(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.userId, userId),
+        isNull(cloudConnectionsTable.pendingNonceHash),
+      )),
+      db.select({
+        id: referralsTable.id, referredName: referralsTable.referredName,
+        status: referralsTable.status, createdAt: referralsTable.createdAt,
+      }).from(referralsTable).where(eq(referralsTable.referrerId, userId)),
+      db.select({ id: referralsTable.id, status: referralsTable.status, createdAt: referralsTable.createdAt })
+        .from(referralsTable).where(eq(referralsTable.referredId, userId)),
       db.select({ id: uploadsTable.id, fileName: uploadsTable.fileName, fileType: uploadsTable.fileType, status: uploadsTable.status, createdAt: uploadsTable.createdAt })
         .from(uploadsTable).where(eq(uploadsTable.userId, userId)),
       db.select({ id: feedbackTable.id, type: feedbackTable.type, message: feedbackTable.message, createdAt: feedbackTable.createdAt })
@@ -70,18 +185,11 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
     const u = user[0];
     if (!u) { res.status(404).json({ message: "User not found" }); return; }
 
-    res.json({
-      exportedAt: new Date().toISOString(),
-      user: {
-        id: u.id, email: u.email, name: u.name,
-        referralCode: u.referralCode, twoFAEnabled: u.twoFAEnabled,
-        createdAt: u.createdAt.toISOString(),
-      },
+    res.json(buildUserExport({
+      user: u,
       subscription: subscriptions[0] ?? null,
-      referrals,
-      uploads,
-      feedback,
-    });
+      cloudConnections, referralsMade, referredBy, uploads, feedback,
+    }, new Date()));
   } catch (err) {
     req.log.error({ err }, "Export data error");
     res.status(500).json({ message: "Failed to export data" });
@@ -89,32 +197,45 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
 });
 
 // GDPR: delete account and all associated data
-router.delete("/users/me", requireAuth, async (req, res) => {
+// Re-authentication (password, plus TOTP/backup code when 2FA is on) is
+// required so a stolen session token alone can't destroy the account. Wrong
+// credentials are 403 — never 401, which would sign the app out.
+router.delete("/users/me", requireAuth, deleteAccountLimiter, async (req, res) => {
   try {
     const userId = req.userId!;
 
-    // Cancel any live Stripe subscription immediately so a deleted account is
-    // not billed again. Best-effort — never block account deletion on Stripe.
-    try {
-      const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
-      if (sub?.stripeSubscriptionId) {
-        const stripe = await getUncachableStripeClient();
-        await stripe.subscriptions.cancel(sub.stripeSubscriptionId);
-      }
-    } catch (err) {
-      req.log.error({ err }, "Failed to cancel Stripe subscription during account deletion");
+    const parsed = deleteAccountSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
     }
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+    if (!user) { res.status(404).json({ message: "User not found" }); return; }
+    const reauth = await verifyReauth(user, parsed.data.password, parsed.data.totpCode);
+    if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
+
+    // Billing is IAP-only; the user cancels the subscription store-side (App Store
+    // / Play). Deleting the account here just removes our data — RevenueCat stops
+    // mirroring once the store subscription lapses.
 
     // Delete all PII atomically — a partial delete must not leave orphaned rows
     // (e.g. encrypted cloud credentials) behind if one statement fails.
     await db.transaction(async (tx) => {
       await tx.delete(passwordResetTokensTable).where(eq(passwordResetTokensTable.userId, userId));
-      await tx.delete(pushSubscriptionsTable).where(eq(pushSubscriptionsTable.userId, userId));
       await tx.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
       await tx.delete(uploadsTable).where(eq(uploadsTable.userId, userId));
       await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));
       await tx.delete(subscriptionsTable).where(eq(subscriptionsTable.userId, userId));
       await tx.delete(referralsTable).where(eq(referralsTable.referrerId, userId));
+      // Rows where this user was the one referred: a completed referral still
+      // counts toward the referrer's free-year milestone (deleting it would
+      // silently undo credit already earned), so anonymise it; pending/void rows
+      // carry no credit and are deleted outright.
+      await tx.update(referralsTable)
+        .set({ referredName: "Deleted user" })
+        .where(and(eq(referralsTable.referredId, userId), eq(referralsTable.status, "completed")));
+      await tx.delete(referralsTable)
+        .where(and(eq(referralsTable.referredId, userId), ne(referralsTable.status, "completed")));
       await tx.delete(usersTable).where(eq(usersTable.id, userId));
     });
 

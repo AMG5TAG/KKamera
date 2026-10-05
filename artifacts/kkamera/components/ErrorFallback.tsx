@@ -12,7 +12,17 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { useColors } from "@/hooks/useColors";
+// Hard-coded to the app's dark theme: this renders outside every provider, and
+// the scaffold palette in constants/colors.ts is a light cream theme.
+const colors = {
+  background: "#0d0b08",
+  card: "#1a1710",
+  foreground: "#ffffff",
+  mutedForeground: "#999999",
+  primary: "#b19870",
+  primaryForeground: "#ffffff",
+  border: "rgba(177,152,112,0.2)",
+};
 
 export type ErrorFallbackProps = {
   error: Error;
@@ -20,12 +30,11 @@ export type ErrorFallbackProps = {
 };
 
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
-  const colors = useColors();
   const insets = useSafeAreaInsets();
 
   const [isModalVisible, setIsModalVisible] = useState(false);
 
-  const handleRestart = async () => {
+  const handleReload = async () => {
     try {
       await reloadAppAsync();
     } catch (restartError) {
@@ -74,11 +83,12 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
         </Text>
 
         <Text style={[styles.message, { color: colors.mutedForeground }]}>
-          Please reload the app to continue.
+          Try again, or restart the app if the problem continues.
         </Text>
 
         <Pressable
-          onPress={handleRestart}
+          onPress={resetError}
+          accessibilityRole="button"
           style={({ pressed }) => [
             styles.button,
             {
@@ -95,6 +105,16 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             ]}
           >
             Try Again
+          </Text>
+        </Pressable>
+
+        <Pressable
+          onPress={handleReload}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.secondaryButton, { opacity: pressed ? 0.6 : 1 }]}
+        >
+          <Text style={[styles.secondaryButtonText, { color: colors.primary }]}>
+            Restart App
           </Text>
         </Pressable>
       </View>
@@ -222,6 +242,15 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  secondaryButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  secondaryButtonText: {
+    fontWeight: "500",
+    textAlign: "center",
+    fontSize: 15,
   },
   buttonText: {
     fontWeight: "600",

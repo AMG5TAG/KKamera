@@ -17,5 +17,10 @@ export interface UploadItem {
   connectionIds?: string | null;
   /** @nullable */
   error?: string | null;
+  /**
+   * The app's per-capture id sent to /uploads/execute, when there was one
+   * @nullable
+   */
+  clientUploadId?: string | null;
   createdAt: string;
 }

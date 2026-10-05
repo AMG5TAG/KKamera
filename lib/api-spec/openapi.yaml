@@ -30,6 +30,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  /readyz:
+    get:
+      operationId: readinessCheck
+      tags: [health]
+      summary: Readiness check
+      description: >-
+        200 once database migrations have been applied; 503 while they are still
+        running (status "pending") or after they have definitively failed
+        (status "failed"). /healthz stays 200 regardless (liveness).
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
   /auth/register:
     post:
       operationId: register
@@ -40,13 +63,84 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/RegisterInput"
+      description: >-
+        Never signs in. Always answers 202 with the same shape (whether the
+        address is new, registered-but-unverified, or already verified) so it
+        can't be used to discover accounts. A 6-digit code is emailed when
+        appropriate; redeem it with the returned `nonce` at
+        /auth/verify-email.
       responses:
-        "201":
-          description: Registered
+        "202":
+          description: Verification code sent (if appropriate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationRequired"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/verify-email:
+    post:
+      operationId: verifyEmail
+      tags: [auth]
+      summary: Redeem an emailed verification code and sign in
+      description: >-
+        Requires the `nonce` from the register / login / resend response that
+        requested the code plus the 6-digit `code` from the email. Codes expire
+        after 30 minutes and die after 5 wrong attempts. On success the email
+        is verified, the free trial starts if eligible, and a session is issued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyEmailInput"
+      responses:
+        "200":
+          description: Verified and signed in
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid or expired code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/resend-verification:
+    post:
+      operationId: resendVerification
+      tags: [auth]
+      summary: Email a new verification code
+      description: >-
+        Always 200 with a nonce (a dummy one when there's nothing to resend).
+        Store the returned nonce — it replaces the previous one. Sends are
+        throttled per account (min 60 s apart, max 5 per hour).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResendVerificationInput"
+      responses:
+        "200":
+          description: New code sent (if appropriate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResendVerificationResult"
 
   /auth/login:
     post:
@@ -65,6 +159,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials or invalid 2FA code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: >-
+            Correct password but the email address isn't verified yet. A code
+            was emailed (subject to throttling); continue at /auth/verify-email
+            with the returned nonce.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailNotVerified"
+        "429":
+          description: >-
+            Too many sign-in attempts (per-IP limit, or the account is
+            temporarily locked after repeated failures)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /auth/logout:
     post:
@@ -77,6 +194,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+
+  /auth/logout-all:
+    post:
+      operationId: logoutAll
+      tags: [auth]
+      summary: Sign out of all other devices
+      description: >-
+        Revokes every existing session for the account and returns a fresh
+        token so the calling device stays signed in.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Other sessions revoked; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
 
   /auth/forgot-password:
     post:
@@ -114,24 +249,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
 
-  /auth/2fa/setup:
+  /auth/change-password:
     post:
-      operationId: setup2FA
+      operationId: changePassword
       tags: [auth]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: 2FA setup info
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TwoFASetup"
-
-  /auth/2fa/verify:
-    post:
-      operationId: verify2FA
-      tags: [auth]
+      summary: Change the signed-in user's password
+      description: >-
+        Verifies the current password (and a TOTP or backup code when 2FA is
+        enabled), sets the new password, and signs out every other session.
+        Returns a fresh token so the calling device stays signed in. Errors are
+        400 (never 401) so a mistyped password doesn't end the session.
       security:
         - BearerAuth: []
       requestBody:
@@ -139,10 +266,91 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TwoFAVerifyInput"
+              $ref: "#/components/schemas/ChangePasswordInput"
       responses:
         "200":
-          description: 2FA verified
+          description: Password changed; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid input, wrong current password, or invalid 2FA code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/2fa/setup:
+    post:
+      operationId: setup2FA
+      tags: [auth]
+      summary: Start 2FA setup (requires the current password)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordConfirmInput"
+      responses:
+        "200":
+          description: 2FA setup info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TwoFASetup"
+        "400":
+          description: Missing password, or 2FA already enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password is incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/2fa/verify:
+    post:
+      operationId: verify2FA
+      tags: [auth]
+      summary: Enable 2FA (requires the current password and a TOTP code)
+      description: >-
+        Enabling 2FA signs out every other session; the response carries a
+        fresh token for this device.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TwoFAEnableInput"
+      responses:
+        "200":
+          description: 2FA enabled; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
+        "400":
+          description: Invalid input or code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password is incorrect
           content:
             application/json:
               schema:
@@ -152,6 +360,10 @@ paths:
     post:
       operationId: disable2FA
       tags: [auth]
+      summary: Disable 2FA (requires the current password and a TOTP or backup code)
+      description: >-
+        Disabling 2FA signs out every other session; the response carries a
+        fresh token for this device.
       security:
         - BearerAuth: []
       requestBody:
@@ -159,10 +371,22 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/TwoFAVerifyInput"
+              $ref: "#/components/schemas/TwoFADisableInput"
       responses:
         "200":
-          description: 2FA disabled
+          description: 2FA disabled; new session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionRefreshResponse"
+        "400":
+          description: Invalid input, or 2FA not enabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password or code is incorrect
           content:
             application/json:
               schema:
@@ -199,6 +423,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/User"
+    delete:
+      operationId: deleteMe
+      tags: [users]
+      summary: Permanently delete the account and all associated data
+      description: >-
+        Requires re-authentication: the current password, plus a TOTP or backup
+        code when 2FA is enabled. Wrong credentials are 403 (never 401).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteAccountInput"
+      responses:
+        "200":
+          description: Account deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: Missing password or 2FA code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: Password or 2FA code is incorrect
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /users/upload-target:
+    get:
+      operationId: getUploadTarget
+      tags: [users]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current upload-target default
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTarget"
+    put:
+      operationId: setUploadTarget
+      tags: [users]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadTargetInput"
+      responses:
+        "200":
+          description: Updated upload-target default
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadTarget"
 
   /subscriptions/me:
     get:
@@ -228,29 +518,32 @@ paths:
               schema:
                 $ref: "#/components/schemas/Subscription"
 
-  /subscriptions/checkout:
+  /subscriptions/sync:
     post:
-      operationId: createCheckout
+      operationId: syncSubscription
       tags: [subscriptions]
+      summary: Reconcile the caller's subscription from RevenueCat
+      description: >-
+        Re-reads the caller's `pro` entitlement from the RevenueCat REST API and
+        upserts the local mirror (upgrade-only). Called by the app after a
+        purchase, a restore, and once after RevenueCat logIn. Rate-limited per user.
       security:
         - BearerAuth: []
       responses:
         "200":
-          description: Checkout session
+          description: Subscription after reconciliation
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CheckoutSession"
-
-  /subscriptions/cancel:
-    post:
-      operationId: cancelSubscription
-      tags: [subscriptions]
-      security:
-        - BearerAuth: []
-      responses:
-        "200":
-          description: Cancelled
+                $ref: "#/components/schemas/Subscription"
+        "429":
+          description: Too many sync requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "503":
+          description: RevenueCat sync not configured or unreachable
           content:
             application/json:
               schema:
@@ -339,6 +632,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CloudConnection"
+    delete:
+      operationId: deleteAllCloudConnections
+      tags: [cloud-connections]
+      summary: Delete all of the current user's cloud connections (panic wipe)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: All connections deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
 
   /cloud-connections/{id}:
     patch:
@@ -399,6 +705,18 @@ paths:
       responses:
         "200":
           description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestResult"
+        "404":
+          description: Connection not found (or still pending OAuth confirmation)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many connection tests (per-user limit, 10 per minute)
           content:
             application/json:
               schema:
@@ -514,6 +832,274 @@ paths:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
 
+  /oauth/{provider}/initiate:
+    post:
+      operationId: initiateOAuth
+      tags: [oauth]
+      summary: Begin an OAuth authorization flow for a cloud provider
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [googledrive, onedrive, dropbox]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthInitiateInput"
+      responses:
+        "200":
+          description: Authorization URL to redirect the user to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthInitiateResult"
+        "400":
+          description: Unknown OAuth provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "503":
+          description: Provider OAuth is not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthNotConfigured"
+
+  /oauth/{provider}/callback:
+    get:
+      operationId: oauthCallback
+      tags: [oauth]
+      summary: OAuth provider redirect target; exchanges the code and stores a pending connection
+      description: >-
+        Browser redirect target for the provider (not called programmatically by
+        the client). The provider appends `code` + `state` query params on success
+        or `error` on failure; the server exchanges the code, stores the tokens on
+        a PENDING connection (inactive, not listed, never used for uploads, expires
+        after 10 minutes) and 302-redirects to the app with `connectionId` (the
+        pending id), `code` (a one-time callback code) and `provider`. The app
+        must then call POST /oauth/complete with that code and the nonce from
+        /oauth/{provider}/initiate to confirm the connection.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [googledrive, onedrive, dropbox]
+      responses:
+        "302":
+          description: >-
+            Redirect to the app success screen (/oauth-success), the native deep
+            link (kkamera://oauth-success) — both carrying connectionId, code and
+            provider for POST /oauth/complete — or the error screen
+            (kkamera://oauth-error, or /oauth-error for web flows). When the
+            state cannot be verified, errors default to the native deep link.
+
+  /oauth/complete:
+    post:
+      operationId: completeOAuth
+      tags: [oauth]
+      summary: Confirm a pending OAuth connection from the device that started the flow
+      description: >-
+        Binds the OAuth result to the initiating device: requires the `nonce`
+        returned by /oauth/{provider}/initiate (kept on the device) and the
+        one-time `code` from the callback redirect. On success the pending row is
+        either activated as a new connection or, when the same provider account
+        is already connected, its tokens are moved onto that connection and the
+        pending row is removed.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OAuthCompleteInput"
+      responses:
+        "200":
+          description: Connection confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthCompleteResult"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "404":
+          description: No matching pending connection for this user (wrong device, already completed, or purged)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "410":
+          description: The pending connection expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /oauth/status:
+    get:
+      operationId: getOAuthStatus
+      tags: [oauth]
+      summary: Report which OAuth providers are configured on the server
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Per-provider configuration status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuthStatus"
+
+  /users/me/export:
+    get:
+      operationId: exportMyData
+      tags: [users]
+      summary: Export all personal data for the current user (GDPR)
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Personal data export
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDataExport"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /uploads/execute:
+    post:
+      operationId: executeUpload
+      tags: [uploads]
+      summary: Upload one capture to the user's active cloud connections
+      description: >
+        Requires an active subscription. Retries of the same capture are
+        de-duplicated by `clientUploadId`: a capture that already finished
+        returns its previous result without re-uploading, a capture another
+        request is still uploading returns 409, and any other previous attempt
+        (partial/failed/queued) is updated in place rather than duplicated.
+        When retrying a partial upload, send only the failed `connectionIds`;
+        the stored status combines both attempts.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ExecuteUploadInput"
+      responses:
+        "200":
+          description: Upload attempted (status done, partial or failed), or a duplicate of a finished capture
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteUploadResult"
+        "202":
+          description: Accepted but no active cloud connection — recorded as queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteUploadResult"
+        "400":
+          description: Missing file or invalid fileName, mimeType, connectionIds or clientUploadId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "402":
+          description: Active subscription required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "409":
+          description: This clientUploadId is currently being uploaded by another request; retry after the Retry-After delay
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "413":
+          description: File exceeds the 200 MB limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many uploads for this user (rate or in-flight limit); honour Retry-After
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "503":
+          description: Upload server busy; honour Retry-After
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /uploads/witness-notify:
+    post:
+      operationId: notifyWitness
+      tags: [uploads]
+      summary: Email a witness that a file was captured and uploaded
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WitnessNotifyInput"
+      responses:
+        "200":
+          description: Witness notified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many witness notifications
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -526,6 +1112,224 @@ components:
       required: [status]
       properties:
         status:
+          type: string
+
+    SuccessResponse:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+
+    OAuthInitiateInput:
+      type: object
+      properties:
+        name:
+          type: string
+        platform:
+          type: string
+          enum: [web, native]
+        uploadPath:
+          type: string
+
+    OAuthInitiateResult:
+      type: object
+      required: [authorizeUrl, state, nonce]
+      properties:
+        authorizeUrl:
+          type: string
+        state:
+          type: string
+        nonce:
+          type: string
+          description: >-
+            One-time secret for POST /oauth/complete. Keep it on the device that
+            started the flow; never put it in a URL.
+
+    OAuthCompleteInput:
+      type: object
+      required: [nonce, code]
+      properties:
+        nonce:
+          type: string
+          description: The nonce returned by /oauth/{provider}/initiate
+        code:
+          type: string
+          description: The one-time `code` from the callback redirect
+        connectionId:
+          type: integer
+          description: The pending `connectionId` from the callback redirect
+
+    OAuthCompleteResult:
+      type: object
+      required: [connectionId, type, name, accountLabel]
+      properties:
+        connectionId:
+          type: integer
+        type:
+          type: string
+        name:
+          type: string
+        accountLabel:
+          type: ["string", "null"]
+
+    OAuthNotConfigured:
+      type: object
+      required: [message, missingEnv]
+      properties:
+        message:
+          type: string
+        missingEnv:
+          type: array
+          items:
+            type: string
+
+    OAuthStatus:
+      type: object
+      description: Map keyed by provider id (googledrive, onedrive, dropbox)
+      additionalProperties:
+        $ref: "#/components/schemas/OAuthProviderStatus"
+
+    OAuthProviderStatus:
+      type: object
+      required: [label, configured]
+      properties:
+        label:
+          type: string
+        configured:
+          type: boolean
+
+    WitnessNotifyInput:
+      type: object
+      required: [witnessEmail, fileName]
+      properties:
+        witnessEmail:
+          type: string
+          format: email
+        fileName:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    UserDataExport:
+      type: object
+      required: [exportedAt, user, uploadTarget, cloudConnections, referrals, referredBy, uploads, feedback]
+      properties:
+        exportedAt:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+        uploadTarget:
+          $ref: "#/components/schemas/UploadTarget"
+        subscription:
+          oneOf:
+            - $ref: "#/components/schemas/ExportSubscription"
+            - type: "null"
+        cloudConnections:
+          type: array
+          description: Connection metadata only — credentials and tokens are never exported.
+          items:
+            $ref: "#/components/schemas/ExportCloudConnection"
+        referrals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Referral"
+        referredBy:
+          type: array
+          description: Referral rows in which this user is the referred party.
+          items:
+            $ref: "#/components/schemas/ExportReferredBy"
+        uploads:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExportUpload"
+        feedback:
+          type: array
+          items:
+            $ref: "#/components/schemas/FeedbackItem"
+
+    ExportSubscription:
+      type: object
+      required: [status, freeYearsAwarded]
+      properties:
+        status:
+          type: string
+        trialStart:
+          type: ["string", "null"]
+        trialEnd:
+          type: ["string", "null"]
+        currentPeriodEnd:
+          type: ["string", "null"]
+        freeYearsAwarded:
+          type: integer
+        createdAt:
+          type: ["string", "null"]
+
+    ExportCloudConnection:
+      type: object
+      required: [id, type, name, active]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+        provider:
+          type: ["string", "null"]
+        name:
+          type: string
+        host:
+          type: ["string", "null"]
+        port:
+          type: ["integer", "null"]
+        username:
+          type: ["string", "null"]
+        uploadPath:
+          type: ["string", "null"]
+        accountLabel:
+          type: ["string", "null"]
+        active:
+          type: boolean
+        createdAt:
+          type: ["string", "null"]
+
+    ExportReferredBy:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+        createdAt:
+          type: ["string", "null"]
+
+    ExportUpload:
+      type: object
+      required: [id, fileName, fileType, status]
+      properties:
+        id:
+          type: integer
+        fileName:
+          type: string
+        fileType:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: ["string", "null"]
+
+    FeedbackItem:
+      type: object
+      required: [id, type, message, createdAt]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [bug, feature, other]
+        message:
+          type: string
+        createdAt:
           type: string
 
     MessageResponse:
@@ -547,6 +1351,57 @@ components:
           type: string
         referralCode:
           type: ["string", "null"]
+
+    VerificationRequired:
+      type: object
+      required: [status, nonce, email]
+      properties:
+        status:
+          type: string
+          enum: [verification_required]
+        nonce:
+          type: string
+          description: Binds the emailed code to this client. Never emailed.
+        email:
+          type: string
+
+    VerifyEmailInput:
+      type: object
+      required: [nonce, code]
+      properties:
+        nonce:
+          type: string
+        code:
+          type: string
+          description: The 6-digit code from the email.
+
+    ResendVerificationInput:
+      type: object
+      required: [nonce]
+      properties:
+        nonce:
+          type: string
+
+    ResendVerificationResult:
+      type: object
+      required: [nonce]
+      properties:
+        nonce:
+          type: string
+
+    EmailNotVerified:
+      type: object
+      required: [code, nonce, email, message]
+      properties:
+        code:
+          type: string
+          enum: [email_not_verified]
+        nonce:
+          type: string
+        email:
+          type: string
+        message:
+          type: string
 
     LoginInput:
       type: object
@@ -577,6 +1432,20 @@ components:
           type: string
           minLength: 8
 
+    ChangePasswordInput:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+          minLength: 8
+          description: At least 8 characters and at most 72 bytes (UTF-8).
+        totpCode:
+          type: ["string", "null"]
+          description: Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+
     InviteCoworkersInput:
       type: object
       required: [emails]
@@ -598,9 +1467,33 @@ components:
         user:
           $ref: "#/components/schemas/User"
 
+    UploadTarget:
+      type: object
+      required: [mode, connectionIds]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected, none]
+        connectionIds:
+          type: array
+          items:
+            type: integer
+
+    UploadTargetInput:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [all, selected, none]
+        connectionIds:
+          type: array
+          items:
+            type: integer
+
     User:
       type: object
-      required: [id, email, name, referralCode, twoFAEnabled, createdAt]
+      required: [id, email, name, referralCode, twoFAEnabled, onboardingCompleted, createdAt]
       properties:
         id:
           type: integer
@@ -612,6 +1505,8 @@ components:
           type: string
         twoFAEnabled:
           type: boolean
+        onboardingCompleted:
+          type: boolean
         createdAt:
           type: string
 
@@ -620,6 +1515,8 @@ components:
       properties:
         name:
           type: ["string", "null"]
+        onboardingCompleted:
+          type: boolean
 
     TwoFASetup:
       type: object
@@ -634,12 +1531,58 @@ components:
           items:
             type: string
 
-    TwoFAVerifyInput:
+    PasswordConfirmInput:
       type: object
-      required: [code]
+      required: [password]
+      properties:
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+
+    TwoFAEnableInput:
+      type: object
+      required: [code, password]
       properties:
         code:
           type: string
+          description: 6-digit TOTP from the authenticator app.
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+
+    TwoFADisableInput:
+      type: object
+      required: [code, password]
+      properties:
+        code:
+          type: string
+          description: 6-digit TOTP or a backup code.
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+
+    DeleteAccountInput:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          description: The account's current password (re-authentication).
+        totpCode:
+          type: ["string", "null"]
+          description: Required when 2FA is enabled — a 6-digit TOTP or a backup code.
+
+    SessionRefreshResponse:
+      type: object
+      required: [message, token, user]
+      properties:
+        message:
+          type: string
+        token:
+          type: string
+          description: Fresh session token — other sessions have been revoked.
+        user:
+          $ref: "#/components/schemas/User"
 
     Subscription:
       type: object
@@ -657,13 +1600,6 @@ components:
         currentPeriodEnd:
           type: ["string", "null"]
         createdAt:
-          type: string
-
-    CheckoutSession:
-      type: object
-      required: [url]
-      properties:
-        url:
           type: string
 
     AffiliateStats:
@@ -703,12 +1639,29 @@ components:
           type: integer
         type:
           type: string
-          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud, onedrive, googledrive, dropbox]
+        provider:
+          type: ["string", "null"]
+          description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
         active:
           type: boolean
         uploadPath:
+          type: ["string", "null"]
+        host:
+          type: ["string", "null"]
+          description: Server URL for self-hosted types (nextcloud/webdav/ftp); null for OAuth providers.
+        port:
+          type: ["integer", "null"]
+          description: Explicit port for self-hosted types; null = protocol default.
+        username:
+          type: ["string", "null"]
+          description: Login for self-hosted types (never the password).
+        hasPassword:
+          type: boolean
+          description: Whether a password is saved (the password itself is never returned).
+        accountLabel:
           type: ["string", "null"]
         hasCredentials:
           type: boolean
@@ -718,44 +1671,77 @@ components:
     CloudConnectionInput:
       type: object
       required: [type, name]
+      description: >-
+        Manual (self-hosted) connection. OAuth providers (Google Drive,
+        OneDrive, Dropbox) are connected only through the OAuth flow
+        (/oauth/initiate → callback → /oauth/complete) and are rejected here.
+        Strings are trimmed; name, host, username and uploadPath must not
+        contain control characters, and host must not embed credentials
+        (user:pass@host).
       properties:
         type:
           type: string
-          enum: [ftp, webdav, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud]
+        provider:
+          type: ["string", "null"]
+          maxLength: 50
+          description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
+          minLength: 1
+          maxLength: 100
         host:
           type: ["string", "null"]
+          maxLength: 500
         port:
           type: ["integer", "null"]
+          minimum: 1
+          maximum: 65535
         username:
           type: ["string", "null"]
+          maxLength: 200
         password:
           type: ["string", "null"]
+          maxLength: 500
         uploadPath:
           type: ["string", "null"]
-        oauthCode:
-          type: ["string", "null"]
+          maxLength: 500
 
     CloudConnectionUpdate:
       type: object
+      additionalProperties: false
+      description: >-
+        Partial update. A field that is absent is left unchanged; an explicit
+        null clears it (password → no saved password, port → protocol default,
+        username → none, uploadPath → the default "/KKamera"). name, active and
+        host cannot be cleared, and host must not be blank. Nextcloud
+        connections cannot clear their username.
       properties:
         name:
-          type: ["string", "null"]
+          type: string
+          minLength: 1
+          maxLength: 100
         active:
-          type: ["boolean", "null"]
+          type: boolean
         uploadPath:
           type: ["string", "null"]
+          maxLength: 500
+          description: Folder path; ".." segments are rejected.
         host:
-          type: ["string", "null"]
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Must not embed credentials (user:pass@host).
         port:
           type: ["integer", "null"]
+          minimum: 1
+          maximum: 65535
         username:
           type: ["string", "null"]
+          maxLength: 200
         password:
           type: ["string", "null"]
-        oauthCode:
-          type: ["string", "null"]
+          maxLength: 500
 
     TestResult:
       type: object
@@ -785,8 +1771,64 @@ components:
           type: ["string", "null"]
         error:
           type: ["string", "null"]
+        clientUploadId:
+          type: ["string", "null"]
+          description: The app's per-capture id sent to /uploads/execute, when there was one
         createdAt:
           type: string
+
+    ExecuteUploadInput:
+      type: object
+      required: [file]
+      properties:
+        file:
+          # The binary capture. Declared as a plain string part rather than
+          # `format: binary` because the generated api-zod lib compiles without
+          # DOM File/Blob types (the app uploads via XHR, not the generated hook).
+          type: string
+          description: The image or video file part (max 200 MB)
+        fileName:
+          type: string
+          maxLength: 255
+        mimeType:
+          type: string
+          description: image/* or video/*
+        connectionIds:
+          type: string
+          description: JSON array of connection IDs; omit to upload to every active connection
+        clientUploadId:
+          type: string
+          maxLength: 100
+          pattern: "^[A-Za-z0-9_-]+$"
+          description: Stable per-capture id used to de-duplicate retries
+
+    ExecuteUploadConnectionResult:
+      type: object
+      required: [connectionId, success]
+      properties:
+        connectionId:
+          type: integer
+        success:
+          type: boolean
+        error:
+          type: string
+
+    ExecuteUploadResult:
+      type: object
+      required: [status, results]
+      properties:
+        uploadId:
+          type: integer
+        status:
+          type: string
+          enum: [done, partial, failed, queued]
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecuteUploadConnectionResult"
+        duplicate:
+          type: boolean
+          description: True when this capture had already been uploaded and nothing was re-sent
 
     UploadInput:
       type: object

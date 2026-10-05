@@ -12,7 +12,13 @@
   "private": true,
   "pnpm": {
     "overrides": {
-      "ws@>=8.0.0 <8.21.0": "8.21.0"
+      "ws@>=8.0.0 <8.21.0": "8.21.0",
+      "body-parser@>=2.0.0 <2.3.0": "^2.3.0",
+      "qs@>=6.0.0 <6.15.2": "^6.15.2",
+      "ip-address@>=10.0.0 <10.3.1": "^10.3.1"
+    },
+    "patchedDependencies": {
+      "@expo/cli@54.0.25": "patches/@expo__cli@54.0.25.patch"
     }
   },
   "devDependencies": {
@@ -20,8 +26,6 @@
     "typescript": "~5.9.2"
   },
   "dependencies": {
-    "@replit/revenuecat-sdk": "4.0.0",
-    "stripe": "20.0.0",
-    "stripe-replit-sync": "1.0.0"
+    "@replit/revenuecat-sdk": "4.0.0"
   }
 }
