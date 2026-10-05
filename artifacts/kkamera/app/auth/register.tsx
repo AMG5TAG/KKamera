@@ -8,9 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useRegister, getUserFacingMessage } from "@workspace/api-client-react";
-import { useAuth } from "@/contexts/AuthContext";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
-import type { AuthUser } from "@/contexts/AuthContext";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -18,7 +16,6 @@ const CARD = "#1a1710";
 
 export default function RegisterScreen() {
   const insets = useSafeAreaInsets();
-  const { login } = useAuth();
   const registerMutation = useRegister();
   // Invite links are https://app.kkamera.app/auth/register?ref=CODE — prefill the code.
   const { ref } = useLocalSearchParams<{ ref?: string | string[] }>();
@@ -50,10 +47,9 @@ export default function RegisterScreen() {
       const result = await registerMutation.mutateAsync({
         data: { name: trimmedName, email: trimmedEmail, password, referralCode: referralCode.trim().toUpperCase() || undefined }
       });
-      if (result.token && result.user) {
-        await login(result.token, result.user as AuthUser);
-        router.replace("/wizard");
-      }
+      // Registration never signs in: the account activates once the emailed
+      // code is entered. The nonce binds that code to this device.
+      router.replace({ pathname: "/auth/verify-email", params: { nonce: result.nonce, email: result.email } });
     } catch (e) {
       setError(getUserFacingMessage(e, "Registration failed. Please try again."));
     }

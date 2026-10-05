@@ -208,6 +208,48 @@ export interface RegisterInput {
   referralCode?: string | null;
 }
 
+export type VerificationRequiredStatus =
+  (typeof VerificationRequiredStatus)[keyof typeof VerificationRequiredStatus];
+
+export const VerificationRequiredStatus = {
+  verification_required: "verification_required",
+} as const;
+
+export interface VerificationRequired {
+  status: VerificationRequiredStatus;
+  /** Binds the emailed code to this client. Never emailed. */
+  nonce: string;
+  email: string;
+}
+
+export interface VerifyEmailInput {
+  nonce: string;
+  /** The 6-digit code from the email. */
+  code: string;
+}
+
+export interface ResendVerificationInput {
+  nonce: string;
+}
+
+export interface ResendVerificationResult {
+  nonce: string;
+}
+
+export type EmailNotVerifiedCode =
+  (typeof EmailNotVerifiedCode)[keyof typeof EmailNotVerifiedCode];
+
+export const EmailNotVerifiedCode = {
+  email_not_verified: "email_not_verified",
+} as const;
+
+export interface EmailNotVerified {
+  code: EmailNotVerifiedCode;
+  nonce: string;
+  email: string;
+  message: string;
+}
+
 export interface LoginInput {
   email: string;
   password: string;
@@ -399,54 +441,90 @@ export const CloudConnectionInputType = {
   ftp: "ftp",
   webdav: "webdav",
   nextcloud: "nextcloud",
-  onedrive: "onedrive",
-  googledrive: "googledrive",
-  dropbox: "dropbox",
 } as const;
 
+/**
+ * Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (/oauth/initiate → callback → /oauth/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).
+ */
 export interface CloudConnectionInput {
   type: CloudConnectionInputType;
   /**
    * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @maxLength 50
    * @nullable
    */
   provider?: string | null;
+  /**
+   * @minLength 1
+   * @maxLength 100
+   */
   name: string;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   host?: string | null;
-  /** @nullable */
+  /**
+   * @minimum 1
+   * @maximum 65535
+   * @nullable
+   */
   port?: number | null;
-  /** @nullable */
+  /**
+   * @maxLength 200
+   * @nullable
+   */
   username?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   password?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   uploadPath?: string | null;
-  /** @nullable */
-  oauthCode?: string | null;
 }
 
 /**
  * Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default "/KKamera"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.
  */
 export interface CloudConnectionUpdate {
-  /** @minLength 1 */
+  /**
+   * @minLength 1
+   * @maxLength 100
+   */
   name?: string;
   active?: boolean;
   /**
    * Folder path; ".." segments are rejected.
+   * @maxLength 500
    * @nullable
    */
   uploadPath?: string | null;
-  /** @minLength 1 */
+  /**
+   * Must not embed credentials (user:pass@host).
+   * @minLength 1
+   * @maxLength 500
+   */
   host?: string;
-  /** @nullable */
+  /**
+   * @minimum 1
+   * @maximum 65535
+   * @nullable
+   */
   port?: number | null;
-  /** @nullable */
+  /**
+   * @maxLength 200
+   * @nullable
+   */
   username?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   password?: string | null;
-  oauthCode?: string;
 }
 
 export interface TestResult {

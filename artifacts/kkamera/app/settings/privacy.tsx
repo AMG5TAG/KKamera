@@ -22,7 +22,7 @@ export default function PrivacyScreen() {
       <Text style={styles.updated}>Last updated: {LAST_UPDATED}</Text>
 
       <Section title="1. Who we are">
-        KKamera ("we", "our", "us") is a camera app that captures photos and videos and sends them to cloud storage or servers you choose. KKamera is provided by Koastal (koastal.com.au), based in Australia. This policy explains what information the app and our servers handle, why, and what choices you have.
+        KKamera ("we", "our", "us") is a camera app that captures photos and videos and sends them to cloud storage or servers you choose. KKamera is provided by Koastal Kollective (www.koastal.com.au), based in Australia. This policy explains what information the app and our servers handle, why, and what choices you have.
       </Section>
 
       <Section title="2. How your photos and videos are handled">

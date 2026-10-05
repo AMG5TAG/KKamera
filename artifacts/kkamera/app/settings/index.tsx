@@ -238,6 +238,7 @@ export default function SettingsScreen() {
         <View style={styles.versionWrap}>
           <Text style={styles.versionText}>{VERSION_LABEL}</Text>
           <Text style={styles.versionSub}>Cloud Based Photography</Text>
+          <Text style={styles.versionSub}>by Koastal Kollective</Text>
         </View>
 
         {/* Sign Out */}

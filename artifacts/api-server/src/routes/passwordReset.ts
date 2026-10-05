@@ -6,8 +6,9 @@ import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
 import { eq, and, gt, lt, isNull, count, sql } from "drizzle-orm";
-import { sendEmail, escapeHtml } from "../lib/email.js";
+import { sendEmail, escapeHtml, EMAIL_BRAND_FOOTER } from "../lib/email.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
+import { grantTrialIfEligible, invalidateUnusedVerifications } from "../lib/emailVerificationStore.js";
 import {
   newPasswordSchema, normalizedEmailSchema, RESET_EMAILS_PER_WINDOW, RESET_EMAIL_WINDOW_MS,
 } from "../lib/accountRules.js";
@@ -159,7 +160,9 @@ router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
         .returning({ userId: passwordResetTokensTable.userId });
       if (!consumed) return null;
 
-      await tx.update(usersTable)
+      const [before] = await tx.select({ emailVerifiedAt: usersTable.emailVerifiedAt })
+        .from(usersTable).where(eq(usersTable.id, consumed.userId)).for("update").limit(1);
+      const [updated] = await tx.update(usersTable)
         .set({
           passwordHash,
           passwordChangedAt: now,
@@ -168,8 +171,16 @@ router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
           tokenVersion: sql`${usersTable.tokenVersion} + 1`,
           failedLoginCount: 0,
           loginLockedUntil: null,
+          // Following an emailed link proves the address too.
+          emailVerifiedAt: before?.emailVerifiedAt ?? now,
         })
-        .where(eq(usersTable.id, consumed.userId));
+        .where(eq(usersTable.id, consumed.userId))
+        .returning({ id: usersTable.id, email: usersTable.email });
+      // Pending verification codes may carry another registration's password —
+      // they must not be able to overwrite the one just set.
+      await invalidateUnusedVerifications(tx, consumed.userId, now);
+      // First proof of the address: start the free trial if the mailbox never had one.
+      if (updated && before && !before.emailVerifiedAt) await grantTrialIfEligible(tx, updated);
       return consumed.userId;
     });
 
@@ -211,7 +222,8 @@ function passwordResetEmail(name: string, resetUrl: string): { html: string } {
       <p class="warn">If you didn't request this, you can safely ignore this email. Your password won't change.</p>
     </div>
     <div class="footer">KKamera &mdash; Cloud Based Photography<br>
-    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a></div>
+    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a><br>
+    ${EMAIL_BRAND_FOOTER}</div>
   </div>
 </body>
 </html>`,

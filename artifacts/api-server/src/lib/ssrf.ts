@@ -18,7 +18,7 @@ export function isPrivateIpv4(a: number, b: number, c = -1): boolean {
   if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT 100.64/10
   if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking 198.18/15
   if (a === 192 && b === 0 && c === 0) return true;    // IETF protocol assignments 192.0.0/24
-  if (a >= 224) return true;                           // multicast / reserved
+  if (a >= 224) return true;                           // multicast 224/4, reserved 240/4, broadcast 255.255.255.255
   return false;
 }
 
@@ -61,6 +61,7 @@ export function isPrivateIp(ip: string): boolean {
     if (x.every((n) => n === 0)) return true;                                  // ::
     if (x.slice(0, 15).every((n) => n === 0) && x[15] === 1) return true;      // ::1
     if (x[0] === 0xfe && (x[1]! & 0xc0) === 0x80) return true;                 // fe80::/10 link-local
+    if (x[0] === 0xfe && (x[1]! & 0xc0) === 0xc0) return true;                 // fec0::/10 site-local (deprecated)
     if ((x[0]! & 0xfe) === 0xfc) return true;                                  // fc00::/7 ULA
     // Block any IPv4-mapped (::ffff:0:0/96), IPv4-compatible (::/96), or NAT64
     // (64:ff9b::/96) address — these can target internal v4 via an IPv6 literal

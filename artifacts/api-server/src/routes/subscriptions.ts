@@ -48,35 +48,39 @@ router.get("/subscriptions/me", requireAuth, async (req, res) => {
   }
 });
 
+// Not used by the app (email verification grants the trial); kept as API surface.
+// Race-safe: concurrent calls insert with ON CONFLICT (user_id) DO NOTHING and
+// then read back whichever row won, instead of 500ing on the unique key.
 router.post("/subscriptions/trial", requireAuth, async (req, res) => {
   try {
-    const existing = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, req.userId!)).limit(1);
-    if (existing.length > 0) {
-      const sub = existing[0]!;
-      res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
-      return;
+    const userId = req.userId!;
+    const [existing] = await db.select({ id: subscriptionsTable.id }).from(subscriptionsTable)
+      .where(eq(subscriptionsTable.userId, userId)).limit(1);
+    if (!existing) {
+      // Only grant a trial if this email has never had one (see trial_history).
+      const [u] = await db.select({ email: usersTable.email }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+      // Check both the legacy hash and the alias-normalised one (Gmail dots, +tags).
+      const emailHashes = u ? emailTrialHashes(u.email) : [];
+      const prior = emailHashes.length > 0
+        ? await db.select({ id: trialHistoryTable.id }).from(trialHistoryTable).where(inArray(trialHistoryTable.emailHash, emailHashes)).limit(1)
+        : [];
+      if (prior.length > 0) {
+        await db.insert(subscriptionsTable).values({ userId, status: "none" })
+          .onConflictDoNothing({ target: subscriptionsTable.userId });
+      } else {
+        const trialEnd = new Date();
+        trialEnd.setDate(trialEnd.getDate() + 14);
+        const inserted = await db.insert(subscriptionsTable)
+          .values({ userId, status: "trial", trialStart: new Date(), trialEnd })
+          .onConflictDoNothing({ target: subscriptionsTable.userId })
+          .returning({ id: subscriptionsTable.id });
+        // Record the trial only if this call actually granted it.
+        if (inserted.length > 0 && emailHashes.length > 0) {
+          await db.insert(trialHistoryTable).values(emailHashes.map(emailHash => ({ emailHash }))).onConflictDoNothing();
+        }
+      }
     }
-    // Only grant a trial if this email has never had one (see trial_history).
-    const [u] = await db.select({ email: usersTable.email }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
-    // Check both the legacy hash and the alias-normalised one (Gmail dots, +tags).
-    const emailHashes = u ? emailTrialHashes(u.email) : [];
-    const prior = emailHashes.length > 0
-      ? await db.select({ id: trialHistoryTable.id }).from(trialHistoryTable).where(inArray(trialHistoryTable.emailHash, emailHashes)).limit(1)
-      : [];
-    if (prior.length > 0) {
-      const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "none" }).returning();
-      res.json({ id: sub?.id ?? 0, userId: req.userId!, status: "none", trialEnd: null, currentPeriodEnd: null, createdAt: (sub?.createdAt ?? new Date()).toISOString() });
-      return;
-    }
-
-    const trialEnd = new Date();
-    trialEnd.setDate(trialEnd.getDate() + 14);
-    const [sub] = await db.insert(subscriptionsTable).values({ userId: req.userId!, status: "trial", trialStart: new Date(), trialEnd }).returning();
-    if (!sub) { res.status(500).json({ message: "Failed to start trial" }); return; }
-    if (emailHashes.length > 0) {
-      await db.insert(trialHistoryTable).values(emailHashes.map(emailHash => ({ emailHash }))).onConflictDoNothing();
-    }
-    res.json({ id: sub.id, userId: sub.userId, status: sub.status, trialEnd: sub.trialEnd?.toISOString() ?? null, currentPeriodEnd: sub.currentPeriodEnd?.toISOString() ?? null, createdAt: sub.createdAt.toISOString() });
+    res.json(await subscriptionJson(userId));
   } catch (err) {
     req.log.error({ err }, "Start trial error");
     res.status(500).json({ message: "Failed to start trial" });

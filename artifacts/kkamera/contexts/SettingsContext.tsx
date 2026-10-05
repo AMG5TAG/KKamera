@@ -124,29 +124,33 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    AsyncStorage.getItem(SETTINGS_KEY).then(stored => {
-      if (stored) {
-        try {
-          const migrated = migrateSettings(JSON.parse(stored));
-          setSettings(migrated);
-          AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(migrated)).catch(() => {});
-        } catch { /* use defaults */ }
-      }
-      setIsLoading(false);
-    });
+    AsyncStorage.getItem(SETTINGS_KEY)
+      .then(stored => {
+        if (stored) {
+          try {
+            const migrated = migrateSettings(JSON.parse(stored));
+            setSettings(migrated);
+            AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(migrated)).catch(() => {});
+          } catch { /* use defaults */ }
+        }
+      })
+      // A storage read failure falls back to defaults — never leave isLoading
+      // stuck (it gates camera zoom init and the app-lock decision).
+      .catch(() => {})
+      .finally(() => setIsLoading(false));
   }, []);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings(prev => {
       const next = { ...prev, [key]: value };
-      AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(next)).catch(() => {});
       return next;
     });
   }, []);
 
   const resetSettings = useCallback(async () => {
     setSettings(DEFAULT_SETTINGS);
-    await AsyncStorage.removeItem(SETTINGS_KEY);
+    await AsyncStorage.removeItem(SETTINGS_KEY).catch(() => {});
   }, []);
 
   const value = useMemo<SettingsContextValue>(() => ({

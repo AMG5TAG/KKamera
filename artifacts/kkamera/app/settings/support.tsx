@@ -9,7 +9,7 @@ const BG = "#0d0b08";
 const CARD = "#1a1710";
 const BORDER = "rgba(255,255,255,0.06)";
 
-const WEBSITE_URL = "https://www.koasoft.com.au";
+const WEBSITE_URL = "https://www.koastal.com.au";
 
 function MenuRow({
   icon, iconColor, label, hint, onPress, external,
@@ -65,7 +65,7 @@ export default function SupportScreen() {
           <MenuRow
             icon="globe-outline"
             label="Visit Our Website"
-            hint="www.koasoft.com.au"
+            hint="Koastal Kollective · www.koastal.com.au"
             external
             // openURL rejects when no handler can take the URL; swallow it so a
             // tap can't surface an unhandled rejection.

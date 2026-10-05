@@ -21,10 +21,23 @@ export interface CloudAppTarget {
   webUrl: string | null;
 }
 
+/**
+ * Drop any "user:pass@" userinfo from a URL / bare host. The server rejects
+ * such hosts now, but older connections may still carry one — never hand
+ * credentials to the browser (history, referrers, screenshots).
+ */
+function stripUserinfo(url: string): string {
+  const m = url.match(/^([a-z][a-z0-9+.-]*:\/\/)?([^/?#\\]*)(.*)$/i);
+  if (!m) return url;
+  const [, scheme = "", authority = "", rest = ""] = m;
+  const at = authority.lastIndexOf("@");
+  return at === -1 ? url : `${scheme}${authority.slice(at + 1)}${rest}`;
+}
+
 /** Coerce a user-entered host into a browsable https URL, or null. */
-function hostToWebUrl(host: string | null | undefined): string | null {
-  const h = host?.trim();
-  if (!h) return null;
+export function hostToWebUrl(host: string | null | undefined): string | null {
+  const h = host?.trim() ? stripUserinfo(host.trim()) : "";
+  if (!h || /^[a-z][a-z0-9+.-]*:\/\/$/i.test(h)) return null;
   if (/^https?:\/\//i.test(h)) return h;
   // Any other explicit scheme (ftp://, sftp://…) isn't browsable — skip it
   // rather than guess.

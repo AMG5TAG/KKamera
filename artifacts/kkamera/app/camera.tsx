@@ -250,12 +250,98 @@ interface PanoConfig extends PanoLayout {
   capture: { width: number; height: number };
 }
 
+type ExecuteUpload = ReturnType<typeof useUpload>["executeUpload"];
+
+// The upload context value changes on every progress tick. Only this thin
+// wrapper subscribes to it; the (heavy) camera body is memoised and receives
+// just the stable executeUpload callback, so progress events re-render the
+// wrapper and the small UploadIndicators overlay — never the camera itself.
 export default function CameraScreen() {
+  const { executeUpload } = useUpload();
+  return <CameraScreenBody executeUpload={executeUpload} />;
+}
+
+// Upload status badge + subscription-blocked (HTTP 402) banner. Reads the
+// upload context itself so per-progress updates stay local to this overlay.
+function UploadIndicators() {
+  const insets = useSafeAreaInsets();
+  const { lastUpload, subscriptionBlocked } = useUpload();
+  const { settings } = useSettings();
+
+  // Auto-hide the "Uploaded" success badge after the configured duration.
+  // Only the successful ("done") state is dismissed on a timer — failed/partial
+  // and in-progress states stay visible until the next upload.
+  const [doneBadgeHidden, setDoneBadgeHidden] = useState(false);
+  useEffect(() => {
+    if (lastUpload?.status === "done" && settings.uploadedBadgeSeconds > 0) {
+      setDoneBadgeHidden(false);
+      const t = setTimeout(() => setDoneBadgeHidden(true), settings.uploadedBadgeSeconds * 1000);
+      return () => clearTimeout(t);
+    }
+    setDoneBadgeHidden(false);
+  }, [lastUpload?.id, lastUpload?.status, settings.uploadedBadgeSeconds]);
+
+  const uploadStatusColor = !lastUpload ? "transparent"
+    : lastUpload.status === "done" ? "#22c55e"
+    : lastUpload.status === "failed" ? "#ef4444"
+    : lastUpload.status === "partial" ? "#f59e0b"
+    : lastUpload.status === "uploading" ? PRIMARY : "#6b7280";
+
+  const uploadStatusIcon = !lastUpload ? "cloud-outline"
+    : lastUpload.status === "done" ? "cloud-done-outline"
+    : lastUpload.status === "failed" ? "cloud-offline-outline"
+    : lastUpload.status === "partial" ? "cloud-outline" : "cloud-upload-outline";
+
+  const uploadStatusLabel = !lastUpload ? ""
+    : lastUpload.status === "done" ? "Uploaded"
+    : lastUpload.status === "failed" ? "Failed"
+    : lastUpload.status === "partial" ? "Partial"
+    : lastUpload.status === "uploading" ? "Uploading…"
+    : lastUpload.status === "queued" ? "Queued" : "";
+
+  return (
+    <>
+      {/* ── Upload status badge ─────────────────────────────────────────── */}
+      {/* Shown whatever the "Record History" setting: that only controls the
+          stored history list, and upload failures must always be visible.
+          The history screen still lists on-device (failed/queued) captures
+          when history is off. */}
+      {lastUpload && uploadStatusLabel !== "" && !(lastUpload.status === "done" && doneBadgeHidden) && (
+        <TouchableOpacity
+          style={[styles.uploadStatus, { top: insets.top + (Platform.OS === "web" ? 110 : 70) }]}
+          onPress={() => router.push("/history")}
+          hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+          accessibilityRole="button"
+          accessibilityLabel={`Upload status: ${uploadStatusLabel}`}
+          accessibilityHint="Opens upload history"
+        >
+          <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} accessible={false} />
+          <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
+        </TouchableOpacity>
+      )}
+
+      {/* ── Subscription-blocked banner (uploads parked on HTTP 402) ───── */}
+      {subscriptionBlocked && (
+        <TouchableOpacity
+          style={[styles.subBanner, { top: insets.top + (Platform.OS === "web" ? 150 : 108) }]}
+          onPress={() => router.push("/settings/subscription")}
+          accessibilityRole="button"
+          accessibilityLabel="Uploads paused, subscription required. Open subscription settings."
+        >
+          <Ionicons name="pause-circle-outline" size={16} color="#f59e0b" accessible={false} />
+          <Text style={styles.subBannerText} numberOfLines={1}>Uploads paused — subscription required</Text>
+          <Ionicons name="chevron-forward" size={14} color="#f59e0b" accessible={false} />
+        </TouchableOpacity>
+      )}
+    </>
+  );
+}
+
+const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }: { executeUpload: ExecuteUpload }) {
   const insets = useSafeAreaInsets();
   const { width: screenW } = useWindowDimensions();
   const { token, user } = useAuth();
   const userId = user?.id ?? null;
-  const { lastUpload, executeUpload, subscriptionBlocked } = useUpload();
   const { settings, updateSetting, isLoading: settingsLoading } = useSettings();
   const { data: sub, isLoading: subLoading, isError: subError } = useGetSubscription();
   const rcSub = useSubscription();
@@ -334,7 +420,7 @@ export default function CameraScreen() {
   const [locationGranted, setLocationGranted] = useState<boolean | null>(null);
   const lastFix = useRef<Location.LocationObject | null>(null);
 
-  // Time-lapse state
+  // INTERVAL ("timelapse") mode state
   const [isTimelapsing, setIsTimelapsing] = useState(false);
   const [tlCount, setTlCount] = useState(0);
   const tlTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -676,7 +762,7 @@ export default function CameraScreen() {
   // Pinch to zoom
   const saveBaseZoom = useCallback(() => { baseZoom.current = zoom; }, [zoom]);
   const applyZoom = useCallback((scale: number) => {
-    setZoom(z => Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.4)));
+    setZoom(() => Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.4)));
   }, []);
 
   const pinchGesture = Gesture.Pinch()
@@ -1460,8 +1546,8 @@ export default function CameraScreen() {
   }, [settings.maxVideoDurationSeconds, pickVideoCodec, endRecordingUi, doUpload]);
 
   // Clear every timer and stop any in-flight capture when the camera screen
-  // unmounts (e.g. navigating home mid-recording or mid-time-lapse). Without
-  // this, a time-lapse setInterval keeps firing takePictureAsync on a torn-down
+  // unmounts (e.g. navigating home mid-recording or mid-INTERVAL). Without
+  // this, the INTERVAL setInterval keeps firing takePictureAsync on a torn-down
   // camera forever, and its buffered frames are silently discarded.
   useEffect(() => {
     return () => {
@@ -1776,37 +1862,6 @@ export default function CameraScreen() {
   const flashIcon = flash === "on" ? "flash" : flash === "off" ? "flash-off" : "flash-outline";
   const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
-  // Auto-hide the "Uploaded" success badge after the configured duration.
-  // Only the successful ("done") state is dismissed on a timer — failed/partial
-  // and in-progress states stay visible until the next upload.
-  const [doneBadgeHidden, setDoneBadgeHidden] = useState(false);
-  useEffect(() => {
-    if (lastUpload?.status === "done" && settings.uploadedBadgeSeconds > 0) {
-      setDoneBadgeHidden(false);
-      const t = setTimeout(() => setDoneBadgeHidden(true), settings.uploadedBadgeSeconds * 1000);
-      return () => clearTimeout(t);
-    }
-    setDoneBadgeHidden(false);
-  }, [lastUpload?.id, lastUpload?.status, settings.uploadedBadgeSeconds]);
-
-  const uploadStatusColor = !lastUpload ? "transparent"
-    : lastUpload.status === "done" ? "#22c55e"
-    : lastUpload.status === "failed" ? "#ef4444"
-    : lastUpload.status === "partial" ? "#f59e0b"
-    : lastUpload.status === "uploading" ? PRIMARY : "#6b7280";
-
-  const uploadStatusIcon = !lastUpload ? "cloud-outline"
-    : lastUpload.status === "done" ? "cloud-done-outline"
-    : lastUpload.status === "failed" ? "cloud-offline-outline"
-    : lastUpload.status === "partial" ? "cloud-outline" : "cloud-upload-outline";
-
-  const uploadStatusLabel = !lastUpload ? ""
-    : lastUpload.status === "done" ? "Uploaded"
-    : lastUpload.status === "failed" ? "Failed"
-    : lastUpload.status === "partial" ? "Partial"
-    : lastUpload.status === "uploading" ? "Uploading…"
-    : lastUpload.status === "queued" ? "Queued" : "";
-
   const activeFilter = FILTERS[selectedFilter];
   const filterOverlay = Platform.OS !== "web" ? (activeFilter?.overlay ?? null) : null;
   const filterCssWeb = Platform.OS === "web" ? (activeFilter?.css ?? null) : null;
@@ -1890,12 +1945,39 @@ export default function CameraScreen() {
     : settings.timerSeconds > 0 ? `Take photo in ${settings.timerSeconds} seconds`
     : "Take photo";
 
-  const handleModeScrollEnd = (e: any) => {
+  // Settle the mode strip where a user scroll stopped. Changing mode re-centres
+  // via the extMode effect; otherwise (same mode, or a mode change refused
+  // mid-capture) snap straight back onto the active mode so the strip never
+  // rests between items or on a mode that isn't the one in use.
+  const settleModeStrip = (x: number) => {
     if (programmaticScroll.current) return; // ignore scrolls we triggered ourselves
-    const x = e?.nativeEvent?.contentOffset?.x ?? 0;
     const idx = Math.round(x / ITEM_W);
     const clamped = Math.max(0, Math.min(idx, STRIP_MODES.length - 1));
-    if (!captureIsActive) setExtMode(STRIP_MODES[clamped]!.mode);
+    const target = STRIP_MODES[clamped]!.mode;
+    if (!captureIsActive && target !== extMode) {
+      setExtMode(target);
+      return;
+    }
+    const activeIdx = STRIP_MODES.findIndex(m => m.mode === extMode);
+    if (activeIdx >= 0 && Math.abs(x - activeIdx * ITEM_W) > 0.5) scrollToMode(activeIdx);
+  };
+
+  // A drag that ends without momentum (slow Android drags, web) never fires
+  // onMomentumScrollEnd, so settle shortly after the finger lifts unless a
+  // momentum phase starts — which then settles on its own end.
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current); }, []);
+  const clearSettleTimer = () => {
+    if (settleTimer.current) { clearTimeout(settleTimer.current); settleTimer.current = null; }
+  };
+  const handleModeScrollEndDrag = (e: any) => {
+    const x = e?.nativeEvent?.contentOffset?.x ?? 0;
+    clearSettleTimer();
+    settleTimer.current = setTimeout(() => { settleTimer.current = null; settleModeStrip(x); }, 150);
+  };
+  const handleModeMomentumEnd = (e: any) => {
+    clearSettleTimer();
+    settleModeStrip(e?.nativeEvent?.contentOffset?.x ?? 0);
   };
 
   return (
@@ -2036,7 +2118,7 @@ export default function CameraScreen() {
             </View>
           )}
 
-          {/* Time-lapse counter */}
+          {/* INTERVAL shot counter */}
           {isTimelapsing && (
             <View style={[styles.tlCounter]} pointerEvents="none">
               <Ionicons name="timer-outline" size={16} color={PRIMARY} />
@@ -2127,38 +2209,7 @@ export default function CameraScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* ── Upload status badge ─────────────────────────────────────────── */}
-        {/* Shown whatever the "Record History" setting: that only controls the
-            stored history list, and upload failures must always be visible.
-            The history screen still lists on-device (failed/queued) captures
-            when history is off. */}
-        {lastUpload && uploadStatusLabel !== "" && !(lastUpload.status === "done" && doneBadgeHidden) && (
-          <TouchableOpacity
-            style={[styles.uploadStatus, { top: insets.top + (Platform.OS === "web" ? 110 : 70) }]}
-            onPress={() => router.push("/history")}
-            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-            accessibilityRole="button"
-            accessibilityLabel={`Upload status: ${uploadStatusLabel}`}
-            accessibilityHint="Opens upload history"
-          >
-            <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} accessible={false} />
-            <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
-          </TouchableOpacity>
-        )}
-
-        {/* ── Subscription-blocked banner (uploads parked on HTTP 402) ───── */}
-        {subscriptionBlocked && (
-          <TouchableOpacity
-            style={[styles.subBanner, { top: insets.top + (Platform.OS === "web" ? 150 : 108) }]}
-            onPress={() => router.push("/settings/subscription")}
-            accessibilityRole="button"
-            accessibilityLabel="Uploads paused, subscription required. Open subscription settings."
-          >
-            <Ionicons name="pause-circle-outline" size={16} color="#f59e0b" accessible={false} />
-            <Text style={styles.subBannerText} numberOfLines={1}>Uploads paused — subscription required</Text>
-            <Ionicons name="chevron-forward" size={14} color="#f59e0b" accessible={false} />
-          </TouchableOpacity>
-        )}
+        <UploadIndicators />
 
         {/* ── Filter panel ────────────────────────────────────────────────── */}
         {showFilters && (
@@ -2253,8 +2304,9 @@ export default function CameraScreen() {
               snapToInterval={ITEM_W}
               decelerationRate="fast"
               snapToAlignment="start"
-              onMomentumScrollEnd={handleModeScrollEnd}
-              onScrollEndDrag={Platform.OS === "web" ? handleModeScrollEnd : undefined}
+              onScrollEndDrag={handleModeScrollEndDrag}
+              onMomentumScrollBegin={clearSettleTimer}
+              onMomentumScrollEnd={handleModeMomentumEnd}
               contentContainerStyle={{ paddingHorizontal: (screenW - ITEM_W) / 2 }}
               style={{ flex: 1 }}
               contentOffset={stripContentOffset}
@@ -2523,7 +2575,7 @@ export default function CameraScreen() {
       </View>
     </GestureDetector>
   );
-}
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000" },

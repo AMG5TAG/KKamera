@@ -40,10 +40,7 @@ const MIGRATION_BACKOFF_MS = [2_000, 8_000];
  * migration is idempotent, so this is safe to run on every start.
  */
 async function runAppMigrations() {
-  if (!process.env.DATABASE_URL) {
-    logger.warn("DATABASE_URL not set — skipping migrations");
-    return;
-  }
+  // No DATABASE_URL check needed: @workspace/db throws at import without it.
   // Migration SQL lives in lib/db/drizzle at the repo root. From the bundled
   // entry (artifacts/api-server/dist/index.mjs) that is three levels up.
   const migrationsFolder = path.resolve(import.meta.dirname, "../../../lib/db/drizzle");

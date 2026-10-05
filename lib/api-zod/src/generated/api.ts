@@ -22,11 +22,48 @@ export const ReadinessCheckResponse = zod.object({
   status: zod.string(),
 });
 
+/**
+ * Never signs in. Always answers 202 with the same shape (whether the address is new, registered-but-unverified, or already verified) so it can't be used to discover accounts. A 6-digit code is emailed when appropriate; redeem it with the returned `nonce` at /auth/verify-email.
+ */
 export const RegisterBody = zod.object({
   email: zod.string(),
   password: zod.string(),
   name: zod.string(),
   referralCode: zod.string().nullish(),
+});
+
+/**
+ * Requires the `nonce` from the register / login / resend response that requested the code plus the 6-digit `code` from the email. Codes expire after 30 minutes and die after 5 wrong attempts. On success the email is verified, the free trial starts if eligible, and a session is issued.
+ * @summary Redeem an emailed verification code and sign in
+ */
+export const VerifyEmailBody = zod.object({
+  nonce: zod.string(),
+  code: zod.string().describe("The 6-digit code from the email."),
+});
+
+export const VerifyEmailResponse = zod.object({
+  token: zod.string(),
+  user: zod.object({
+    id: zod.number(),
+    email: zod.string(),
+    name: zod.string(),
+    referralCode: zod.string(),
+    twoFAEnabled: zod.boolean(),
+    onboardingCompleted: zod.boolean(),
+    createdAt: zod.string(),
+  }),
+});
+
+/**
+ * Always 200 with a nonce (a dummy one when there's nothing to resend). Store the returned nonce — it replaces the previous one. Sends are throttled per account (min 60 s apart, max 5 per hour).
+ * @summary Email a new verification code
+ */
+export const ResendVerificationBody = zod.object({
+  nonce: zod.string(),
+});
+
+export const ResendVerificationResponse = zod.object({
+  nonce: zod.string(),
 });
 
 export const LoginBody = zod.object({
@@ -381,29 +418,43 @@ export const ListCloudConnectionsResponse = zod.array(
   ListCloudConnectionsResponseItem,
 );
 
-export const CreateCloudConnectionBody = zod.object({
-  type: zod.enum([
-    "ftp",
-    "webdav",
-    "nextcloud",
-    "onedrive",
-    "googledrive",
-    "dropbox",
-  ]),
-  provider: zod
-    .string()
-    .nullish()
-    .describe(
-      'Optional UI sub-flavour hint (e.g. \"synology\"); upload logic uses `type`.',
-    ),
-  name: zod.string(),
-  host: zod.string().nullish(),
-  port: zod.number().nullish(),
-  username: zod.string().nullish(),
-  password: zod.string().nullish(),
-  uploadPath: zod.string().nullish(),
-  oauthCode: zod.string().nullish(),
-});
+export const createCloudConnectionBodyProviderMax = 50;
+
+export const createCloudConnectionBodyNameMax = 100;
+
+export const createCloudConnectionBodyHostMax = 500;
+
+export const createCloudConnectionBodyPortMax = 65535;
+
+export const createCloudConnectionBodyUsernameMax = 200;
+
+export const createCloudConnectionBodyPasswordMax = 500;
+
+export const createCloudConnectionBodyUploadPathMax = 500;
+
+export const CreateCloudConnectionBody = zod
+  .object({
+    type: zod.enum(["ftp", "webdav", "nextcloud"]),
+    provider: zod
+      .string()
+      .max(createCloudConnectionBodyProviderMax)
+      .nullish()
+      .describe(
+        'Optional UI sub-flavour hint (e.g. \"synology\"); upload logic uses `type`.',
+      ),
+    name: zod.string().min(1).max(createCloudConnectionBodyNameMax),
+    host: zod.string().max(createCloudConnectionBodyHostMax).nullish(),
+    port: zod.number().min(1).max(createCloudConnectionBodyPortMax).nullish(),
+    username: zod.string().max(createCloudConnectionBodyUsernameMax).nullish(),
+    password: zod.string().max(createCloudConnectionBodyPasswordMax).nullish(),
+    uploadPath: zod
+      .string()
+      .max(createCloudConnectionBodyUploadPathMax)
+      .nullish(),
+  })
+  .describe(
+    "Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (\/oauth\/initiate → callback → \/oauth\/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).",
+  );
 
 /**
  * @summary Delete all of the current user's cloud connections (panic wipe)
@@ -416,19 +467,36 @@ export const UpdateCloudConnectionParams = zod.object({
   id: zod.coerce.number(),
 });
 
+export const updateCloudConnectionBodyNameMax = 100;
+
+export const updateCloudConnectionBodyUploadPathMax = 500;
+
+export const updateCloudConnectionBodyHostMax = 500;
+
+export const updateCloudConnectionBodyPortMax = 65535;
+
+export const updateCloudConnectionBodyUsernameMax = 200;
+
+export const updateCloudConnectionBodyPasswordMax = 500;
+
 export const UpdateCloudConnectionBody = zod
   .object({
-    name: zod.string().min(1).optional(),
+    name: zod.string().min(1).max(updateCloudConnectionBodyNameMax).optional(),
     active: zod.boolean().optional(),
     uploadPath: zod
       .string()
+      .max(updateCloudConnectionBodyUploadPathMax)
       .nullish()
       .describe('Folder path; \"..\" segments are rejected.'),
-    host: zod.string().min(1).optional(),
-    port: zod.number().nullish(),
-    username: zod.string().nullish(),
-    password: zod.string().nullish(),
-    oauthCode: zod.string().optional(),
+    host: zod
+      .string()
+      .min(1)
+      .max(updateCloudConnectionBodyHostMax)
+      .optional()
+      .describe("Must not embed credentials (user:pass@host)."),
+    port: zod.number().min(1).max(updateCloudConnectionBodyPortMax).nullish(),
+    username: zod.string().max(updateCloudConnectionBodyUsernameMax).nullish(),
+    password: zod.string().max(updateCloudConnectionBodyPasswordMax).nullish(),
   })
   .describe(
     'Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default \"\/KKamera\"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.',

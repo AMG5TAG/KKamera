@@ -73,3 +73,24 @@ test("blocks IPv6 multicast, Teredo and 6to4-wrapped private IPv4", () => {
     assert.equal(isPrivateIp(ip), false, ip);
   }
 });
+
+test("covers the full reserved/special-purpose checklist", () => {
+  for (const ip of [
+    "0.0.0.0", "0.1.2.3", "0.255.255.255",           // 0.0.0.0/8 "this network"
+    "240.0.0.1", "250.1.2.3", "255.255.255.254",     // 240.0.0.0/4 reserved
+    "255.255.255.255",                                // limited broadcast
+    "fc00::", "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", // fc00::/7 ULA (both halves)
+    "fe80::", "febf:ffff::1", "fe80::1%eth0",        // fe80::/10 link-local (+ zone id)
+    "fec0::1", "feff::1",                             // fec0::/10 deprecated site-local
+    "::", "0:0:0:0:0:0:0:0",                          // ::/128
+    "::1", "0:0:0:0:0:0:0:1",                         // loopback
+    "64:ff9b::7f00:1", "64:ff9b::10.0.0.1", "64:ff9b::192.168.1.1", "64:ff9b::a9fe:a9fe", // NAT64 → private v4
+    "::10.0.0.1", "::192.168.0.1", "::169.254.169.254", "::a00:1", // IPv4-compatible
+  ]) {
+    assert.equal(isPrivateIp(ip), true, ip);
+  }
+  // Just outside those ranges.
+  for (const ip of ["1.0.0.1", "223.255.255.254", "fbff::1", "ff::1", "2600::1"]) {
+    assert.equal(isPrivateIp(ip), false, ip);
+  }
+});

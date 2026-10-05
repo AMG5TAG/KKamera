@@ -293,7 +293,6 @@ export default function AddCloudScreen() {
           username: username || null,
           password: password || null,
           uploadPath: uploadPath || "/KKamera",
-          oauthCode: null,
         },
       });
       queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });

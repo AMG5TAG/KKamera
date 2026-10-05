@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  TextInput, Platform, Alert, ActivityIndicator, BackHandler,
+  TextInput, Platform, ActivityIndicator, BackHandler,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -10,7 +10,8 @@ import * as Haptics from "expo-haptics";
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AuthUser } from "@/contexts/AuthContext";
-import { useUpdateMe } from "@workspace/api-client-react";
+import { useGetSubscription, useUpdateMe } from "@workspace/api-client-react";
+import { subscriptionAllows } from "@/lib/offlineCache";
 import { KeyboardAvoidingViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
@@ -22,7 +23,7 @@ const STEPS = [
   { id: 0, title: "Your Profile", icon: "person" },
   { id: 1, title: "Connect Your Storage", icon: "cloud-upload" },
   { id: 2, title: "Allow Permissions", icon: "shield-checkmark" },
-  { id: 3, title: "Your 14-Day Trial", icon: "time" },
+  { id: 3, title: "Your Free Trial", icon: "time" },
   { id: 4, title: "Refer & Earn Free Years", icon: "people" },
   { id: 5, title: "You're All Set!", icon: "checkmark-circle" },
 ];
@@ -40,6 +41,14 @@ export default function WizardScreen() {
   const insets = useSafeAreaInsets();
   const { user, completeWizard, updateUser } = useAuth();
   const updateMeMutation = useUpdateMe();
+  const { data: sub, isLoading: subLoading } = useGetSubscription();
+  // The server only grants a trial to an email that hasn't used one, so a
+  // re-registered account can arrive here with status "none".
+  const trialEnd = sub?.status === "trial" && sub.trialEnd ? new Date(sub.trialEnd) : null;
+  const trialActive = !!trialEnd && trialEnd.getTime() >= Date.now();
+  const trialDaysLeft = trialEnd ? Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000)) : 0;
+  const paidAccess = !!sub && sub.status !== "trial" && subscriptionAllows(sub);
+  const trialUsed = !!sub && !trialActive && !paidAccess;
   const [step, setStep] = useState(0);
   const [profileName, setProfileName] = useState(user?.name ?? "");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -215,18 +224,52 @@ export default function WizardScreen() {
         )}
 
         {/* Step 3: Trial */}
-        {step === 3 && (
+        {step === 3 && subLoading && (
+          <ActivityIndicator color={PRIMARY} style={{ marginVertical: 24 }} accessibilityLabel="Loading subscription" />
+        )}
+        {step === 3 && !subLoading && trialActive && (
           <View>
             <View style={styles.trialBadge}>
-              <Text style={styles.trialDays}>14</Text>
-              <Text style={styles.trialLabel}>Day Free Trial</Text>
+              <Text style={styles.trialDays}>{trialDaysLeft}</Text>
+              <Text style={styles.trialLabel}>{trialDaysLeft === 1 ? "Day" : "Days"} of Free Trial Left</Text>
             </View>
             <Text style={styles.bodyText}>
-              Your 14-day free trial has already started. Enjoy full access to all KKamera features — no credit card required right now.
+              Your free trial is active until {trialEnd!.toLocaleDateString()}. Enjoy full access to all KKamera features — no credit card required right now.
             </Text>
             <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during your trial." />
-            <InfoCard icon="calendar-outline" text="After 14 days, an annual subscription keeps KKamera running — see Settings → Subscription for the price in your store." />
+            <InfoCard icon="calendar-outline" text="When the trial ends, an annual subscription keeps KKamera running — see Settings → Subscription for the price in your store." />
             <InfoCard icon="notifications-outline" text="You'll see a reminder in the app before your trial ends." />
+            <InfoCard icon="close-circle-outline" text="Nothing is charged unless you choose to subscribe." />
+          </View>
+        )}
+        {step === 3 && !subLoading && paidAccess && (
+          <View>
+            <Text style={styles.bodyText}>Your subscription is active — enjoy full access to all KKamera features.</Text>
+            <InfoCard icon="card-outline" text="Manage your plan any time in Settings → Subscription." />
+          </View>
+        )}
+        {step === 3 && !subLoading && trialUsed && (
+          <View>
+            <Text style={styles.bodyText}>
+              Your free trial was already used — subscribe to keep uploading.
+            </Text>
+            <InfoCard icon="information-circle-outline" text="Each email address gets one 14-day free trial. You can still finish setup and subscribe whenever you're ready." />
+            <TouchableOpacity
+              style={styles.subscribeBtn}
+              onPress={() => router.push("/settings/subscription")}
+              accessibilityRole="button"
+              accessibilityLabel="View subscription options"
+            >
+              <Text style={styles.subscribeBtnText}>View subscription options</Text>
+              <Ionicons name="chevron-forward" size={16} color={PRIMARY} accessible={false} />
+            </TouchableOpacity>
+          </View>
+        )}
+        {step === 3 && !subLoading && !sub && (
+          <View>
+            <Text style={styles.bodyText}>
+              New accounts include a 14-day free trial. Check Settings → Subscription for your trial status and the price in your store.
+            </Text>
             <InfoCard icon="close-circle-outline" text="Nothing is charged unless you choose to subscribe." />
           </View>
         )}
@@ -400,6 +443,11 @@ const styles = StyleSheet.create({
   },
   trialDays: { fontSize: 56, fontFamily: "Inter_700Bold", color: PRIMARY, lineHeight: 60 },
   trialLabel: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: SECONDARY },
+  subscribeBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    borderWidth: 1, borderColor: PRIMARY, borderRadius: 14, paddingVertical: 14, marginTop: 6,
+  },
+  subscribeBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: PRIMARY },
   referralCard: {
     alignItems: "center", backgroundColor: CARD, borderRadius: 16,
     padding: 20, marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",

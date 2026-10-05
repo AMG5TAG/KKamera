@@ -20,9 +20,18 @@ function buildOtpAuthUri(email: string, secret: string): string {
   return `otpauth://totp/${label}?secret=${encodeURIComponent(secret)}&period=30&digits=6&algorithm=SHA1&issuer=${encodeURIComponent(issuer)}`;
 }
 
-/** Strip spaces/dashes and uppercase — backup codes are 8 hex chars, compared uppercase by the server. */
+/**
+ * Strip spaces/dashes and uppercase — the server compares the bare uppercase
+ * form. Backup codes are 10 characters shown as XXXXX-XXXXX (legacy codes are
+ * 8 hex chars and still valid).
+ */
 function normaliseCode(input: string): string {
   return input.replace(/[\s-]/g, "").toUpperCase();
+}
+
+/** A 6-digit TOTP code, a 10-char backup code, or a legacy 8-hex backup code. */
+function isValidCode(code: string): boolean {
+  return /^\d{6}$/.test(code) || /^[0-9A-Z]{10}$/.test(code) || /^[0-9A-F]{8}$/.test(code);
 }
 
 export default function SecurityScreen() {
@@ -74,7 +83,7 @@ export default function SecurityScreen() {
 
   const handleDisable = async () => {
     const normalised = normaliseCode(code);
-    if (!/^\d{6}$/.test(normalised) && !/^[0-9A-F]{8}$/.test(normalised)) {
+    if (!isValidCode(normalised)) {
       Alert.alert("Error", "Enter the 6-digit code from your authenticator app, or a backup code.");
       return;
     }
@@ -313,7 +322,7 @@ export default function SecurityScreen() {
             autoCorrect={false}
             autoComplete="one-time-code"
             textContentType="oneTimeCode"
-            maxLength={10}
+            maxLength={11}
             value={code}
             onChangeText={setCode}
           />

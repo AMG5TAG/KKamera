@@ -7,7 +7,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useGetSubscription } from "@workspace/api-client-react";
-import { STORE_NAME, openManageSubscriptions, useSubscription } from "@/lib/revenuecat";
+import {
+  STORE_NAME, isPaymentPending, isPurchaseCancelled, openManageSubscriptions, useSubscription,
+} from "@/lib/revenuecat";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -98,14 +100,21 @@ export default function SubscriptionScreen() {
       // Successful payment → invite co-workers
       router.push("/invite?celebrate=1");
     } catch (err: any) {
-      // User-cancelled isn't an error — stay silent. Anything else must be shown.
-      if (!err?.userCancelled) {
-        const rcErr: any = rcSub.purchaseError ?? err;
-        const detail = typeof rcErr?.message === "string" && rcErr.message.length > 0 && rcErr.message.length < 160
-          ? rcErr.message
-          : "We couldn't complete your purchase. Please try again.";
-        Alert.alert("Purchase Failed", detail);
+      // User-cancelled isn't an error — stay silent.
+      if (isPurchaseCancelled(err)) return;
+      // Ask to Buy / pending payment: nothing is charged or unlocked until the
+      // store approves it; the entitlement arrives later via RevenueCat.
+      if (isPaymentPending(err)) {
+        Alert.alert(
+          "Purchase pending approval",
+          `Your purchase is waiting for approval in the ${STORE_NAME}. KKamera will unlock automatically once it's approved.`,
+        );
+        return;
       }
+      const detail = typeof err?.message === "string" && err.message.length > 0 && err.message.length < 160
+        ? err.message
+        : "We couldn't complete your purchase. Please try again.";
+      Alert.alert("Purchase Failed", detail);
     }
   };
 
@@ -258,6 +267,12 @@ export default function SubscriptionScreen() {
               <Text style={styles.priceSub}>Auto-renews {period.adverb} · Cancel anytime</Text>
             </View>
 
+            {status === "trial" && (
+              <Text style={styles.trialNote}>
+                Your paid {period.unit} starts today; remaining trial days aren't carried over.
+              </Text>
+            )}
+
             <TouchableOpacity
               style={[styles.subscribeBtn, isPurchasing && styles.btnDisabled]}
               onPress={handleNativePurchase}
@@ -321,6 +336,7 @@ export default function SubscriptionScreen() {
             <Text style={styles.modalTitle} accessibilityRole="header">Confirm Purchase</Text>
             <Text style={styles.modalBody}>
               Subscribe to KKamera for {priceString} per {period.unit}?{"\n\n"}
+              {status === "trial" ? `Your paid ${period.unit} starts today; remaining trial days aren't carried over.\n\n` : ""}
               Payment is charged to your {STORE_NAME} account and renews automatically {period.adverb} unless cancelled at least 24 hours before the end of the current period.
             </Text>
             <TouchableOpacity style={styles.modalConfirm} onPress={confirmPurchase} accessibilityRole="button">
@@ -362,13 +378,12 @@ const styles = StyleSheet.create({
   priceAmount: { fontSize: 52, fontFamily: "Inter_700Bold", color: PRIMARY },
   pricePer: { fontSize: 16, color: "#888", fontFamily: "Inter_400Regular", marginTop: -4, marginBottom: 6 },
   priceSub: { fontSize: 13, color: "#666", fontFamily: "Inter_400Regular" },
+  trialNote: { fontSize: 13, color: "#c3b091", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19, marginTop: -12, marginBottom: 14 },
   subscribeBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 16, marginBottom: 10 },
   btnDisabled: { opacity: 0.6 },
   subscribeBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
   restoreBtn: { alignItems: "center", paddingVertical: 12, marginBottom: 6 },
   restoreBtnText: { fontSize: 14, color: PRIMARY, fontFamily: "Inter_500Medium" },
-  cancelBtn: { alignItems: "center", paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", marginBottom: 16 },
-  cancelBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: "#ef4444" },
   footnote: { fontSize: 12, color: "#555", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 18 },
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", alignItems: "center", justifyContent: "center", padding: 24 },
   modalCard: { backgroundColor: CARD, borderRadius: 20, padding: 24, width: "100%", maxWidth: 360, borderWidth: 1, borderColor: "rgba(177,152,112,0.2)" },

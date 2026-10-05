@@ -21,9 +21,18 @@ function utf8Bytes(s: string): number {
   return n;
 }
 
-/** Strip spaces/dashes and uppercase — backup codes are 8 hex chars, compared uppercase by the server. */
+/**
+ * Strip spaces/dashes and uppercase — the server compares the bare uppercase
+ * form. Backup codes are 10 characters shown as XXXXX-XXXXX (legacy codes are
+ * 8 hex chars and still valid).
+ */
 function normaliseCode(input: string): string {
   return input.replace(/[\s-]/g, "").toUpperCase();
+}
+
+/** A 6-digit TOTP code, a 10-char backup code, or a legacy 8-hex backup code. */
+function isValidCode(code: string): boolean {
+  return /^\d{6}$/.test(code) || /^[0-9A-Z]{10}$/.test(code) || /^[0-9A-F]{8}$/.test(code);
 }
 
 export default function ChangePasswordScreen() {
@@ -48,7 +57,7 @@ export default function ChangePasswordScreen() {
     if (utf8Bytes(next) > 72) { setError("New password is too long (maximum 72 bytes)."); return; }
     if (next !== confirm) { setError("New passwords don't match."); return; }
     const totp = normaliseCode(code);
-    if (needs2FA && !/^\d{6}$/.test(totp) && !/^[0-9A-F]{8}$/.test(totp)) {
+    if (needs2FA && !isValidCode(totp)) {
       setError("Enter the 6-digit code from your authenticator app, or a backup code.");
       return;
     }
@@ -167,7 +176,7 @@ export default function ChangePasswordScreen() {
               autoCorrect={false}
               autoComplete="one-time-code"
               textContentType="oneTimeCode"
-              maxLength={10}
+              maxLength={11}
               value={code}
               onChangeText={setCode}
               returnKeyType="done"

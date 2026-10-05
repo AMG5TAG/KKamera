@@ -32,8 +32,9 @@ export default function LoginScreen() {
     setError("");
     const trimmedEmail = email.trim();
     if (!trimmedEmail || !password) { setError("Please enter your email and password."); return; }
-    // Accept a TOTP code or a backup code (8 hex chars, optionally typed with a
-    // dash/spaces — the server compares the bare uppercase form).
+    // Accept a TOTP code or a backup code (10 chars shown as XXXXX-XXXXX, or a
+    // legacy 8-hex code), optionally typed with dashes/spaces — the server
+    // compares the bare uppercase form.
     const code = totp.replace(/[\s-]/g, "").toUpperCase();
     if (requires2FA && !code) { setError("Enter your authenticator code or a backup code."); return; }
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -52,6 +53,13 @@ export default function LoginScreen() {
         router.replace(loggedInUser.onboardingCompleted || hasCompletedWizard ? "/camera" : "/wizard");
       }
     } catch (e) {
+      // Correct password, unverified email: the server emailed a code bound to
+      // this nonce — continue on the verification screen.
+      const unverified = emailNotVerifiedDetails(e);
+      if (unverified) {
+        router.push({ pathname: "/auth/verify-email", params: unverified });
+        return;
+      }
       setError(getUserFacingMessage(e, requires2FA ? "That code didn't work. Try again." : "Login failed. Check your credentials."));
     }
   };
@@ -150,7 +158,7 @@ export default function LoginScreen() {
               autoComplete="one-time-code"
               textContentType="oneTimeCode"
               autoFocus
-              maxLength={10}
+              maxLength={11}
               value={totp}
               onChangeText={setTotp}
               onSubmitEditing={handleLogin}
@@ -196,6 +204,17 @@ export default function LoginScreen() {
       </KeyboardAwareScrollViewCompat>
     </View>
   );
+}
+
+/** The 403 { code: "email_not_verified", nonce, email } login response, if that's what `e` is. */
+function emailNotVerifiedDetails(e: unknown): { nonce: string; email: string } | null {
+  const err = e as { status?: number; data?: unknown } | null;
+  if (err?.status !== 403 || !err.data || typeof err.data !== "object") return null;
+  const data = err.data as Record<string, unknown>;
+  if (data["code"] !== "email_not_verified") return null;
+  const nonce = data["nonce"];
+  const email = data["email"];
+  return typeof nonce === "string" && typeof email === "string" ? { nonce, email } : null;
 }
 
 const styles = StyleSheet.create({

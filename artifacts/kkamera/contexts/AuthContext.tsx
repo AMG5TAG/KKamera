@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
-import { setAuthTokenGetter, setBaseUrl, setUnauthorizedHandler, updateMe } from "@workspace/api-client-react";
+import { setAuthTokenGetter, setUnauthorizedHandler, updateMe } from "@workspace/api-client-react";
 
 export interface AuthUser {
   id: number;

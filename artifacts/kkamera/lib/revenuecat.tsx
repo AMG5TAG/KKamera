@@ -61,6 +61,22 @@ export async function openManageSubscriptions(managementURL?: string | null): Pr
   await Linking.openURL(managementURL || fallback);
 }
 
+/** The user backed out of the store sheet — not an error, show nothing. */
+export function isPurchaseCancelled(err: unknown): boolean {
+  const e = err as { code?: unknown; userCancelled?: unknown } | null | undefined;
+  return !!e && (e.userCancelled === true || e.code === Purchases.PURCHASES_ERROR_CODE.PURCHASE_CANCELLED_ERROR);
+}
+
+/**
+ * A deferred purchase (Ask to Buy, or a pending payment method) — the store
+ * accepted it but won't charge until it's approved, so it's neither a success
+ * nor a failure yet.
+ */
+export function isPaymentPending(err: unknown): boolean {
+  const e = err as { code?: unknown } | null | undefined;
+  return !!e && e.code === Purchases.PURCHASES_ERROR_CODE.PAYMENT_PENDING_ERROR;
+}
+
 function useSubscriptionContext() {
   const enabled = _revenueCatReady || Platform.OS === "web";
   const { user } = useAuth();
@@ -166,7 +182,6 @@ function useSubscriptionContext() {
     restore: restoreMutation.mutateAsync,
     isPurchasing: purchaseMutation.isPending,
     isRestoring: restoreMutation.isPending,
-    purchaseError: purchaseMutation.error,
   };
 }
 

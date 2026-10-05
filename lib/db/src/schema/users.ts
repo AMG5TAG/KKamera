@@ -1,4 +1,4 @@
-import { boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, boolean, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -12,9 +12,16 @@ export const usersTable = pgTable("users", {
   twoFASecret: text("two_fa_secret"),
   twoFAEnabled: boolean("two_fa_enabled").notNull().default(false),
   twoFABackupCodes: text("two_fa_backup_codes"),
+  // Last TOTP time step accepted for this user, so a code can't be replayed
+  // within its 30-second window.
+  totpLastStep: bigint("totp_last_step", { mode: "number" }),
   // Set once the user finishes (or skips) the first-run setup wizard. Tracked on
   // the account — not device-local storage — so onboarding shows exactly once per
   // user, regardless of which device or browser they sign in from.
+  // When the user proved they own `email` (verification code, or a completed
+  // password reset). Sign-in and the free trial require it. Existing accounts
+  // were backfilled as verified when this column was added.
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
   onboardingCompleted: boolean("onboarding_completed").notNull().default(false),
   // Bumped whenever the password changes; tokens issued before this are rejected.
   passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),

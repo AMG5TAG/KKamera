@@ -138,7 +138,7 @@ export default function PrivacySecurityScreen() {
         // Use the in-memory auth token from context. Reading it from
         // AsyncStorage broke on native, where the token lives in SecureStore
         // — so the server-side wipe silently no-op'd on the exact platforms
-        // we ship. API_BASE_URL is "" on web (same-origin), a valid prefix.
+        // we ship.
         if (token) {
           await Promise.allSettled([
             fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),

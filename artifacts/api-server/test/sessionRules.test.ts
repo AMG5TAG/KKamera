@@ -86,3 +86,8 @@ test("lockout: isLoginLocked compares against now", () => {
   assert.equal(isLoginLocked(now, now), false);
   assert.equal(isLoginLocked(new Date(now.getTime() + 1), now), true);
 });
+
+test("session: any typ (e.g. an OAuth state token) is rejected", () => {
+  assert.equal(parseSessionClaims({ userId: 7, typ: "oauth-state" }), null);
+  assert.equal(parseSessionClaims({ userId: 7, typ: "oauth-state", aud: SESSION_AUDIENCE }), null);
+});

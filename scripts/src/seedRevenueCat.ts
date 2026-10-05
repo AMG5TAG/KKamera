@@ -278,4 +278,8 @@ async function seedRevenueCat() {
   }
 }
 
-seedRevenueCat().catch(console.error);
+seedRevenueCat().catch((err) => {
+  console.error(err);
+  // Non-zero exit so a failed seed can't be mistaken for success (CI / scripts).
+  process.exitCode = 1;
+});

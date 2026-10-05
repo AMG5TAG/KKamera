@@ -199,7 +199,50 @@ interface ExecuteResult {
   results?: { connectionId?: number; success?: boolean; error?: string }[];
 }
 
-function xhrUpload(
+/** Web only: shown when a capture's in-page blob: URL no longer resolves. */
+const LOST_ON_RELOAD_MESSAGE = "This capture was lost when the page reloaded";
+
+/**
+ * The capture's bytes are gone for good (web: a blob: URL from an earlier page
+ * load). Retrying can never succeed, so the queue fails it instead of backing off.
+ */
+class CaptureLostError extends Error {}
+
+/**
+ * Web: blob: URLs live only as long as the page that created them, so one
+ * restored from storage after a reload is always dead.
+ */
+function isWebBlobUri(uri: string): boolean {
+  return Platform.OS === "web" && uri.startsWith("blob:");
+}
+
+/**
+ * The multipart `file` part. React Native's FormData takes a { uri, name, type }
+ * descriptor and streams the file itself (fetching a file:// URI into a Blob is
+ * unreliable on Android and for large videos). A browser's FormData only
+ * accepts a Blob/File, so on web the blob:/data:/http URI is fetched first.
+ */
+async function fileFormPart(uri: string, fileName: string, mimeType: string): Promise<{ part: any; name?: string }> {
+  if (Platform.OS !== "web") return { part: { uri, name: fileName, type: mimeType } };
+  let blob: Blob;
+  try {
+    const res = await fetch(uri);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    blob = await res.blob();
+  } catch (err) {
+    // A revoked / previous-page blob: URL can never come back.
+    if (uri.startsWith("blob:")) throw new CaptureLostError(LOST_ON_RELOAD_MESSAGE);
+    throw err;
+  }
+  // The global File (not expo-file-system's, imported above under that name).
+  const WebFile: any = (globalThis as any).File;
+  if (typeof WebFile === "function") {
+    return { part: new WebFile([blob], fileName, { type: mimeType }) };
+  }
+  return { part: blob, name: fileName };
+}
+
+async function xhrUpload(
   uri: string,
   fileName: string,
   fileType: "image" | "video",
@@ -208,17 +251,15 @@ function xhrUpload(
   clientUploadId: string,
   onProgress: (pct: number) => void
 ): Promise<ExecuteResult> {
+  // Derive the MIME type from the actual file extension so the bytes aren't
+  // mislabelled (e.g. a web-recorded .webm previously sent as video/mp4).
+  const mimeType = guessMimeType(fileName, fileType);
+  const file = await fileFormPart(uri, fileName, mimeType);
   return new Promise((resolve, reject) => {
     try {
-      // Derive the MIME type from the actual file extension so the bytes aren't
-      // mislabelled (e.g. a web-recorded .webm previously sent as video/mp4).
-      const mimeType = guessMimeType(fileName, fileType);
       const form = new FormData();
-
-      // React Native's FormData takes a { uri, name, type } file descriptor and
-      // streams the file itself. Fetching a file:// URI into a Blob is unreliable
-      // on Android and for large videos.
-      form.append("file", { uri, name: fileName, type: mimeType } as any);
+      if (file.name) form.append("file", file.part, file.name);
+      else form.append("file", file.part);
       form.append("fileName", fileName);
       form.append("mimeType", mimeType);
       // Stable per-capture id so the server can de-duplicate retried uploads.
@@ -441,6 +482,13 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       );
     } catch (err: any) {
       if (!stillQueued()) { finish(); return; } // discarded while in flight
+      if (err instanceof CaptureLostError) {
+        item.state = "failed";
+        item.error = err.message;
+        reflect(item, { status: "failed", error: item.error });
+        finish();
+        return;
+      }
       const httpStatus: number | undefined = err instanceof UploadHttpError ? err.httpStatus : undefined;
       // A network error says nothing about the subscription; any HTTP answer does.
       if (httpStatus != null) item.subscriptionBlocked = httpStatus === 402;
@@ -725,10 +773,16 @@ export function UploadProvider({ children }: { children: ReactNode }) {
             // Items without an owner predate per-account tagging and can't be
             // safely attributed, so they are discarded.
             if (item?.uri && item?.id && typeof item.ownerId === "number" && !existing.has(item.id)) {
+              // Web has no durable queue dir (QUEUE_DIR is null), so an item
+              // persists only as its URI — a blob: URL died with the page that
+              // made it. Fail it for the user instead of retrying forever.
+              const lost = isWebBlobUri(item.uri);
               offlineQueue.push({
                 ...item,
                 retries: typeof item.retries === "number" ? item.retries : 0,
-                state: item.state ?? "waiting",
+                state: lost ? "failed" : (item.state ?? "waiting"),
+                parkReason: lost ? undefined : item.parkReason,
+                error: lost ? LOST_ON_RELOAD_MESSAGE : item.error,
                 // Anything that was in flight when the app died is simply due again.
                 nextRetryAt: item.state === "waiting" || !item.state ? Date.now() : item.nextRetryAt,
                 createdAt: item.createdAt ?? Date.now(),

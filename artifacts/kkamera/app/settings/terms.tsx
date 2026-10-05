@@ -5,7 +5,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { MailLink } from "@/components/MailLink";
 
-const BG = "#0d0b08";
 const PRIMARY = "#b19870";
 
 const LAST_UPDATED = "28 September 2026";
@@ -22,7 +21,7 @@ export default function TermsScreen() {
       <Text style={styles.updated}>Last updated: {LAST_UPDATED}</Text>
 
       <Section title="1. About these terms">
-        These terms apply to your use of the KKamera app and service ("KKamera", "we", "us"), provided by Koastal (koastal.com.au). By creating an account or using KKamera you agree to them. If you don't agree, please don't use KKamera. Our Privacy Policy explains how we handle your information.
+        These terms apply to your use of the KKamera app and service ("KKamera", "we", "us"), provided by Koastal Kollective (www.koastal.com.au). By creating an account or using KKamera you agree to them. If you don't agree, please don't use KKamera. Our Privacy Policy explains how we handle your information.
       </Section>
 
       <Section title="2. What KKamera does">

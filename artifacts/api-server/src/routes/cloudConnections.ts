@@ -105,14 +105,16 @@ router.post("/cloud-connections", requireAuth, async (req, res) => {
       res.status(400).json({ message: firstIssueMessage(parsed.error) });
       return;
     }
-    const { type, provider, name, host, port, username, password, uploadPath, oauthCode } = parsed.data;
+    // OAuth providers (Drive/OneDrive/Dropbox) are rejected by the schema: their
+    // connections are created only by the OAuth callback + /oauth/complete, so
+    // this route never stores an access token.
+    const { type, provider, name, host, port, username, password, uploadPath } = parsed.data;
     const [conn] = await db.insert(cloudConnectionsTable).values({
       userId: req.userId!, type, provider: provider ?? null, name,
       host: host ?? null,
       port: port ?? null,
-      username: username ?? null,
+      username: username || null,
       passwordEncrypted: password ? encrypt(password) : null,
-      accessTokenEncrypted: oauthCode ? encrypt(oauthCode) : null,
       uploadPath: normalizeUploadPath(uploadPath ?? DEFAULT_UPLOAD_PATH),
       active: true,
     }).returning();
@@ -143,7 +145,6 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
     if (plan.port !== undefined) updates.port = plan.port;
     if (plan.username !== undefined) updates.username = plan.username;
     if (plan.password !== undefined) updates.passwordEncrypted = plan.password === null ? null : encrypt(plan.password);
-    if (plan.oauthCode !== undefined) updates.accessTokenEncrypted = encrypt(plan.oauthCode);
 
     // Nextcloud's DAV endpoint is built from the username — it can't be cleared.
     if (updates.username === null) {

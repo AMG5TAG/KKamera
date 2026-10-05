@@ -118,16 +118,17 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
   }), [onLogout, updateSetting]);
 
   // Routing guard. Sign-out from anywhere (Settings, Panic Wipe, Delete Account,
-  // an expired-token 401, the lock screen) lands on the login screen; a signed-in
+  // an expired-token 401, the lock screen) lands on the login screen, and a
+  // signed-out deep link (kkamera://camera, kkamera://settings/cloud, …) is sent
+  // there too instead of rendering a screen that can only fail. A signed-in
   // user who hasn't finished onboarding can't reach the main app via a deep link
   // or restored route — they're sent back to the wizard.
   const segments = useSegments();
   const navReady = !!useRootNavigationState()?.key;
-  const wasAuthenticated = useRef(isAuthenticated);
   useEffect(() => {
     if (!ready || !navReady) return;
     const top = segments[0] as string | undefined;
-    if (wasAuthenticated.current && !isAuthenticated && top !== "auth") {
+    if (!isAuthenticated && !isPublicRoute(segments as string[])) {
       router.replace("/auth/login");
     } else if (
       isAuthenticated && !hasCompletedWizard &&
@@ -135,7 +136,6 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
     ) {
       router.replace("/wizard");
     }
-    wasAuthenticated.current = isAuthenticated;
   }, [ready, navReady, isAuthenticated, hasCompletedWizard, segments]);
 
   const handleUnlock = useCallback(() => setLockedState(false), []);
@@ -169,6 +169,18 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
 // Main-app routes that require a finished onboarding wizard. Settings, auth,
 // legal and OAuth routes stay reachable (the wizard itself opens Add Cloud).
 const ONBOARDING_GATED = new Set(["camera", "(tabs)", "history", "markup", "invite"]);
+
+// Routes a signed-out user may open. The index route (no segments) redirects
+// on its own; OAuth result pages must still render to show their message.
+const PUBLIC_TOP_LEVEL = new Set(["auth", "oauth-error", "oauth-success", "+not-found"]);
+const PUBLIC_SETTINGS = new Set(["privacy", "terms", "support"]);
+
+function isPublicRoute(segments: string[]): boolean {
+  const [top, sub] = segments;
+  if (top === undefined) return true;
+  if (PUBLIC_TOP_LEVEL.has(top)) return true;
+  return top === "settings" && sub !== undefined && PUBLIC_SETTINGS.has(sub);
+}
 
 const styles = StyleSheet.create({
   gateRoot: { flex: 1, backgroundColor: "#0d0b08" },

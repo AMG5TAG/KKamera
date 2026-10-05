@@ -168,7 +168,7 @@ export interface SessionClaims {
 /**
  * Validate the claims of an (already signature-verified) session JWT. Returns
  * null for anything that isn't a well-formed session token: a non-positive or
- * non-integer userId, a malformed `tv`, or an `aud` other than ours. `aud` is
+ * non-integer userId, a malformed `tv`, any `typ`, or an `aud` other than ours. `aud` is
  * only checked when present — tokens issued before it was added lack it.
  */
 export function parseSessionClaims(payload: unknown): SessionClaims | null {
@@ -176,6 +176,9 @@ export function parseSessionClaims(payload: unknown): SessionClaims | null {
   const p = payload as Record<string, unknown>;
   const userId = p["userId"];
   if (typeof userId !== "number" || !Number.isSafeInteger(userId) || userId <= 0) return null;
+  // Session tokens carry no `typ`; other JWTs on this secret (OAuth state:
+  // typ "oauth-state") must never pass as a session.
+  if (p["typ"] !== undefined) return null;
   const aud = p["aud"];
   if (aud !== undefined) {
     const auds = Array.isArray(aud) ? aud : [aud];

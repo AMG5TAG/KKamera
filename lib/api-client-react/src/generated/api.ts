@@ -24,6 +24,7 @@ import type {
   CloudConnectionInput,
   CloudConnectionUpdate,
   DeleteAccountInput,
+  EmailNotVerified,
   ExecuteUploadInput,
   ExecuteUploadResult,
   FeedbackInput,
@@ -41,6 +42,8 @@ import type {
   PasswordConfirmInput,
   Referral,
   RegisterInput,
+  ResendVerificationInput,
+  ResendVerificationResult,
   ResetPasswordInput,
   SessionRefreshResponse,
   Subscription,
@@ -56,6 +59,8 @@ import type {
   User,
   UserDataExport,
   UserUpdate,
+  VerificationRequired,
+  VerifyEmailInput,
   WitnessNotifyInput,
 } from "./api.schemas";
 
@@ -219,6 +224,9 @@ export function useReadinessCheck<
   return { ...query, queryKey: queryOptions.queryKey };
 }
 
+/**
+ * Never signs in. Always answers 202 with the same shape (whether the address is new, registered-but-unverified, or already verified) so it can't be used to discover accounts. A 6-digit code is emailed when appropriate; redeem it with the returned `nonce` at /auth/verify-email.
+ */
 export const getRegisterUrl = () => {
   return `/api/auth/register`;
 };
@@ -226,8 +234,8 @@ export const getRegisterUrl = () => {
 export const register = async (
   registerInput: RegisterInput,
   options?: RequestInit,
-): Promise<AuthResponse> => {
-  return customFetch<AuthResponse>(getRegisterUrl(), {
+): Promise<VerificationRequired> => {
+  return customFetch<VerificationRequired>(getRegisterUrl(), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
@@ -236,7 +244,7 @@ export const register = async (
 };
 
 export const getRegisterMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -277,10 +285,10 @@ export type RegisterMutationResult = NonNullable<
   Awaited<ReturnType<typeof register>>
 >;
 export type RegisterMutationBody = BodyType<RegisterInput>;
-export type RegisterMutationError = ErrorType<unknown>;
+export type RegisterMutationError = ErrorType<MessageResponse>;
 
 export const useRegister = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -297,6 +305,180 @@ export const useRegister = <
   TContext
 > => {
   return useMutation(getRegisterMutationOptions(options));
+};
+
+/**
+ * Requires the `nonce` from the register / login / resend response that requested the code plus the 6-digit `code` from the email. Codes expire after 30 minutes and die after 5 wrong attempts. On success the email is verified, the free trial starts if eligible, and a session is issued.
+ * @summary Redeem an emailed verification code and sign in
+ */
+export const getVerifyEmailUrl = () => {
+  return `/api/auth/verify-email`;
+};
+
+export const verifyEmail = async (
+  verifyEmailInput: VerifyEmailInput,
+  options?: RequestInit,
+): Promise<AuthResponse> => {
+  return customFetch<AuthResponse>(getVerifyEmailUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(verifyEmailInput),
+  });
+};
+
+export const getVerifyEmailMutationOptions = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof verifyEmail>>,
+    TError,
+    { data: BodyType<VerifyEmailInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof verifyEmail>>,
+  TError,
+  { data: BodyType<VerifyEmailInput> },
+  TContext
+> => {
+  const mutationKey = ["verifyEmail"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof verifyEmail>>,
+    { data: BodyType<VerifyEmailInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return verifyEmail(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type VerifyEmailMutationResult = NonNullable<
+  Awaited<ReturnType<typeof verifyEmail>>
+>;
+export type VerifyEmailMutationBody = BodyType<VerifyEmailInput>;
+export type VerifyEmailMutationError = ErrorType<MessageResponse>;
+
+/**
+ * @summary Redeem an emailed verification code and sign in
+ */
+export const useVerifyEmail = <
+  TError = ErrorType<MessageResponse>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof verifyEmail>>,
+    TError,
+    { data: BodyType<VerifyEmailInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof verifyEmail>>,
+  TError,
+  { data: BodyType<VerifyEmailInput> },
+  TContext
+> => {
+  return useMutation(getVerifyEmailMutationOptions(options));
+};
+
+/**
+ * Always 200 with a nonce (a dummy one when there's nothing to resend). Store the returned nonce — it replaces the previous one. Sends are throttled per account (min 60 s apart, max 5 per hour).
+ * @summary Email a new verification code
+ */
+export const getResendVerificationUrl = () => {
+  return `/api/auth/resend-verification`;
+};
+
+export const resendVerification = async (
+  resendVerificationInput: ResendVerificationInput,
+  options?: RequestInit,
+): Promise<ResendVerificationResult> => {
+  return customFetch<ResendVerificationResult>(getResendVerificationUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(resendVerificationInput),
+  });
+};
+
+export const getResendVerificationMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof resendVerification>>,
+    TError,
+    { data: BodyType<ResendVerificationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof resendVerification>>,
+  TError,
+  { data: BodyType<ResendVerificationInput> },
+  TContext
+> => {
+  const mutationKey = ["resendVerification"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof resendVerification>>,
+    { data: BodyType<ResendVerificationInput> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return resendVerification(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ResendVerificationMutationResult = NonNullable<
+  Awaited<ReturnType<typeof resendVerification>>
+>;
+export type ResendVerificationMutationBody = BodyType<ResendVerificationInput>;
+export type ResendVerificationMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Email a new verification code
+ */
+export const useResendVerification = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof resendVerification>>,
+    TError,
+    { data: BodyType<ResendVerificationInput> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof resendVerification>>,
+  TError,
+  { data: BodyType<ResendVerificationInput> },
+  TContext
+> => {
+  return useMutation(getResendVerificationMutationOptions(options));
 };
 
 export const getLoginUrl = () => {
@@ -316,7 +498,7 @@ export const login = async (
 };
 
 export const getLoginMutationOptions = <
-  TError = ErrorType<MessageResponse>,
+  TError = ErrorType<MessageResponse | EmailNotVerified>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -357,10 +539,10 @@ export type LoginMutationResult = NonNullable<
   Awaited<ReturnType<typeof login>>
 >;
 export type LoginMutationBody = BodyType<LoginInput>;
-export type LoginMutationError = ErrorType<MessageResponse>;
+export type LoginMutationError = ErrorType<MessageResponse | EmailNotVerified>;
 
 export const useLogin = <
-  TError = ErrorType<MessageResponse>,
+  TError = ErrorType<MessageResponse | EmailNotVerified>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<

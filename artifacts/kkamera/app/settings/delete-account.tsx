@@ -18,9 +18,18 @@ const BG = "#0d0b08";
 const CARD = "#1a1710";
 const DANGER = "#ef4444";
 
-/** Strip spaces/dashes and uppercase — backup codes are 8 hex chars, compared uppercase by the server. */
+/**
+ * Strip spaces/dashes and uppercase — the server compares the bare uppercase
+ * form. Backup codes are 10 characters shown as XXXXX-XXXXX (legacy codes are
+ * 8 hex chars and still valid).
+ */
 function normaliseCode(input: string): string {
   return input.replace(/[\s-]/g, "").toUpperCase();
+}
+
+/** A 6-digit TOTP code, a 10-char backup code, or a legacy 8-hex backup code. */
+function isValidCode(code: string): boolean {
+  return /^\d{6}$/.test(code) || /^[0-9A-Z]{10}$/.test(code) || /^[0-9A-F]{8}$/.test(code);
 }
 
 export default function DeleteAccountScreen() {
@@ -47,7 +56,7 @@ export default function DeleteAccountScreen() {
       return;
     }
     const totp = normaliseCode(code);
-    if (needs2FA && !/^\d{6}$/.test(totp) && !/^[0-9A-F]{8}$/.test(totp)) {
+    if (needs2FA && !isValidCode(totp)) {
       Alert.alert("Code required", "Enter the 6-digit code from your authenticator app, or a backup code.");
       return;
     }
@@ -171,7 +180,7 @@ export default function DeleteAccountScreen() {
               autoCorrect={false}
               autoComplete="one-time-code"
               textContentType="oneTimeCode"
-              maxLength={10}
+              maxLength={11}
             />
           </>
         )}

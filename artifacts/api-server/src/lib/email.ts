@@ -58,7 +58,13 @@ export async function sendEmail(opts: {
 
 // ─── Templates ────────────────────────────────────────────────────────────────
 
-function wrap(title: string, body: string): string {
+/** Shared footer brand line (also used by routes/passwordReset.ts). */
+export const EMAIL_BRAND_FOOTER =
+  `KKamera by Koastal Kollective &middot; <a href="https://www.koastal.com.au" style="color:#b19870">www.koastal.com.au</a>`;
+
+const DEFAULT_REASON = "You're receiving this because you have a KKamera account.";
+
+function wrap(title: string, body: string, reason: string = DEFAULT_REASON): string {
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><style>
@@ -70,6 +76,8 @@ function wrap(title: string, body: string): string {
   p { color: #aaa; font-size: 15px; line-height: 24px; margin: 0 0 16px; }
   .btn { display: inline-block; background: #b19870; color: white; text-decoration: none; font-size: 15px; font-weight: 600; padding: 14px 28px; border-radius: 12px; margin: 16px 0; }
   .footer { color: #444; font-size: 12px; text-align: center; margin-top: 32px; line-height: 20px; }
+  .code { font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 34px; font-weight: 700; letter-spacing: 6px; color: #b19870; text-align: center; background: #0d0b08; border-radius: 12px; padding: 18px 12px; margin: 8px 0 20px; }
+  .muted { color: #888; font-size: 13px; }
 </style></head>
 <body>
   <div class="outer">
@@ -79,19 +87,23 @@ function wrap(title: string, body: string): string {
       ${body}
     </div>
     <div class="footer">KKamera &mdash; Cloud Based Photography<br>
-    You're receiving this because you have a KKamera account.<br>
-    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a></div>
+    ${reason}<br>
+    Questions? <a href="mailto:development@koastal.com.au" style="color:#b19870">development@koastal.com.au</a><br>
+    ${EMAIL_BRAND_FOOTER}</div>
   </div>
 </body>
 </html>`;
 }
 
-export function welcomeEmail(name: string): { subject: string; html: string } {
+export function welcomeEmail(name: string, trialActive: boolean = true): { subject: string; html: string } {
+  const trialLine = trialActive
+    ? `<p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>`
+    : `<p>Subscribe from <strong>Settings → Subscription</strong> in the app whenever you're ready to start uploading.</p>`;
   return {
     subject: "Welcome to KKamera 📷",
     html: wrap("Welcome, " + escapeHtml(name) + "!", `
       <p>Your account is all set. KKamera captures your photos and videos and instantly uploads them to your cloud storage — leaving no trace on your device.</p>
-      <p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>
+      ${trialLine}
       <a href="https://app.kkamera.app" class="btn">Open KKamera</a>
       <p>Add your cloud connections (Google Drive, OneDrive, Dropbox, FTP, WebDAV) in Settings → Upload to start shooting.</p>
     `),
@@ -118,8 +130,7 @@ export function coworkerInviteEmail(inviterName: string, referralCode: string): 
   const link = `https://app.kkamera.app/auth/register?ref=${encodeURIComponent(referralCode)}`;
   const safeName = escapeHtml(inviterName);
   const safeCode = escapeHtml(referralCode);
-  // Strip CR/LF/tab from any user-derived value used in a header line, matching
-  // the witness-notify subject handling.
+  // Strip CR/LF/tab from any user-derived value used in a header line (subject).
   const subjectName = inviterName.replace(/[\r\n\t]+/g, " ").trim().slice(0, 100) || "Someone";
   return {
     subject: `${subjectName} invited you to KKamera 📷`,
@@ -140,6 +151,32 @@ export function referralRewardEmail(name: string, freeYearsTotal: number): { sub
       <p>You've reached 5 successful referrals — we've added <strong style="color:#b19870">1 free year</strong> to your KKamera subscription!</p>
       <p>You now have <strong>${freeYearsTotal} free year${freeYearsTotal !== 1 ? "s" : ""}</strong> banked. Keep sharing to earn more — there's no limit!</p>
       <a href="https://app.kkamera.app/settings/subscription" class="btn">View Your Subscription</a>
+    `),
+  };
+}
+
+export function verificationCodeEmail(name: string, code: string): { subject: string; html: string } {
+  // Codes are digits only, but escape anyway — nothing user-influenced goes in raw.
+  const display = escapeHtml(`${code.slice(0, 3)} ${code.slice(3)}`);
+  return {
+    subject: "Your KKamera verification code",
+    html: wrap("Verify your email", `
+      <p>Hi ${escapeHtml(name)},</p>
+      <p>Enter this code in the KKamera app to verify your email address:</p>
+      <div class="code">${display}</div>
+      <p>This code expires in <strong style="color:#b19870">30 minutes</strong>. Never share it — KKamera will never ask you for it.</p>
+      <p class="muted">If you didn't request this, ignore this email.</p>
+    `, "You're receiving this because this address was used to sign up for or sign in to KKamera."),
+  };
+}
+
+export function accountExistsEmail(name: string): { subject: string; html: string } {
+  return {
+    subject: "Someone tried to create a KKamera account with your email",
+    html: wrap("You already have an account", `
+      <p>Hi ${escapeHtml(name)},</p>
+      <p>Someone tried to create a KKamera account with your email. If this was you, sign in or reset your password in the KKamera app.</p>
+      <p class="muted">If this wasn't you, you can ignore this email — no account was created and nothing about your existing account has changed.</p>
     `),
   };
 }

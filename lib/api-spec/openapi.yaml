@@ -63,13 +63,84 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/RegisterInput"
+      description: >-
+        Never signs in. Always answers 202 with the same shape (whether the
+        address is new, registered-but-unverified, or already verified) so it
+        can't be used to discover accounts. A 6-digit code is emailed when
+        appropriate; redeem it with the returned `nonce` at
+        /auth/verify-email.
       responses:
-        "201":
-          description: Registered
+        "202":
+          description: Verification code sent (if appropriate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerificationRequired"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/verify-email:
+    post:
+      operationId: verifyEmail
+      tags: [auth]
+      summary: Redeem an emailed verification code and sign in
+      description: >-
+        Requires the `nonce` from the register / login / resend response that
+        requested the code plus the 6-digit `code` from the email. Codes expire
+        after 30 minutes and die after 5 wrong attempts. On success the email
+        is verified, the free trial starts if eligible, and a session is issued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyEmailInput"
+      responses:
+        "200":
+          description: Verified and signed in
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid or expired code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many attempts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /auth/resend-verification:
+    post:
+      operationId: resendVerification
+      tags: [auth]
+      summary: Email a new verification code
+      description: >-
+        Always 200 with a nonce (a dummy one when there's nothing to resend).
+        Store the returned nonce — it replaces the previous one. Sends are
+        throttled per account (min 60 s apart, max 5 per hour).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResendVerificationInput"
+      responses:
+        "200":
+          description: New code sent (if appropriate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResendVerificationResult"
 
   /auth/login:
     post:
@@ -94,6 +165,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "403":
+          description: >-
+            Correct password but the email address isn't verified yet. A code
+            was emailed (subject to throttling); continue at /auth/verify-email
+            with the returned nonce.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailNotVerified"
         "429":
           description: >-
             Too many sign-in attempts (per-IP limit, or the account is
@@ -1272,6 +1352,57 @@ components:
         referralCode:
           type: ["string", "null"]
 
+    VerificationRequired:
+      type: object
+      required: [status, nonce, email]
+      properties:
+        status:
+          type: string
+          enum: [verification_required]
+        nonce:
+          type: string
+          description: Binds the emailed code to this client. Never emailed.
+        email:
+          type: string
+
+    VerifyEmailInput:
+      type: object
+      required: [nonce, code]
+      properties:
+        nonce:
+          type: string
+        code:
+          type: string
+          description: The 6-digit code from the email.
+
+    ResendVerificationInput:
+      type: object
+      required: [nonce]
+      properties:
+        nonce:
+          type: string
+
+    ResendVerificationResult:
+      type: object
+      required: [nonce]
+      properties:
+        nonce:
+          type: string
+
+    EmailNotVerified:
+      type: object
+      required: [code, nonce, email, message]
+      properties:
+        code:
+          type: string
+          enum: [email_not_verified]
+        nonce:
+          type: string
+        email:
+          type: string
+        message:
+          type: string
+
     LoginInput:
       type: object
       required: [email, password]
@@ -1540,27 +1671,41 @@ components:
     CloudConnectionInput:
       type: object
       required: [type, name]
+      description: >-
+        Manual (self-hosted) connection. OAuth providers (Google Drive,
+        OneDrive, Dropbox) are connected only through the OAuth flow
+        (/oauth/initiate → callback → /oauth/complete) and are rejected here.
+        Strings are trimmed; name, host, username and uploadPath must not
+        contain control characters, and host must not embed credentials
+        (user:pass@host).
       properties:
         type:
           type: string
-          enum: [ftp, webdav, nextcloud, onedrive, googledrive, dropbox]
+          enum: [ftp, webdav, nextcloud]
         provider:
           type: ["string", "null"]
+          maxLength: 50
           description: Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
         name:
           type: string
+          minLength: 1
+          maxLength: 100
         host:
           type: ["string", "null"]
+          maxLength: 500
         port:
           type: ["integer", "null"]
+          minimum: 1
+          maximum: 65535
         username:
           type: ["string", "null"]
+          maxLength: 200
         password:
           type: ["string", "null"]
+          maxLength: 500
         uploadPath:
           type: ["string", "null"]
-        oauthCode:
-          type: ["string", "null"]
+          maxLength: 500
 
     CloudConnectionUpdate:
       type: object
@@ -1575,22 +1720,28 @@ components:
         name:
           type: string
           minLength: 1
+          maxLength: 100
         active:
           type: boolean
         uploadPath:
           type: ["string", "null"]
+          maxLength: 500
           description: Folder path; ".." segments are rejected.
         host:
           type: string
           minLength: 1
+          maxLength: 500
+          description: Must not embed credentials (user:pass@host).
         port:
           type: ["integer", "null"]
+          minimum: 1
+          maximum: 65535
         username:
           type: ["string", "null"]
+          maxLength: 200
         password:
           type: ["string", "null"]
-        oauthCode:
-          type: string
+          maxLength: 500
 
     TestResult:
       type: object

@@ -7,24 +7,46 @@
  */
 import type { CloudConnectionInputType } from "./cloudConnectionInputType";
 
+/**
+ * Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (/oauth/initiate → callback → /oauth/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).
+ */
 export interface CloudConnectionInput {
   type: CloudConnectionInputType;
   /**
    * Optional UI sub-flavour hint (e.g. "synology"); upload logic uses `type`.
+   * @maxLength 50
    * @nullable
    */
   provider?: string | null;
+  /**
+   * @minLength 1
+   * @maxLength 100
+   */
   name: string;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   host?: string | null;
-  /** @nullable */
+  /**
+   * @minimum 1
+   * @maximum 65535
+   * @nullable
+   */
   port?: number | null;
-  /** @nullable */
+  /**
+   * @maxLength 200
+   * @nullable
+   */
   username?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   password?: string | null;
-  /** @nullable */
+  /**
+   * @maxLength 500
+   * @nullable
+   */
   uploadPath?: string | null;
-  /** @nullable */
-  oauthCode?: string | null;
 }

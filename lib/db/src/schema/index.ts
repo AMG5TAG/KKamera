@@ -6,3 +6,4 @@ export * from "./uploads";
 export * from "./feedback";
 export * from "./passwordResetTokens";
 export * from "./trialHistory";
+export * from "./emailVerifications";

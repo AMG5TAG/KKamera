@@ -1,16 +1,30 @@
 import { Router } from "express";
-import { createHash, randomBytes } from "crypto";
+import { randomBytes } from "crypto";
 import bcryptjs from "bcryptjs";
 import { z } from "zod";
 import { authenticator } from "@otplib/preset-default";
 import QRCode from "qrcode";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
-import { usersTable, subscriptionsTable, referralsTable, trialHistoryTable, passwordResetTokensTable } from "@workspace/db";
-import { eq, and, isNull, inArray, sql } from "drizzle-orm";
+import {
+  usersTable, subscriptionsTable, referralsTable, passwordResetTokensTable, emailVerificationsTable,
+} from "@workspace/db";
+import { eq, and, isNull, isNotNull, or, lt, sql } from "drizzle-orm";
 import { requireAuth, issueSessionToken } from "../middlewares/auth.js";
 import { sendEmail, welcomeEmail } from "../lib/email.js";
-import { emailTrialHashes } from "../lib/emailHash.js";
+import {
+  generateVerificationNonce, hashVerificationNonce, isVerificationRedeemable, verificationCodeMatches,
+  NOTICE_CODE_MARKER, INVALID_CODE_MESSAGE,
+} from "../lib/emailVerification.js";
+import {
+  grantTrialIfEligible, invalidateUnusedVerifications, issueVerificationCode, sendAccountExistsNotice,
+  maybeSweepStaleVerifications,
+} from "../lib/emailVerificationStore.js";
+import { encrypt, decrypt } from "../lib/crypto.js";
+import { logger } from "../lib/logger.js";
+import {
+  matchTotpStep, openTotpSecret, generateBackupCodes, hashBackupCode, spendBackupCode,
+} from "../lib/twoFactor.js";
 import {
   newPasswordSchema, normalizedEmailSchema, normalizeReferralCode,
   isLoginLocked, loginLockDurationMs, LOGIN_LOCKED_MESSAGE,
@@ -42,8 +56,28 @@ const registerLimiter = rateLimit({
   message: { message: "Too many registration attempts. Please try again in an hour." },
 });
 
-// TOTP codes and backup codes are low-entropy enough to brute-force without a
-// limiter (a backup code is 32 bits). These routes are authenticated, so bound
+// Email verification codes are 6 digits; each code dies after 5 wrong tries
+// and at most 5 codes/hour are sent per account, so this per-IP bound is a
+// second layer against spraying guesses across many pending sign-ups.
+const verifyEmailLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many attempts. Please try again in 15 minutes." },
+});
+
+// Sends email — bound per IP (the per-account send throttle bounds per victim).
+const resendVerificationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests. Please try again later." },
+});
+
+// TOTP codes (and legacy 32-bit backup codes) are low-entropy enough to
+// brute-force without a limiter. These routes are authenticated, so bound
 // per authenticated session/IP.
 const twoFactorLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -94,6 +128,16 @@ const loginSchema = z.object({
   totpCode: z.string().nullish(),
 });
 
+// Nonces are 43 base64url chars; bound lengths so junk input is cheap to reject.
+const verifyEmailSchema = z.object({
+  nonce: z.string().min(1).max(128),
+  code: z.string().min(1).max(20),
+});
+
+const resendVerificationSchema = z.object({
+  nonce: z.string().min(1).max(128),
+});
+
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, "Current password is required"),
   newPassword: newPasswordSchema,
@@ -123,10 +167,6 @@ function generateReferralCode(name: string): string {
   return `${clean}${rand}`;
 }
 
-function hashBackupCode(code: string): string {
-  return createHash("sha256").update(code).digest("hex");
-}
-
 // A precomputed bcrypt hash (of a random string) used to spend roughly the same
 // time on the "user not found" path as on a real comparison, so response timing
 // doesn't reveal whether an email is registered.
@@ -135,10 +175,10 @@ const DUMMY_BCRYPT_HASH = "$2b$12$.mHbRuuNFGfnrol8lmQ/sOUly9knVchhRMliScqUwz8h5l
 /**
  * Consume a single-use backup code atomically: re-read the codes under a row
  * lock inside a transaction so two concurrent requests can't both spend the same
- * code (or one resurrect an already-spent code).
+ * code (or one resurrect an already-spent code). Accepts new-format (HMAC'd)
+ * and legacy 8-hex (SHA-256) codes — see lib/twoFactor.ts.
  */
 async function consumeBackupCode(userId: number, code: string): Promise<boolean> {
-  const inputHash = hashBackupCode(code.replace(/\s/g, "").toUpperCase());
   return db.transaction(async (tx) => {
     const [locked] = await tx
       .select({ codes: usersTable.twoFABackupCodes })
@@ -147,21 +187,53 @@ async function consumeBackupCode(userId: number, code: string): Promise<boolean>
       .for("update")
       .limit(1);
     const codes: string[] = locked?.codes ? JSON.parse(locked.codes) : [];
-    const idx = codes.indexOf(inputHash);
-    if (idx === -1) return false;
-    codes.splice(idx, 1);
+    const remaining = spendBackupCode(codes, code);
+    if (!remaining) return false;
     await tx.update(usersTable)
-      .set({ twoFABackupCodes: JSON.stringify(codes) })
+      .set({ twoFABackupCodes: JSON.stringify(remaining) })
       .where(eq(usersTable.id, userId));
     return true;
   });
 }
 
+type TwoFactorUser = { id: number; twoFASecret: string | null };
+
+/**
+ * Verify a TOTP code and claim its time step, so each code works once. The claim
+ * is one atomic UPDATE ... WHERE totp_last_step IS NULL OR totp_last_step < step,
+ * so concurrent requests can't both spend the same code. A legacy plaintext
+ * secret is re-encrypted on the first successful verification.
+ */
+async function verifyTotp(user: TwoFactorUser, code: string): Promise<boolean> {
+  const opened = openTotpSecret(user.twoFASecret, decrypt);
+  if (!opened) {
+    // Never log the stored value — only that it's unusable.
+    if (user.twoFASecret) logger.error({ userId: user.id }, "Stored 2FA secret could not be decrypted");
+    return false;
+  }
+  const step = matchTotpStep(code.trim(), opened.secret, Date.now());
+  if (step === null) return false;
+  const [claimed] = await db.update(usersTable)
+    .set({ totpLastStep: step })
+    .where(and(
+      eq(usersTable.id, user.id),
+      or(isNull(usersTable.totpLastStep), lt(usersTable.totpLastStep, step)),
+    ))
+    .returning({ id: usersTable.id });
+  if (!claimed) return false; // replay of an already-accepted step
+  if (opened.legacyPlaintext && user.twoFASecret) {
+    // Only if the row still holds the same plaintext (no concurrent setup/disable).
+    await db.update(usersTable)
+      .set({ twoFASecret: encrypt(opened.secret) })
+      .where(and(eq(usersTable.id, user.id), eq(usersTable.twoFASecret, user.twoFASecret)));
+  }
+  return true;
+}
+
 /** Verify a TOTP code, falling back to (and consuming) a backup code — as login does. */
-async function verifySecondFactor(user: { id: number; twoFASecret: string }, code: string): Promise<boolean> {
-  const trimmed = code.trim();
-  if (authenticator.verify({ token: trimmed, secret: user.twoFASecret })) return true;
-  return consumeBackupCode(user.id, trimmed);
+async function verifySecondFactor(user: TwoFactorUser, code: string): Promise<boolean> {
+  if (await verifyTotp(user, code)) return true;
+  return consumeBackupCode(user.id, code);
 }
 
 /** Session token carrying the user's current token_version (see requireAuth). */
@@ -190,7 +262,7 @@ export async function verifyReauth(
     if (!code?.trim()) {
       return { ok: false, status: 400, message: "Enter the code from your authenticator app, or a backup code." };
     }
-    if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, code))) {
+    if (!(await verifySecondFactor(user, code))) {
       return { ok: false, status: 403, message: "Invalid 2FA code." };
     }
   }
@@ -215,10 +287,6 @@ async function recordLoginFailure(userId: number): Promise<boolean> {
   return true;
 }
 
-function generateBackupCodes(): string[] {
-  return Array.from({ length: 8 }, () => randomBytes(4).toString("hex").toUpperCase());
-}
-
 function formatUser(user: typeof usersTable.$inferSelect) {
   return {
     id: user.id,
@@ -232,6 +300,19 @@ function formatUser(user: typeof usersTable.$inferSelect) {
 }
 
 // ─── Register ─────────────────────────────────────────────────────────────────
+// Registration never signs anyone in: the account (or, for an address that's
+// already registered but unverified, this registration's credentials) only
+// takes effect once the 6-digit code emailed to the address is entered with the
+// nonce returned here (POST /auth/verify-email). The response is the same 202
+// shape whether the address is new, pending or already verified, so it can't be
+// used to discover which emails have accounts.
+
+type RegisteredUser = typeof usersTable.$inferSelect;
+
+function isEmailUniqueViolation(err: unknown): boolean {
+  const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
+  return pgErr?.code === "23505" && String(pgErr.constraint ?? "").includes("email");
+}
 
 router.post("/auth/register", registerLimiter, async (req, res) => {
   try {
@@ -241,82 +322,189 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
       return;
     }
     const { email, password, name, referralCode } = parsed.data;
+    maybeSweepStaleVerifications();
 
-    const existing = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    if (existing.length > 0) {
-      res.status(400).json({ message: "Email already registered" });
-      return;
-    }
-
+    // Hash up front on every path so response timing doesn't depend on
+    // whether the address is registered.
     const passwordHash = await bcryptjs.hash(password, 12);
-    const myReferralCode = generateReferralCode(name);
 
-    let referrerId: number | undefined;
-    const normalizedReferral = normalizeReferralCode(referralCode);
-    if (normalizedReferral) {
-      const referrer = await db.select({ id: usersTable.id }).from(usersTable)
-        .where(sql`upper(${usersTable.referralCode}) = ${normalizedReferral}`).limit(1);
-      if (referrer.length > 0) referrerId = referrer[0]!.id;
+    let [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+
+    if (!existing) {
+      let referrerId: number | undefined;
+      const normalizedReferral = normalizeReferralCode(referralCode);
+      if (normalizedReferral) {
+        // Only verified accounts can refer (an unverified account can't sign in
+        // to see its code, and may be swept after 30 days).
+        const referrer = await db.select({ id: usersTable.id }).from(usersTable)
+          .where(and(
+            sql`upper(${usersTable.referralCode}) = ${normalizedReferral}`,
+            isNotNull(usersTable.emailVerifiedAt),
+          )).limit(1);
+        if (referrer.length > 0) referrerId = referrer[0]!.id;
+      }
+
+      try {
+        // One transaction: a failure part-way must never leave a user without a
+        // subscription row. No trial yet — it starts when the email is verified
+        // (grantTrialIfEligible), so unverified addresses can't burn or farm one.
+        const created = await db.transaction(async (tx) => {
+          const [row] = await tx.insert(usersTable).values({
+            email, passwordHash, name, referralCode: generateReferralCode(name),
+            referrerId: referrerId ?? null, twoFAEnabled: false, emailVerifiedAt: null,
+          }).returning();
+          if (!row) throw new Error("User insert returned no row");
+          await tx.insert(subscriptionsTable).values({ userId: row.id, status: "none" });
+          if (referrerId) {
+            // Referral is "pending" until the referred user subscribes (completed via webhook)
+            await tx.insert(referralsTable).values({
+              referrerId, referredId: row.id, referredName: name, status: "pending",
+            });
+          }
+          return row;
+        });
+        const { nonce } = await issueVerificationCode({ user: created, passwordHash, name });
+        res.status(202).json({ status: "verification_required", nonce, email });
+        return;
+      } catch (err) {
+        // Unique-violation race: another request registered this email between
+        // our existence check and the insert — continue as "already exists".
+        if (!isEmailUniqueViolation(err)) throw err;
+        [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
+        if (!existing) throw err;
+      }
     }
 
-    // Grant the 14-day trial only if this email has never had one. The
-    // trial_history row (keyed by an HMAC of the email) outlives account deletion,
-    // so deleting and re-registering the same address can't farm fresh trials.
-    // Both the legacy key and the alias-normalised one (+tags / Gmail dots) are
-    // checked and recorded, so old rows and "+trial2" aliases keep matching.
-    const emailHashes = emailTrialHashes(email);
-
-    // One transaction: a failure part-way must never leave a user without a
-    // subscription row (or a trial recorded for a user that doesn't exist).
-    const user = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(usersTable).values({
-        email, passwordHash, name, referralCode: myReferralCode,
-        referrerId: referrerId ?? null, twoFAEnabled: false,
-      }).returning();
-      if (!created) throw new Error("User insert returned no row");
-
-      const [priorTrial] = await tx.select({ id: trialHistoryTable.id })
-        .from(trialHistoryTable).where(inArray(trialHistoryTable.emailHash, emailHashes)).limit(1);
-
-      if (priorTrial) {
-        await tx.insert(subscriptionsTable).values({ userId: created.id, status: "none" });
-      } else {
-        const trialEnd = new Date();
-        trialEnd.setDate(trialEnd.getDate() + 14);
-        await tx.insert(subscriptionsTable).values({
-          userId: created.id, status: "trial", trialStart: new Date(), trialEnd,
-        });
-        await tx.insert(trialHistoryTable)
-          .values(emailHashes.map((emailHash) => ({ emailHash })))
-          .onConflictDoNothing();
-      }
-
-      if (referrerId) {
-        // Referral is "pending" until the referred user subscribes (completed via webhook)
-        await tx.insert(referralsTable).values({
-          referrerId, referredId: created.id, referredName: name, status: "pending",
-        });
-      }
-      return created;
-    });
-
-    const token = issueToken(user);
-
-    // Fire and forget — never block the response
-    const welcome = welcomeEmail(name);
-    sendEmail({ to: email, ...welcome }).catch(() => {});
-
-    res.status(201).json({ token, user: formatUser(user) });
+    const nonce = await registerExistingAddress(existing, passwordHash, name);
+    res.status(202).json({ status: "verification_required", nonce, email });
   } catch (err) {
-    // Unique-violation race: another request registered this email between our
-    // existence check and the insert.
-    const pgErr = ((err as { cause?: unknown })?.cause ?? err) as { code?: string; constraint?: string };
-    if (pgErr?.code === "23505" && String(pgErr.constraint ?? "").includes("email")) {
-      res.status(400).json({ message: "Email already registered" });
-      return;
-    }
     req.log.error({ err }, "Register error");
     res.status(500).json({ message: "Registration failed" });
+  }
+});
+
+/**
+ * Registration for an address that already has an account. Unverified: the
+ * account row is left untouched and a new code is issued carrying THIS
+ * registration's password/name — whoever can read the inbox and holds the
+ * nonce decides which credentials the account ends up with. Verified: nothing
+ * that grants access is created; the owner gets a (throttled) heads-up email
+ * and the caller a dummy nonce that verifies like a wrong code.
+ */
+async function registerExistingAddress(existing: RegisteredUser, passwordHash: string, name: string): Promise<string> {
+  if (!existing.emailVerifiedAt) {
+    const { nonce } = await issueVerificationCode({ user: existing, passwordHash, name });
+    return nonce;
+  }
+  const dummyNonce = generateVerificationNonce();
+  await sendAccountExistsNotice(existing, dummyNonce);
+  return dummyNonce;
+}
+
+// ─── Verify email ─────────────────────────────────────────────────────────────
+// Redeems a code for the row bound to `nonce`. Any failure is the same generic
+// 400 — including an unknown nonce — so it reveals nothing about the address.
+// On success the account is verified (applying the credentials the verified
+// registration carried), the free trial starts if eligible, and the caller is
+// signed in.
+
+router.post("/auth/verify-email", verifyEmailLimiter, async (req, res) => {
+  try {
+    const parsed = verifyEmailSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: INVALID_CODE_MESSAGE });
+      return;
+    }
+    const { nonce, code } = parsed.data;
+    const nonceHash = hashVerificationNonce(nonce);
+    maybeSweepStaleVerifications();
+
+    const result = await db.transaction(async (tx) => {
+      const now = new Date();
+      // Row lock: concurrent guesses against one code serialise, so the attempt
+      // counter can't be raced past the limit and a code is redeemed only once.
+      const [row] = await tx.select().from(emailVerificationsTable)
+        .where(eq(emailVerificationsTable.nonceHash, nonceHash)).for("update").limit(1);
+      if (!row || !isVerificationRedeemable(row, now)) return null;
+
+      if (!verificationCodeMatches(row.codeHash, nonceHash, code)) {
+        await tx.update(emailVerificationsTable)
+          .set({ attempts: sql`${emailVerificationsTable.attempts} + 1` })
+          .where(eq(emailVerificationsTable.id, row.id));
+        return null;
+      }
+
+      const [user] = await tx.select().from(usersTable)
+        .where(eq(usersTable.id, row.userId)).for("update").limit(1);
+      // Codes are only issued to unverified accounts, and verifying (or a
+      // password reset) voids the rest — a still-open row on a verified account
+      // must never be able to overwrite its password.
+      if (!user || user.emailVerifiedAt) return null;
+
+      await tx.update(emailVerificationsTable).set({ usedAt: now }).where(eq(emailVerificationsTable.id, row.id));
+      await invalidateUnusedVerifications(tx, user.id, now);
+
+      const [updated] = await tx.update(usersTable)
+        .set({
+          emailVerifiedAt: now,
+          failedLoginCount: 0,
+          loginLockedUntil: null,
+          ...(row.name ? { name: row.name } : {}),
+          // The registration being verified sets the password; revoke anything
+          // issued before (there shouldn't be sessions for an unverified account).
+          ...(row.passwordHash
+            ? { passwordHash: row.passwordHash, passwordChangedAt: now, tokenVersion: sql`${usersTable.tokenVersion} + 1` }
+            : {}),
+        })
+        .where(eq(usersTable.id, user.id))
+        .returning();
+      if (!updated) return null;
+      const trialGranted = await grantTrialIfEligible(tx, updated);
+      return { user: updated, trialGranted };
+    });
+
+    if (!result) {
+      res.status(400).json({ message: INVALID_CODE_MESSAGE });
+      return;
+    }
+
+    const welcome = welcomeEmail(result.user.name, result.trialGranted);
+    sendEmail({ to: result.user.email, ...welcome }).catch(() => {});
+
+    res.json({ token: issueToken(result.user), user: formatUser(result.user) });
+  } catch (err) {
+    req.log.error({ err }, "Verify email error");
+    res.status(500).json({ message: "Verification failed" });
+  }
+});
+
+// ─── Resend verification code ─────────────────────────────────────────────────
+// Issues a new code for the account behind `nonce` (expired or superseded rows
+// are fine — that's the point) carrying the same pending credentials, subject
+// to the per-account send throttle. Always 200 with a nonce: a dummy one when
+// there's nothing to resend.
+
+router.post("/auth/resend-verification", resendVerificationLimiter, async (req, res) => {
+  try {
+    const parsed = resendVerificationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      return;
+    }
+    const [row] = await db.select().from(emailVerificationsTable)
+      .where(eq(emailVerificationsTable.nonceHash, hashVerificationNonce(parsed.data.nonce))).limit(1);
+    if (row && row.codeHash !== NOTICE_CODE_MARKER) {
+      const [user] = await db.select().from(usersTable).where(eq(usersTable.id, row.userId)).limit(1);
+      if (user && !user.emailVerifiedAt) {
+        const { nonce } = await issueVerificationCode({ user, passwordHash: row.passwordHash, name: row.name });
+        res.json({ nonce });
+        return;
+      }
+    }
+    res.json({ nonce: generateVerificationNonce() });
+  } catch (err) {
+    req.log.error({ err }, "Resend verification error");
+    res.status(500).json({ message: "Failed to resend code" });
   }
 });
 
@@ -358,11 +546,26 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
       return;
     }
 
+    // Correct password but the address was never proven: no session. Email a
+    // code (throttled) bound to a nonce only this client gets. 403, not 401 —
+    // the client isn't signed in, and 401 means "session revoked" to the app.
+    // Failure counters are left alone; verifying resets them.
+    if (!user.emailVerifiedAt) {
+      const { nonce } = await issueVerificationCode({ user });
+      res.status(403).json({
+        code: "email_not_verified",
+        nonce,
+        email: user.email,
+        message: "Verify your email to continue. We've sent you a code.",
+      });
+      return;
+    }
+
     if (user.twoFAEnabled && user.twoFASecret) {
       if (!totpCode) { res.status(200).json({ requires2FA: true }); return; }
 
       // Try TOTP first, then (single-use) backup codes
-      if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, totpCode))) {
+      if (!(await verifySecondFactor(user, totpCode))) {
         if (await recordLoginFailure(user.id)) {
           res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
           return;
@@ -436,7 +639,7 @@ router.post("/auth/change-password", requireAuth, changePasswordLimiter, async (
         res.status(400).json({ message: "Enter the code from your authenticator app, or a backup code." });
         return;
       }
-      if (!(await verifySecondFactor({ id: user.id, twoFASecret: user.twoFASecret }, totpCode))) {
+      if (!(await verifySecondFactor(user, totpCode))) {
         res.status(400).json({ message: "Invalid 2FA code" });
         return;
       }
@@ -504,9 +707,12 @@ router.post("/auth/2fa/setup", requireAuth, reauthLimiter, async (req, res) => {
     const backupCodesPlain = generateBackupCodes();
     const backupCodesHashed = backupCodesPlain.map(hashBackupCode);
 
+    // The secret is stored encrypted (crypto.ts); a fresh secret starts a fresh
+    // replay window.
     await db.update(usersTable).set({
-      twoFASecret: secret,
+      twoFASecret: encrypt(secret),
       twoFABackupCodes: JSON.stringify(backupCodesHashed),
+      totpLastStep: null,
     }).where(eq(usersTable.id, req.userId!));
 
     const otpauth = authenticator.keyuri(user.email, "KKamera", secret);
@@ -536,8 +742,7 @@ router.post("/auth/2fa/verify", twoFactorLimiter, requireAuth, async (req, res) 
     // Password only — 2FA isn't enabled yet, so verifyReauth skips the code.
     const reauth = await verifyReauth(user, parsed.data.password, null);
     if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
-    const isValid = authenticator.verify({ token: parsed.data.code, secret: user.twoFASecret });
-    if (!isValid) { res.status(400).json({ message: "Invalid code" }); return; }
+    if (!(await verifyTotp(user, parsed.data.code))) { res.status(400).json({ message: "Invalid code" }); return; }
     const [updated] = await db.update(usersTable)
       .set({ twoFAEnabled: true, tokenVersion: sql`${usersTable.tokenVersion} + 1` })
       .where(eq(usersTable.id, req.userId!))
@@ -570,6 +775,7 @@ router.post("/auth/2fa/disable", twoFactorLimiter, requireAuth, async (req, res)
       twoFAEnabled: false,
       twoFASecret: null,
       twoFABackupCodes: null,
+      totpLastStep: null,
       tokenVersion: sql`${usersTable.tokenVersion} + 1`,
     }).where(eq(usersTable.id, req.userId!)).returning();
     if (!updated) { res.status(404).json({ message: "User not found" }); return; }

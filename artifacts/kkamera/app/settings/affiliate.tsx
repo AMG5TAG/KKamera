@@ -30,7 +30,7 @@ function referralStatusLabel(status: string): string {
 export default function AffiliateScreen() {
   const insets = useSafeAreaInsets();
   const { data: stats, isLoading: statsLoading } = useGetAffiliateStats();
-  const { data: referrals, isLoading: refLoading } = useGetReferrals();
+  const { data: referrals } = useGetReferrals();
 
   const progress = (stats?.completedReferrals ?? 0) % 5;
   const nextMilestone = 5;

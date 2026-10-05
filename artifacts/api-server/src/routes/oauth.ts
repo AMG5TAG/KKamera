@@ -97,21 +97,27 @@ interface OAuthState {
   nonceHash: string;
 }
 
+const OAUTH_STATE_TYP = "oauth-state";
+const OAUTH_STATE_AUDIENCE = "kkamera-oauth-state";
+
 function signState(s: OAuthState): string {
   return jwt.sign(
     // The PKCE verifier is the one secret in the state. The state travels as a
     // query param through the OAuth provider and redirect URLs (logs, Referer),
     // so we encrypt the verifier — only our server can recover it, keeping PKCE's
     // proof-of-possession actually secret rather than readable in the JWT body.
-    { sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: encrypt(s.verifier), nh: s.nonceHash },
+    // `typ` + a state-only audience keep this token and a session JWT (same
+    // secret, aud "kkamera-session") from ever verifying as each other.
+    { typ: OAUTH_STATE_TYP, sub: String(s.userId), p: s.provider, n: s.name, pf: s.platform, up: s.uploadPath, v: encrypt(s.verifier), nh: s.nonceHash },
     JWT_SECRET,
-    { expiresIn: "10m" }
+    { algorithm: "HS256", audience: OAUTH_STATE_AUDIENCE, expiresIn: "10m" }
   );
 }
 
 function verifyState(state: string): OAuthState | null {
   try {
-    const d = jwt.verify(state, JWT_SECRET, { algorithms: ["HS256"] }) as Record<string, string>;
+    const d = jwt.verify(state, JWT_SECRET, { algorithms: ["HS256"], audience: OAUTH_STATE_AUDIENCE }) as Record<string, string>;
+    if (d["typ"] !== OAUTH_STATE_TYP) return null;
     return {
       userId: Number(d["sub"]),
       provider: d["p"] ?? "",

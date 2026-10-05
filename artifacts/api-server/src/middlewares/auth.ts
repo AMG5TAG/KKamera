@@ -56,11 +56,20 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     // Reject tokens issued before the user's last password change so that a
     // password reset invalidates all previously-issued sessions.
     const [user] = await db
-      .select({ passwordChangedAt: usersTable.passwordChangedAt, tokenVersion: usersTable.tokenVersion })
+      .select({
+        passwordChangedAt: usersTable.passwordChangedAt,
+        tokenVersion: usersTable.tokenVersion,
+        emailVerifiedAt: usersTable.emailVerifiedAt,
+      })
       .from(usersTable)
       .where(eq(usersTable.id, payload.userId))
       .limit(1);
     if (!user) {
+      res.status(401).json({ message: "Invalid token" });
+      return;
+    }
+    // Defensive: sessions are only issued once the email is verified.
+    if (!user.emailVerifiedAt) {
       res.status(401).json({ message: "Invalid token" });
       return;
     }

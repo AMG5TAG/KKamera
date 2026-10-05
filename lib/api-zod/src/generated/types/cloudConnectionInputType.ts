@@ -13,7 +13,4 @@ export const CloudConnectionInputType = {
   ftp: "ftp",
   webdav: "webdav",
   nextcloud: "nextcloud",
-  onedrive: "onedrive",
-  googledrive: "googledrive",
-  dropbox: "dropbox",
 } as const;
