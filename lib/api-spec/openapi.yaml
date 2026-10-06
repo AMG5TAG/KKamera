@@ -1046,6 +1046,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "422":
+          description: >
+            Every connection named in connectionIds has been removed or disabled while the
+            user still has other active connections (body code "targets_removed"). Not
+            retryable as-is; resend without the stale ids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
         "429":
           description: Too many uploads for this user (rate or in-flight limit); honour Retry-After
           headers:

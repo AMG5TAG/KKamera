@@ -7,7 +7,7 @@ import {
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import { runOnJS } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
@@ -25,6 +25,7 @@ import Svg, { Line, Rect, G } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
 import { resolveUploadTarget } from "@/lib/uploadTarget";
+import { MAX_RECORDING_BYTES } from "@/lib/config";
 import { useUploadTargetResolver } from "@/lib/useUploadTargetResolver";
 import {
   readCachedSubscription, writeCachedSubscription, subscriptionAllows, type SubscriptionSnapshot,
@@ -766,9 +767,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   }, []);
 
   const pinchGesture = Gesture.Pinch()
-    .onStart(() => { runOnJS(saveBaseZoom)(); })
-    .onUpdate((e) => { runOnJS(applyZoom)(e.scale); })
-    .onEnd(() => { runOnJS(saveBaseZoom)(); });
+    .onStart(() => { scheduleOnRN(saveBaseZoom); })
+    .onUpdate((e) => { scheduleOnRN(applyZoom, e.scale); })
+    .onEnd(() => { scheduleOnRN(saveBaseZoom); });
 
   const confirmUpload = useCallback((): Promise<boolean> => {
     if (!settings.promptBeforeUpload) return Promise.resolve(true);
@@ -1528,7 +1529,12 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     const maxDuration = settings.maxVideoDurationSeconds > 0 ? settings.maxVideoDurationSeconds : 600;
     const codec = await pickVideoCodec();
     if (!recordingRef.current || recordStopping.current) { endRecordingUi(); return; }
-    const recording = cameraRef.current?.recordAsync({ maxDuration, ...(codec ? { codec } : {}) });
+    const recording = cameraRef.current?.recordAsync({
+      maxDuration,
+      // Stop before the server's upload cap so the clip can actually upload.
+      maxFileSize: MAX_RECORDING_BYTES,
+      ...(codec ? { codec } : {}),
+    });
     if (!recording) { endRecordingUi(); return; }
     recording.then((video) => {
       endRecordingUi();
@@ -1924,6 +1930,23 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
           <Text style={styles.paywallBtnText}>
             {paywallPrice ? `View Subscription — ${paywallPrice}/year` : "View Subscription"}
           </Text>
+        </TouchableOpacity>
+        {/* Never a dead end: account, sign-out, clouds and queued captures stay reachable. */}
+        <TouchableOpacity
+          style={[styles.permSkip, { marginTop: 16 }]}
+          onPress={() => router.push("/history")}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+        >
+          <Text style={styles.permSkipText}>Upload history</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.permSkip}
+          onPress={() => router.push("/settings")}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+        >
+          <Text style={styles.permSkipText}>Settings & sign out</Text>
         </TouchableOpacity>
       </View>
     );
@@ -2621,7 +2644,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 3, borderRadius: 6,
   },
   countdownOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.25)",
   },
@@ -2705,7 +2728,7 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   modeGlassBg: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(14,11,8,0.62)",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "rgba(255,255,255,0.12)",

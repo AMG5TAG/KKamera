@@ -76,11 +76,14 @@ export default function OAuthSuccessScreen() {
     ]).start();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Return to settings once the outcome is known (errors stay up longer).
+  // Once the outcome is known (errors stay up longer), return to whatever
+  // opened the flow — Add Cloud, possibly inside the onboarding wizard — and
+  // only fall back to Cloud settings when the link cold-started the app.
   useEffect(() => {
     if (phase.kind === "completing") return;
     const timer = setTimeout(() => {
-      router.replace("/settings/cloud" as any);
+      if (router.canGoBack()) router.back();
+      else router.replace("/settings/cloud" as any);
     }, phase.kind === "failed" ? 6000 : 2500);
     return () => clearTimeout(timer);
   }, [phase.kind]);

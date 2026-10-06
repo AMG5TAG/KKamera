@@ -97,7 +97,20 @@ router.get("/users/upload-target", requireAuth, async (req, res) => {
       mode: usersTable.uploadTargetMode, ids: usersTable.uploadTargetIds,
     }).from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
     if (!user) { res.status(404).json({ message: "User not found" }); return; }
-    res.json({ mode: user.mode, connectionIds: parseTargetIds(user.ids) });
+    // Never hand back ids of connections that have since been removed.
+    const stored = parseTargetIds(user.ids);
+    let connectionIds = stored;
+    if (stored.length) {
+      const live = await db.select({ id: cloudConnectionsTable.id }).from(cloudConnectionsTable)
+        .where(and(
+          eq(cloudConnectionsTable.userId, req.userId!),
+          inArray(cloudConnectionsTable.id, stored),
+          isNull(cloudConnectionsTable.pendingNonceHash),
+        ));
+      const liveSet = new Set(live.map(c => c.id));
+      connectionIds = stored.filter(id => liveSet.has(id));
+    }
+    res.json({ mode: user.mode, connectionIds });
   } catch (err) {
     req.log.error({ err }, "Get upload target error");
     res.status(500).json({ message: "Failed to get upload target" });

@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import pinoHttp from "pino-http";
 import router from "./routes/index.js";
+import appLinksRouter from "./routes/appLinks.js";
 import { requireMigratedSchema } from "./routes/health.js";
 import { logger } from "./lib/logger.js";
 import { getPublicHost } from "./lib/appUrl.js";
@@ -85,6 +86,9 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 // answers 503 instead of running against a stale schema.
 app.use("/api", requireMigratedSchema);
 app.use("/api", router);
+
+// Browser landing pages for the app links in emails (password reset, invites).
+app.use(appLinksRouter);
 
 // Central error handler — catches CORS rejections, multer errors (e.g. a file
 // over the size cap), and any uncaught async throw. Never leak internal details

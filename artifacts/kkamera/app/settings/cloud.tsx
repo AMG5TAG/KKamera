@@ -6,7 +6,8 @@ import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListCloudConnections, useDeleteCloudConnection, useUpdateCloudConnection,
-  useTestCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage,
+  useTestCloudConnection, getListCloudConnectionsQueryKey, getGetUploadTargetQueryKey,
+  getUserFacingMessage,
 } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -45,15 +46,27 @@ export default function CloudScreen() {
       {
         text: "Remove", style: "destructive",
         onPress: async () => {
-          await deleteMutation.mutateAsync({ id });
+          try {
+            await deleteMutation.mutateAsync({ id });
+          } catch (e) {
+            Alert.alert("Error", getUserFacingMessage(e, "Could not remove connection"));
+            return;
+          }
           queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+          // The server drops the removed id from the upload target too.
+          queryClient.invalidateQueries({ queryKey: getGetUploadTargetQueryKey() });
         },
       },
     ]);
   };
 
   const handleToggleActive = async (id: number, active: boolean) => {
-    await updateMutation.mutateAsync({ id, data: { active: !active } });
+    try {
+      await updateMutation.mutateAsync({ id, data: { active: !active } });
+    } catch (e) {
+      Alert.alert("Error", getUserFacingMessage(e, "Could not update connection"));
+      return;
+    }
     queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
   };
 

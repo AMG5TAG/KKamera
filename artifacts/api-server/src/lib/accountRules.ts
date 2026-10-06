@@ -109,6 +109,17 @@ export function parseTargetIds(csv: string | null): number[] {
 }
 
 /**
+ * The stored target CSV with every id not in `keep` removed (e.g. a deleted
+ * connection), or null when none remain. A "selected" target left empty means
+ * "upload nowhere" — it never widens to all connections.
+ */
+export function retainTargetIds(csv: string | null, keep: Iterable<number>): string | null {
+  const keepSet = new Set(keep);
+  const ids = parseTargetIds(csv).filter(id => keepSet.has(id));
+  return ids.length ? ids.join(",") : null;
+}
+
+/**
  * Shape the user's personal-data export. Every field is copied explicitly so a
  * new secret column (tokens, hashes, TOTP secret, encrypted credentials) can
  * never leak into the export by accident.

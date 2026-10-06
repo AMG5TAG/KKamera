@@ -85,9 +85,13 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   return context.resolveRequest(context, moduleName, platform);
 };
 
-// Ensure caches are always fresh.
-config.resetCache = true;
-config.cacheStores = [];
-config.cacheVersion = "kkamera-" + Date.now();
+// On Replit, ensure caches are always fresh (pnpm hash churn there; see above).
+// Everywhere else — local Macs and EAS builds — keep Metro's cache: disabling
+// it makes every bundle a ~10-minute cold build.
+if (process.env.REPL_ID) {
+  config.resetCache = true;
+  config.cacheStores = [];
+  config.cacheVersion = "kkamera-" + Date.now();
+}
 
 module.exports = config;

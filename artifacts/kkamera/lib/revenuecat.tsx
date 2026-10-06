@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { getGetSubscriptionQueryKey, syncSubscription } from "@workspace/api-client-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUpload } from "@/contexts/UploadContext";
 
 const REVENUECAT_TEST_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_TEST_API_KEY;
 const REVENUECAT_IOS_API_KEY = process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY;
@@ -81,6 +82,7 @@ function useSubscriptionContext() {
   const enabled = _revenueCatReady || Platform.OS === "web";
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  const { retryQueued } = useUpload();
   // The user id RevenueCat is currently logged in as. Purchases are only allowed
   // once this matches the signed-in user, so a purchase can never be made on an
   // anonymous RevenueCat id the server can't map back to an account.
@@ -97,8 +99,11 @@ function useSubscriptionContext() {
       // Sync unavailable / rate-limited — the webhook will still catch up.
     } finally {
       await queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
+      // Captures parked on 402 only wake on foreground/network events; the wake
+      // when the store sheet closes usually beats this sync and gets 402 again.
+      retryQueued();
     }
-  }, [queryClient]);
+  }, [queryClient, retryQueued]);
 
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info", user?.id ?? null],

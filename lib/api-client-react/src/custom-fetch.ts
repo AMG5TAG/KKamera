@@ -266,8 +266,13 @@ export function getUserFacingMessage(
   error: unknown,
   fallback = "Something went wrong. Please try again.",
 ): string {
-  // fetch() rejects with a TypeError when the network is unreachable.
-  if (error instanceof TypeError) {
+  // fetch() rejects with a TypeError when the network is unreachable — except
+  // Expo's native fetch (installed as the global fetch on iOS/Android), which throws
+  // a FetchError whose message starts with "fetch failed".
+  if (
+    error instanceof TypeError ||
+    (error instanceof Error && error.message.startsWith("fetch failed"))
+  ) {
     return "Can't reach the server. Check your connection and try again.";
   }
 

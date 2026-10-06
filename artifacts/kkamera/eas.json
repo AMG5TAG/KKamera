@@ -7,18 +7,34 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "environment": "development"
+      "environment": "development",
+      "env": {
+        "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY": "test_EeMOwLvsDSdIXMlgAwslVdkDIIQ"
+      }
     },
     "preview": {
       "distribution": "internal",
       "environment": "preview",
       "ios": {
         "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_TFHVoaPvLiXpMTMLlCqVyhmTBfW",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_yaGBOKjGHSXhTULboFWQCyfsJnM"
       }
+    },
+    "alpha": {
+      "extends": "production",
+      "environment": "preview",
+      "channel": "alpha"
     },
     "production": {
       "environment": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_TFHVoaPvLiXpMTMLlCqVyhmTBfW",
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_yaGBOKjGHSXhTULboFWQCyfsJnM"
+      }
     }
   },
   "submit": {
@@ -32,6 +48,9 @@
         "serviceAccountKeyPath": "./play-service-account.json",
         "track": "internal"
       }
+    },
+    "alpha": {
+      "extends": "production"
     }
   }
 }

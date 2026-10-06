@@ -21,7 +21,7 @@ import { SettingsProvider, useSettings } from "@/contexts/SettingsContext";
 import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
 import { API_BASE_URL } from "@/lib/config";
 import LockScreen, { type LockSignOutReason } from "@/components/LockScreen";
-import { isAuthPromptActive, RELOCK_GRACE_MS } from "@/lib/appLock";
+import { clearPin, isAuthPromptActive, RELOCK_GRACE_MS } from "@/lib/appLock";
 
 if (API_BASE_URL) {
   setBaseUrl(API_BASE_URL);
@@ -64,8 +64,9 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
 
   // A successful password sign-in counts as an unlock. If the user was sent to
   // sign in because the lock had no usable credential (no PIN stored and no
-  // biometrics/passcode on the device), turn the lock off so they aren't trapped
-  // in a sign-in loop; they can set it up again in Privacy & Security.
+  // biometrics/passcode on the device) or because they forgot their PIN, turn
+  // the lock off (and drop the forgotten PIN) so they aren't locked out again on
+  // every cold start; they can set it up again in Privacy & Security.
   const disableLockOnNextLogin = useRef(false);
   const backgroundedAt = useRef<number | null>(null);
   useEffect(() => {
@@ -76,6 +77,7 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
       disableLockOnNextLogin.current = false;
       updateSetting("appLockEnabled", false);
       updateSetting("appLockType", "biometric");
+      clearPin().catch(() => {});
     }
   }, [lastLoginAt, updateSetting]);
 
@@ -141,7 +143,7 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
   const handleUnlock = useCallback(() => setLockedState(false), []);
 
   const handleSignOut = useCallback(async (reason: LockSignOutReason) => {
-    if (reason === "no-credential") disableLockOnNextLogin.current = true;
+    if (reason !== "user") disableLockOnNextLogin.current = true;
     await logout();
     // The routing guard above sends the user to the login screen.
     setLockedState(false);
@@ -184,7 +186,7 @@ function isPublicRoute(segments: string[]): boolean {
 
 const styles = StyleSheet.create({
   gateRoot: { flex: 1, backgroundColor: "#0d0b08" },
-  cover: { ...StyleSheet.absoluteFillObject, backgroundColor: "#0d0b08", zIndex: 1000, elevation: 1000 },
+  cover: { ...StyleSheet.absoluteFill, backgroundColor: "#0d0b08", zIndex: 1000, elevation: 1000 },
 });
 
 // ---------------------------------------------------------------------------
