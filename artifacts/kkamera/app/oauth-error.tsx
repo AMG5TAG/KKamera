@@ -29,7 +29,12 @@ export default function OAuthErrorScreen() {
       ]),
     ]).start();
 
-    const timer = setTimeout(() => router.replace("/settings/cloud" as any), 5000);
+    // Back to whatever opened the flow (see oauth-success); Cloud settings only
+    // when the link cold-started the app.
+    const timer = setTimeout(() => {
+      if (router.canGoBack()) router.back();
+      else router.replace("/settings/cloud" as any);
+    }, 5000);
     return () => clearTimeout(timer);
   }, []);
 

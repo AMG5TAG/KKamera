@@ -10,7 +10,6 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "app.kkamera",
-      "buildNumber": "1",
       "infoPlist": {
         "NSFaceIDUsageDescription": "KKamera uses Face ID to unlock the app and protect your cloud connections."
       },
@@ -20,10 +19,9 @@
     },
     "android": {
       "package": "app.kkamera",
-      "versionCode": 1,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/icon.png",
-        "backgroundColor": "#0d0b08"
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#b19870"
       },
       "permissions": [
         "android.permission.CAMERA",

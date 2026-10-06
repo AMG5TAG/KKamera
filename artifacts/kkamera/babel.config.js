@@ -1,6 +1,8 @@
 module.exports = function (api) {
   api.cache(true);
   return {
-    presets: [["babel-preset-expo", { unstable_transformImportMeta: true }]],
+    // import.meta is polyfilled by default (transformImportMeta); the worklets
+    // plugin is added automatically when react-native-worklets is installed.
+    presets: ["babel-preset-expo"],
   };
 };

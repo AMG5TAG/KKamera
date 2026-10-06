@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  TextInput, Platform, ActivityIndicator, BackHandler,
+  TextInput, Platform, ActivityIndicator, BackHandler, AppState, Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -53,8 +53,18 @@ export default function WizardScreen() {
   const [profileName, setProfileName] = useState(user?.name ?? "");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [micPermission, requestMicPermission] = useMicrophonePermissions();
+  const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
+  const [micPermission, requestMicPermission, getMicPermission] = useMicrophonePermissions();
+
+  // Coming back from the system Settings app: pick up any permission change.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      getCameraPermission().catch(() => {});
+      getMicPermission().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [getCameraPermission, getMicPermission]);
 
   const isLast = step === STEPS.length - 1;
 
@@ -201,6 +211,7 @@ export default function WizardScreen() {
               label="Camera"
               desc="Take photos and videos"
               granted={cameraGranted}
+              blocked={cameraPermission?.canAskAgain === false}
               onGrant={requestCameraPermission}
             />
             <PermRow
@@ -208,6 +219,7 @@ export default function WizardScreen() {
               label="Microphone"
               desc="Record audio with videos"
               granted={micGranted}
+              blocked={micPermission?.canAskAgain === false}
               onGrant={requestMicPermission}
             />
 
@@ -340,8 +352,11 @@ function InfoCard({ icon, text }: { icon: string; text: string }) {
   );
 }
 
-function PermRow({ icon, label, desc, granted, onGrant }: {
-  icon: string; label: string; desc: string; granted: boolean; onGrant: () => void;
+function PermRow({ icon, label, desc, granted, blocked, onGrant }: {
+  icon: string; label: string; desc: string; granted: boolean;
+  /** Denied permanently — the system won't show the prompt again. */
+  blocked: boolean;
+  onGrant: () => void;
 }) {
   return (
     <View style={styles.permRow}>
@@ -360,12 +375,14 @@ function PermRow({ icon, label, desc, granted, onGrant }: {
       ) : (
         <TouchableOpacity
           style={styles.permBtn}
-          onPress={onGrant}
+          onPress={blocked ? () => { Linking.openSettings().catch(() => {}); } : onGrant}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel={`Allow ${label.toLowerCase()} access`}
+          accessibilityLabel={blocked
+            ? `Open Settings to allow ${label.toLowerCase()} access`
+            : `Allow ${label.toLowerCase()} access`}
         >
-          <Text style={styles.permBtnText}>Allow</Text>
+          <Text style={styles.permBtnText}>{blocked ? "Settings" : "Allow"}</Text>
         </TouchableOpacity>
       )}
     </View>

@@ -7,7 +7,7 @@ import {
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import { runOnJS } from "react-native-reanimated";
+import { scheduleOnRN } from "react-native-worklets";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
@@ -767,9 +767,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   }, []);
 
   const pinchGesture = Gesture.Pinch()
-    .onStart(() => { runOnJS(saveBaseZoom)(); })
-    .onUpdate((e) => { runOnJS(applyZoom)(e.scale); })
-    .onEnd(() => { runOnJS(saveBaseZoom)(); });
+    .onStart(() => { scheduleOnRN(saveBaseZoom); })
+    .onUpdate((e) => { scheduleOnRN(applyZoom, e.scale); })
+    .onEnd(() => { scheduleOnRN(saveBaseZoom); });
 
   const confirmUpload = useCallback((): Promise<boolean> => {
     if (!settings.promptBeforeUpload) return Promise.resolve(true);

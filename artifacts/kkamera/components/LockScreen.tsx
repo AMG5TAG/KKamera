@@ -14,7 +14,8 @@ const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 
-export type LockSignOutReason = "user" | "no-credential";
+/** "forgot-pin": signed out from the PIN keypad — the next password sign-in resets the lock. */
+export type LockSignOutReason = "user" | "forgot-pin" | "no-credential";
 
 interface LockScreenProps {
   onUnlock: () => void;
@@ -140,14 +141,18 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
   const handlePinDelete = () => setPin(p => p.slice(0, -1));
 
   const confirmSignOut = () => {
+    const reason: LockSignOutReason = showKeypad ? "forgot-pin" : "user";
+    const message = showKeypad
+      ? "Sign out of KKamera? After you sign back in with your password, the app lock is turned off so you can set a new PIN in Privacy & Security."
+      : "Sign out of KKamera? You can sign back in with your password.";
     // Alert.alert is a no-op on react-native-web, so use the browser dialog there.
     if (Platform.OS === "web") {
-      if (window.confirm("Sign out of KKamera? You can sign back in with your password.")) onSignOut("user");
+      if (window.confirm(message)) onSignOut(reason);
       return;
     }
-    Alert.alert("Sign Out", "Sign out of KKamera? You can sign back in with your password.", [
+    Alert.alert("Sign Out", message, [
       { text: "Cancel", style: "cancel" },
-      { text: "Sign Out", style: "destructive", onPress: () => onSignOut("user") },
+      { text: "Sign Out", style: "destructive", onPress: () => onSignOut(reason) },
     ]);
   };
 

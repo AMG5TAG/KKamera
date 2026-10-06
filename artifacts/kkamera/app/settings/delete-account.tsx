@@ -75,7 +75,9 @@ export default function DeleteAccountScreen() {
     }
     if (!deleted) { setLoading(false); return; }
     try {
-      await discardQueue().catch(() => {});
+      // Only this account's captures — another account signed in on this
+      // device keeps its queued uploads.
+      await discardQueue("mine").catch(() => {});
       // The account is gone — don't let the next person on this device inherit
       // its app-lock PIN, witness email or other device settings.
       await clearPin().catch(() => {});

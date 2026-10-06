@@ -97,7 +97,7 @@ Replit still hosts production (API + Postgres) and its own dev workflow; the com
 - Google Fonts (via `@expo-google-fonts/inter`) may not load in Replit sandbox. Do not block rendering on font load.
 - `Platform.OS` can be used at module level safely in Expo Metro bundles.
 - API server uses path `/api` — all routes must start with `/api`.
-- **Pnpm + Metro stale hash**: `metro.config.js` keeps Metro's server root at the workspace root (do not force it to the app dir) and includes a resolver interceptor that rewrites stale pnpm-hashed paths to stable symlinks. The dev script also clears `/tmp/metro-file-map-*` on each start. Do not remove these guards. (The old `@expo/cli` serverRoot patch was dropped in the SDK 57 upgrade.)
+- **Pnpm + Metro stale hash**: `metro.config.js` keeps Metro's server root at the workspace root (do not force it to the app dir) and includes a resolver interceptor that rewrites stale pnpm-hashed paths to stable symlinks. The dev script also clears `/tmp/metro-file-map-*` on each start, and Metro's cache is disabled when `REPL_ID` is set (Replit only — local and EAS builds keep the cache, otherwise every bundle is a ~10-minute cold build). Do not remove these guards. (The old `@expo/cli` serverRoot patch was dropped in the SDK 57 upgrade.)
 - **Expo SDK 57 + iOS 27**: Xcode 27 builds require the UIScene lifecycle; it's enabled with `expo-build-properties` `ios.enableSceneSupport` in `app.json`. `plugins/withPodsDeploymentTarget.js` raises old pods' deployment targets so Xcode 27 accepts them. Keep `expo`, `react` and `react-native` in `dependencies` (not dev) or `expo prebuild` rewrites package.json.
 
 ## Pointers

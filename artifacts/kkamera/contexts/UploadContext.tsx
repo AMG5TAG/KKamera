@@ -74,8 +74,8 @@ interface UploadContextValue {
   retryItem: (id: string) => void;
   /** Drop one queued capture and delete its local copy. */
   discardItem: (id: string) => Promise<void>;
-  /** Drop every queued capture and delete its local copy (panic wipe, account deletion). */
-  discardQueue: () => Promise<void>;
+  /** Drop queued captures and delete their local copies: every account's ("all", panic wipe) or only the signed-in account's ("mine", account deletion). */
+  discardQueue: (scope?: "all" | "mine") => Promise<void>;
   /** True while any of the signed-in account's captures is parked on a 402 (subscription required). */
   subscriptionBlocked: boolean;
 }
@@ -804,10 +804,14 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     if (item) await deleteItemFiles(item);
   }, [syncQueue]);
 
-  const discardQueue = useCallback(async () => {
+  const discardQueue = useCallback(async (scope: "all" | "mine" = "all") => {
     clearTimer();
     queueGeneration += 1;
-    const items = offlineQueue.splice(0, offlineQueue.length);
+    const owner = userIdRef.current;
+    const items: QueuedItem[] = [];
+    for (let i = offlineQueue.length - 1; i >= 0; i--) {
+      if (scope === "all" || offlineQueue[i]!.ownerId === owner) items.push(...offlineQueue.splice(i, 1));
+    }
     await persistQueue();
     await Promise.all(items.map(deleteItemFiles));
     setUploads([]);
@@ -862,8 +866,10 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   // have been restored. Signing out only pauses retries: queued captures stay
   // on disk tagged with their owner, so the same account picks them up again
   // after signing back in (e.g. after a 401). Signing in as a different account
-  // discards the previous account's captures so they can never upload under
-  // the new account's token.
+  // leaves the other account's captures on disk, hidden and paused: every
+  // upload path filters by ownerId, so they can never upload under this
+  // account's token, and they resume when their owner signs back in. (They
+  // may be the only copy of a capture, so they are never discarded here.)
   useEffect(() => {
     if (!queueReady || authLoading) return;
 
@@ -873,21 +879,14 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    let removed = false;
-    for (let i = offlineQueue.length - 1; i >= 0; i--) {
-      const item = offlineQueue[i]!;
-      if (item.ownerId !== userId) {
-        offlineQueue.splice(i, 1);
-        if (isQueueUri(item.uri)) void deleteLocalFile(item.uri);
-        removed = true;
-      }
-    }
-    if (removed) persistQueue();
+    // Drop status rows for another account's captures (they stay queued, hidden).
+    const otherOwners = new Set(offlineQueue.filter(i => i.ownerId !== userId).map(i => i.id));
+    if (otherOwners.size) setUploads(prev => prev.filter(u => !otherOwners.has(u.id)));
 
-    // Surface restored captures in the status UI so a queued upload isn't
-    // silently retrying with no visible entry or badge.
+    // Surface this account's restored captures in the status UI so a queued
+    // upload isn't silently retrying with no visible entry or badge.
     for (const item of offlineQueue) {
-      if (inFlight.has(item.id)) continue;
+      if (item.ownerId !== userId || inFlight.has(item.id)) continue;
       reflect(item, {
         status: item.state === "failed" ? (item.partial ? "partial" : "failed") : "queued",
         error: item.error ?? "Queued — will upload when online",
