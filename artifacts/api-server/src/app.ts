@@ -6,6 +6,7 @@ import router from "./routes/index.js";
 import { requireVerifiedSchema } from "./routes/health.js";
 import { logger } from "./lib/logger.js";
 import { getPublicHost } from "./lib/appUrl.js";
+import { mountWebsite } from "./lib/website.js";
 
 const app: Express = express();
 
@@ -29,14 +30,17 @@ function originHost(origin: string): string {
   try { return new URL(origin).hostname; } catch { return origin; }
 }
 
-// This is a JSON API for the native iOS/Android apps — it serves no HTML, so a
-// content security policy is not required. Keep helmet's other hardening headers.
+// The API is JSON-only; the HTML outside /api is the static marketing site
+// (no user data, no cookies), so no content security policy is set. Keep
+// helmet's other hardening headers.
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
 }));
 
-app.use(cors({
+// Scoped to /api: the website's own module scripts are sent with an Origin
+// header (e.g. www.kkamera.app) and must never be CORS-rejected.
+app.use("/api", cors({
   origin: (origin, callback) => {
     // Allow requests with no Origin — native apps, server-to-server, health checks.
     if (!origin) return callback(null, true);
@@ -84,6 +88,9 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 // Except healthz/readyz, API routes require a successful database schema check.
 app.use("/api", requireVerifiedSchema);
 app.use("/api", router);
+
+// Everything outside /api is the static website (artifacts/kkamera-website).
+mountWebsite(app);
 
 // Central error handler — catches CORS rejections, multer errors (e.g. a file
 // over the size cap), and any uncaught async throw. Never leak internal details

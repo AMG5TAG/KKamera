@@ -1,0 +1,36 @@
+kind = "web"
+previewPath = "/"
+title = "KKamera Website"
+version = "1.0.0"
+id = "artifacts/kkamera-website"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19386
+
+[services.development]
+run = "pnpm --filter @workspace/kkamera-website run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/kkamera-website", "run", "build" ]
+publicDir = "artifacts/kkamera-website/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[[services.production.responseHeaders]]
+path = "/*"
+name = "X-Robots-Tag"
+value = "index, follow"
+
+[services.env]
+PORT = "19386"
+BASE_PATH = "/"

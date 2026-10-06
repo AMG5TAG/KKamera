@@ -5,8 +5,9 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 ## Run & Operate
 
 - `pnpm --filter @workspace/api-server run dev` — run the API server (local 8080 → external :8080 on the dev domain)
+- `pnpm --filter @workspace/kkamera-website run dev` — run the marketing website (Vite, port 19386; needs `PORT` and `BASE_PATH=/`)
 - `pnpm --filter @workspace/kkamera run dev` — run the Expo app (web on port from $PORT env; API base URL is `https://$REPLIT_DEV_DOMAIN:8080` via EXPO_PUBLIC_DOMAIN)
-- The native apps are built and submitted via EAS (`eas build` / `eas submit`, config in `artifacts/kkamera/eas.json`). The API server is JSON-only and does not serve any web/app HTML.
+- The native apps are built and submitted via EAS (`eas build` / `eas submit`, config in `artifacts/kkamera/eas.json`). The API is JSON-only under `/api`; in production the same server also serves the static website (built from `artifacts/kkamera-website`) on every other path, so `www.kkamera.app` (site) and `app.kkamera.app/api` (API) are one deployment.
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run test` — run unit tests (api-server: Node 24 native TS + `node:test`, no extra deps; pure security/billing logic in `artifacts/api-server/test/`)
 - `pnpm run build` — typecheck + build all packages
@@ -39,6 +40,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 
 - `artifacts/api-server/` — Express 5 API server
 - `artifacts/kkamera/` — Expo app (iOS, Android)
+- `artifacts/kkamera-website/` — marketing website (Vite + React, wouter): home, `/privacy`, `/terms`, `/support`, invite landing at `/auth/register?ref=CODE` (and `/invite`), and `/settings/subscription` (email link → opens the app). Store URLs / deep-link helpers in `src/lib/links.ts`; images in `attached_assets/`. Served by `artifacts/api-server/src/lib/website.ts` (`WEBSITE_DIR` overrides the build path)
 - `lib/db/` — Drizzle schema + migrations (source of truth: `lib/db/src/schema/`)
 - `lib/api-spec/` — OpenAPI spec (`openapi.yaml`) + codegen output
 - `lib/api-client-react/` — generated React Query hooks + Zod schemas
@@ -55,10 +57,10 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - **SSRF guard** (`lib/ssrf.ts` + `cloudUpload.ts`): user-supplied FTP/WebDAV/Nextcloud hosts are validated against private/loopback/link-local/IPv4-mapped-IPv6 ranges, the resolved IP is pinned (FTP, with TLS `servername` set to the original host) or re-validated on every socket by `SafeHttpAgent`/`SafeHttpsAgent` — IP-literal targets, resolved names and the connected `remoteAddress` are all checked, and each WebDAV client's agents are locked to its own host so cross-host redirects fail. Keep this on any new outbound request to a user-controlled host.
 - **OAuth connect is device-bound** (`routes/oauth.ts`, `lib/oauthPending.ts`): the callback only creates a *pending* connection (`pending_nonce_hash`, 10-min expiry); it becomes active when the initiating app calls `POST /oauth/complete` with both the nonce from its own initiate response and the one-time code from the redirect. Pending rows are never listed, selectable or uploaded to. Server and app must ship together — older app builds can't complete OAuth.
 - **RevenueCat webhook** (`routes/revenuecat.ts`): shared-secret authenticated (fails closed without `REVENUECAT_WEBHOOK_AUTH`); mirrors IAP entitlements into `subscriptionsTable`; referral milestones are idempotent + row-locked; period-end writes are forward-only (`GREATEST`); stale future-dated EXPIRATION events are ignored. Each event id is recorded in `revenuecat_events` in the same transaction that applies it (replays are acknowledged, not re-applied), and events older than `subscriptions.last_event_at` can't downgrade state. `ALLOW_SANDBOX_IAP` gates sandbox events, which never touch referrals.
-- **Helmet** is on (CSP disabled — JSON-only API) and **CORS** allows only the app host (no cookies — bearer only). HTML interpolated into emails goes through `escapeHtml`; upload filenames through `sanitizeFileName`.
+- **Helmet** is on (CSP disabled) and **CORS** — mounted on `/api` only — allows only the app host (no cookies — bearer only). Keep CORS scoped to `/api`: the website's module scripts are fetched with an `Origin` header and would be 403'd. The website is static and must never call the API with credentials. HTML interpolated into emails goes through `escapeHtml`; upload filenames through `sanitizeFileName`.
 - **Email verification is device-bound** (`lib/emailVerification*.ts`, `routes/auth.ts`): each code row stores only sha256(nonce), where the 32-byte nonce is returned solely to the client that requested the code (never emailed), so an attacker who pre-registers a victim's address can't get the victim to redeem a code that applies the attacker's password. Unverified accounts get no session (requireAuth also rejects them), sends are throttled per account (≥60 s apart, ≤5/hour; beyond that the response is unchanged and nothing is sent), stale rows (>24 h) and never-verified accounts (>30 days idle, subscription `none`) are swept opportunistically. Keep every register/resend response identical in shape whether or not the address exists.
 - Security/billing pure logic is unit-tested (`artifacts/api-server/test/`) — extend the tests when changing it.
-- Production deployment is an API-only server (`/api`); the native apps ship via EAS and talk to it
+- Production deployment is one server: the API on `/api` plus the static website everywhere else; the native apps ship via EAS and talk to the API
 - Affiliate programme: 5 successful referral signups = 1 free year added to subscription
 - App Store / Play in-app purchases (via RevenueCat) handle subscription billing (14-day trial → $30/year)
 - Offline upload queue (in-app retry with backoff)
@@ -81,6 +83,8 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Affiliate: 5 referrals = 1 free year
 
 ## Gotchas
+
+- **Legal text is duplicated**: the website's `/privacy` and `/terms` pages copy `artifacts/kkamera/app/settings/privacy.tsx` / `terms.tsx` word for word — update both (and both "Last updated" dates) together.
 
 - Google Fonts (via `@expo-google-fonts/inter`) may not load in Replit sandbox. Do not block rendering on font load.
 - `Platform.OS` can be used at module level safely in Expo Metro bundles.
