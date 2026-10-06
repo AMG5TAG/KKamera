@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   newPasswordSchema, normalizedEmailSchema, normalizeReferralCode,
-  isTrialReminderDue, trialDaysLeft, buildUserExport, type ExportSource,
+  isTrialReminderDue, trialDaysLeft, buildUserExport, retainTargetIds, type ExportSource,
 } from "../src/lib/accountRules.ts";
 
 const DAY = 86_400_000;
@@ -130,4 +130,16 @@ test("export: null subscription stays null", () => {
   const src = source();
   src.subscription = null;
   assert.equal(buildUserExport(src, now).subscription, null);
+});
+
+// ─── Upload target pruning ────────────────────────────────────────────────────
+
+test("retainTargetIds: drops ids that no longer exist", () => {
+  assert.equal(retainTargetIds("3,7,9", [3, 9, 12]), "3,9");
+});
+
+test("retainTargetIds: an emptied list becomes null (upload nowhere), never 'all'", () => {
+  assert.equal(retainTargetIds("7", []), null);
+  assert.equal(retainTargetIds("7", [8]), null);
+  assert.equal(retainTargetIds(null, [1]), null);
 });

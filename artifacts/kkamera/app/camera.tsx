@@ -25,6 +25,7 @@ import Svg, { Line, Rect, G } from "react-native-svg";
 import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
 import { resolveUploadTarget } from "@/lib/uploadTarget";
+import { MAX_RECORDING_BYTES } from "@/lib/config";
 import { useUploadTargetResolver } from "@/lib/useUploadTargetResolver";
 import {
   readCachedSubscription, writeCachedSubscription, subscriptionAllows, type SubscriptionSnapshot,
@@ -1528,7 +1529,12 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     const maxDuration = settings.maxVideoDurationSeconds > 0 ? settings.maxVideoDurationSeconds : 600;
     const codec = await pickVideoCodec();
     if (!recordingRef.current || recordStopping.current) { endRecordingUi(); return; }
-    const recording = cameraRef.current?.recordAsync({ maxDuration, ...(codec ? { codec } : {}) });
+    const recording = cameraRef.current?.recordAsync({
+      maxDuration,
+      // Stop before the server's upload cap so the clip can actually upload.
+      maxFileSize: MAX_RECORDING_BYTES,
+      ...(codec ? { codec } : {}),
+    });
     if (!recording) { endRecordingUi(); return; }
     recording.then((video) => {
       endRecordingUi();
@@ -1924,6 +1930,23 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
           <Text style={styles.paywallBtnText}>
             {paywallPrice ? `View Subscription — ${paywallPrice}/year` : "View Subscription"}
           </Text>
+        </TouchableOpacity>
+        {/* Never a dead end: account, sign-out, clouds and queued captures stay reachable. */}
+        <TouchableOpacity
+          style={[styles.permSkip, { marginTop: 16 }]}
+          onPress={() => router.push("/history")}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+        >
+          <Text style={styles.permSkipText}>Upload history</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.permSkip}
+          onPress={() => router.push("/settings")}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          accessibilityRole="button"
+        >
+          <Text style={styles.permSkipText}>Settings & sign out</Text>
         </TouchableOpacity>
       </View>
     );

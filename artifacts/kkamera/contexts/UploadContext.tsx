@@ -12,7 +12,9 @@ import * as Network from "expo-network";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "./AuthContext";
 import { useSettings } from "./SettingsContext";
-import { API_BASE_URL } from "@/lib/config";
+import { API_BASE_URL, MAX_UPLOAD_BYTES } from "@/lib/config";
+import { resolveUploadTarget, type ResolvedTarget } from "@/lib/uploadTarget";
+import { getUploadTarget } from "@workspace/api-client-react";
 
 export type UploadStatus = "idle" | "queued" | "uploading" | "done" | "failed" | "partial";
 
@@ -115,6 +117,11 @@ interface QueuedItem {
    * time the app is foregrounded; it clears on the next non-402 response.
    */
   subscriptionBlocked?: boolean;
+  /**
+   * The server said every destination in connectionIds was removed (422
+   * targets_removed). A user retry re-addresses it to the current upload target.
+   */
+  staleTargets?: boolean;
   /** In-memory only (not persisted): fired once when the capture reaches done. */
   onUploaded?: () => void;
 }
@@ -180,10 +187,13 @@ const BASE_URL = API_BASE_URL;
 
 /** Non-2xx response from the upload endpoint. */
 class UploadHttpError extends Error {
-  constructor(public httpStatus: number, message: string, public retryAfterMs?: number) {
+  constructor(public httpStatus: number, message: string, public retryAfterMs?: number, public code?: string) {
     super(message);
   }
 }
+
+/** Rejected on the device before sending (e.g. over the size cap) — never retried. */
+class UploadRejectedError extends Error {}
 
 /** Retry-After header (delta-seconds or HTTP date) → ms, or undefined. */
 function parseRetryAfter(value: string | null): number | undefined {
@@ -242,6 +252,27 @@ async function fileFormPart(uri: string, fileName: string, mimeType: string): Pr
   return { part: blob, name: fileName };
 }
 
+/** Size of a local file:// capture in bytes, or null when unknown (web, content:// …). */
+function localFileSize(uri: string): number | null {
+  if (Platform.OS === "web" || !uri.startsWith("file:")) return null;
+  try {
+    const file = new File(uri);
+    return file.exists ? file.size : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * At least 5 minutes, scaled so a large video on a slow (~64 KB/s) uplink can
+ * finish instead of timing out and restarting from zero; capped at an hour.
+ */
+function uploadTimeoutMs(size: number | null): number {
+  const base = 5 * 60 * 1000;
+  if (!size) return base;
+  return Math.min(60 * 60 * 1000, Math.max(base, Math.ceil(size / (64 * 1024)) * 1000));
+}
+
 async function xhrUpload(
   uri: string,
   fileName: string,
@@ -254,6 +285,11 @@ async function xhrUpload(
   // Derive the MIME type from the actual file extension so the bytes aren't
   // mislabelled (e.g. a web-recorded .webm previously sent as video/mp4).
   const mimeType = guessMimeType(fileName, fileType);
+  const size = localFileSize(uri);
+  if (size !== null && size > MAX_UPLOAD_BYTES) {
+    // The server would reject it with 413 anyway — don't burn the upload first.
+    throw new UploadRejectedError(`File is too large to upload (${Math.round(size / 1048576)} MB; limit ${MAX_UPLOAD_BYTES / 1048576} MB).`);
+  }
   const file = await fileFormPart(uri, fileName, mimeType);
   return new Promise((resolve, reject) => {
     try {
@@ -282,19 +318,21 @@ async function xhrUpload(
           catch { reject(new UploadHttpError(502, "Invalid server response")); }
         } else {
           let message = `Upload failed: ${xhr.status} ${xhr.statusText}`.trim();
+          let code: string | undefined;
           try {
             const body = JSON.parse(xhr.responseText);
             if (body?.message) message = String(body.message);
+            if (typeof body?.code === "string") code = body.code;
           } catch { /* keep the generic message */ }
           let retryAfter: string | null = null;
           try { retryAfter = xhr.getResponseHeader("Retry-After"); } catch { /* header not exposed */ }
-          reject(new UploadHttpError(xhr.status, message, parseRetryAfter(retryAfter)));
+          reject(new UploadHttpError(xhr.status, message, parseRetryAfter(retryAfter), code));
         }
       };
 
       xhr.onerror = () => reject(new Error("Network error during upload"));
       xhr.ontimeout = () => reject(new Error("Upload timed out"));
-      xhr.timeout = 5 * 60 * 1000; // 5 min
+      xhr.timeout = uploadTimeoutMs(size);
 
       xhr.send(form);
     } catch (err) {
@@ -482,7 +520,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       );
     } catch (err: any) {
       if (!stillQueued()) { finish(); return; } // discarded while in flight
-      if (err instanceof CaptureLostError) {
+      if (err instanceof CaptureLostError || err instanceof UploadRejectedError) {
         item.state = "failed";
         item.error = err.message;
         reflect(item, { status: "failed", error: item.error });
@@ -516,6 +554,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         // 400/413/… — retrying won't help, but keep the local copy so the user
         // can retry or discard it from History.
         item.state = "failed";
+        item.staleTargets = err instanceof UploadHttpError && err.code === "targets_removed";
         item.error = err.message || `Upload failed (${httpStatus})`;
         reflect(item, { status: "failed", error: item.error });
         finish();
@@ -723,9 +762,26 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     wake(false);
   }, [wake]);
 
-  const retryItem = useCallback((id: string) => {
+  const retryItem = useCallback(async (id: string) => {
     const item = offlineQueue.find(i => i.id === id);
     if (!item || item.ownerId !== userIdRef.current || inFlight.has(id)) return;
+    if (item.staleTargets) {
+      // Its destinations were removed: send it where captures go now instead.
+      let target: ResolvedTarget;
+      try {
+        target = resolveUploadTarget(await getUploadTarget());
+      } catch {
+        return; // offline — leave it failed; the user can retry again later
+      }
+      if (target.skip) {
+        item.error = "Uploads are turned off in Upload destinations — choose a destination, then retry.";
+        reflect(item, { status: "failed", error: item.error });
+        persistQueue();
+        return;
+      }
+      item.connectionIds = target.ids;
+      item.staleTargets = false;
+    }
     item.state = "waiting";
     item.parkReason = undefined;
     item.retries = 0;

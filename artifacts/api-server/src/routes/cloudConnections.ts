@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "@workspace/db";
-import { cloudConnectionsTable } from "@workspace/db";
+import { cloudConnectionsTable, usersTable } from "@workspace/db";
 import { eq, and, isNull } from "drizzle-orm";
 import rateLimit from "express-rate-limit";
 import { requireAuth } from "../middlewares/auth.js";
@@ -12,8 +12,27 @@ import {
 import { DEFAULT_UPLOAD_PATH, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
 import { connectionUpdatePlan, createConnectionSchema, updateConnectionSchema } from "../lib/cloudConnectionSchemas.js";
 import { logger } from "../lib/logger.js";
+import { retainTargetIds } from "../lib/accountRules.js";
 
 const router = Router();
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Drop deleted connections from the user's "selected" upload target so new
+ * captures aren't addressed to ids that no longer exist.
+ */
+async function pruneUploadTarget(tx: Tx, userId: number) {
+  const [user] = await tx.select({ ids: usersTable.uploadTargetIds })
+    .from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+  if (!user?.ids) return;
+  const remaining = await tx.select({ id: cloudConnectionsTable.id })
+    .from(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));
+  const next = retainTargetIds(user.ids, remaining.map(r => r.id));
+  if (next !== user.ids) {
+    await tx.update(usersTable).set({ uploadTargetIds: next }).where(eq(usersTable.id, userId));
+  }
+}
 
 /**
  * A confirmed connection of this user. Pending OAuth rows (awaiting
@@ -181,9 +200,13 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
 // irrelevant (distinct path), but it is the endpoint the client relies on.
 router.delete("/cloud-connections", requireAuth, async (req, res) => {
   try {
-    const removed = await db.delete(cloudConnectionsTable)
-      .where(eq(cloudConnectionsTable.userId, req.userId!))
-      .returning();
+    const removed = await db.transaction(async (tx) => {
+      const rows = await tx.delete(cloudConnectionsTable)
+        .where(eq(cloudConnectionsTable.userId, req.userId!))
+        .returning();
+      await pruneUploadTarget(tx, req.userId!);
+      return rows;
+    });
     res.json({ message: "All connections deleted" });
     // Every row is gone, so no surviving connection can share a grant. One
     // revoke per distinct token is enough.
@@ -205,9 +228,13 @@ router.delete("/cloud-connections/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(String(req.params["id"] ?? "0"));
     if (!id) { res.status(400).json({ message: "Invalid connection ID" }); return; }
-    const [removed] = await db.delete(cloudConnectionsTable)
-      .where(ownConfirmed(id, req.userId!))
-      .returning();
+    const removed = await db.transaction(async (tx) => {
+      const [row] = await tx.delete(cloudConnectionsTable)
+        .where(ownConfirmed(id, req.userId!))
+        .returning();
+      if (row) await pruneUploadTarget(tx, req.userId!);
+      return row;
+    });
     res.json({ message: "Deleted" });
     // Runs after the response and never throws. A provider revoke kills the
     // whole grant (Google: every token for this app + account), so it is kept

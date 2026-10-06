@@ -12,9 +12,6 @@
       "bundleIdentifier": "app.kkamera",
       "buildNumber": "1",
       "infoPlist": {
-        "NSCameraUsageDescription": "KKamera uses the camera to capture photos and videos for direct cloud upload.",
-        "NSMicrophoneUsageDescription": "KKamera uses the microphone to record audio with your videos.",
-        "NSLocationWhenInUseUsageDescription": "KKamera can embed location data in your photos.",
         "NSFaceIDUsageDescription": "KKamera uses Face ID to unlock the app and protect your cloud connections."
       },
       "config": {
@@ -33,6 +30,13 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
@@ -59,7 +63,11 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "KKamera can embed GPS location in your photos."
+          "locationWhenInUsePermission": "KKamera can embed GPS location in your photos.",
+          "locationAlwaysAndWhenInUsePermission": false,
+          "locationAlwaysPermission": false,
+          "isIosBackgroundLocationEnabled": false,
+          "isAndroidBackgroundLocationEnabled": false
         }
       ],
       [

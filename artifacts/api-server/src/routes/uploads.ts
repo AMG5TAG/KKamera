@@ -382,6 +382,22 @@ router.post(
         return true;
       });
 
+      if (targets.length === 0 && connectionIds) {
+        // The capture names specific destinations and every one has since been
+        // removed or disabled. If the user has other connections, waiting won't
+        // help (and silently widening to them would ignore their choice), so say
+        // so — the app lets them re-send it to their current destinations.
+        const [other] = await db.select({ id: cloudConnectionsTable.id })
+          .from(cloudConnectionsTable).where(usable).limit(1);
+        if (other) {
+          res.status(422).json({
+            code: "targets_removed",
+            message: "The cloud destination chosen for this capture was removed. Retry it to send it to your current destinations.",
+          });
+          return;
+        }
+      }
+
       if (targets.length === 0) {
         const claim = await claimUploadRow(req.userId!, clientUploadId, {
           fileName, fileType, status: "queued", connectionIds: null,

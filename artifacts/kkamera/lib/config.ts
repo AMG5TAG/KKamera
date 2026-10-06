@@ -14,3 +14,7 @@ export const API_BASE_URL: string = API_URL
     ? `https://${PUBLIC_DOMAIN}`
     : "https://app.kkamera.app";
 
+/** Server-side cap on one uploaded file (multer `fileSize` in api-server routes/uploads.ts). */
+export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+/** Recordings stop here, leaving headroom under MAX_UPLOAD_BYTES. */
+export const MAX_RECORDING_BYTES = 190 * 1024 * 1024;
