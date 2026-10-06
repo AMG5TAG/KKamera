@@ -7,7 +7,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - `pnpm --filter @workspace/api-server run dev` — run the API server (local 8080 → external :8080 on the dev domain)
 - `pnpm --filter @workspace/kkamera-website run dev` — run the marketing website (Vite, port 19386; needs `PORT` and `BASE_PATH=/`)
 - `pnpm --filter @workspace/kkamera run dev` — run the Expo app (web on port from $PORT env; API base URL is `https://$REPLIT_DEV_DOMAIN:8080` via EXPO_PUBLIC_DOMAIN)
-- The native apps are built and submitted via EAS (`eas build` / `eas submit`, config in `artifacts/kkamera/eas.json`). The API is JSON-only under `/api`; in production the same server also serves the static website (built from `artifacts/kkamera-website`) on every other path, so `www.kkamera.app` (site) and `app.kkamera.app/api` (API) are one deployment.
+- The native apps are built and submitted via EAS (`eas build` / `eas submit`, config in `artifacts/kkamera/eas.json`). The API is JSON-only under `/api`; in production the same server also serves the static website (built from `artifacts/kkamera-website`) on every other path, so `kkamera.app` (site; `www.kkamera.app` redirects there client-side via a script in `artifacts/kkamera-website/index.html`) and `app.kkamera.app/api` (API) are one deployment. The Expo artifact has no production service (native ships via EAS) so it does not shadow the site on `/`.
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run test` — run unit tests (api-server: Node 24 native TS + `node:test`, no extra deps; pure security/billing logic in `artifacts/api-server/test/`)
 - `pnpm run build` — typecheck + build all packages

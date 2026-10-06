@@ -3,6 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- kkamera.app is the canonical site host: send www visitors there, keeping path/query/hash.
+         The site is served statically, so this runs client-side before anything else loads. -->
+    <script>
+      if (location.hostname === "www.kkamera.app") {
+        location.replace("https://kkamera.app" + location.pathname + location.search + location.hash);
+      }
+    </script>
     <title>KKamera — Cloud-Based Photography for Trades &amp; Business</title>
     <meta name="description" content="KKamera instantly uploads your work photos and videos to a secure business cloud — keeping your personal camera roll clean, private and clutter-free. Built for tradespeople and professionals across Australia." />
     <meta name="robots" content="index, follow" />

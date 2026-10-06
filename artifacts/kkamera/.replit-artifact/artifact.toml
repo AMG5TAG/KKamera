@@ -18,14 +18,8 @@ localPort = 24623
 [services.development]
 run = "pnpm --filter @workspace/kkamera run dev"
 
-[services.production.build]
-args = ["pnpm", "--filter", "@workspace/kkamera", "run", "build"]
-
-[services.production.run]
-args = ["pnpm", "--filter", "@workspace/kkamera", "run", "serve"]
-
-[services.production.run.env]
-PORT = "24623"
+# No production service: the iOS/Android apps ship via EAS. Deploying the Expo
+# web export here claimed "/" and shadowed the website on kkamera.app.
 
 [services.env]
 PORT = "24623"
