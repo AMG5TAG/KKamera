@@ -184,7 +184,7 @@ function isPublicRoute(segments: string[]): boolean {
 
 const styles = StyleSheet.create({
   gateRoot: { flex: 1, backgroundColor: "#0d0b08" },
-  cover: { ...StyleSheet.absoluteFillObject, backgroundColor: "#0d0b08", zIndex: 1000, elevation: 1000 },
+  cover: { ...StyleSheet.absoluteFill, backgroundColor: "#0d0b08", zIndex: 1000, elevation: 1000 },
 });
 
 // ---------------------------------------------------------------------------

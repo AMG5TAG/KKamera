@@ -24,6 +24,18 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Optional env: `CRON_SECRET` — bearer secret for `POST /api/internal/send-trial-reminders` (header `Authorization: Bearer $CRON_SECRET`), which sweeps every user whose trial ends within 3 days and emails the "trial ending" reminder. Fails closed (503) if unset. Wire it to any external scheduler (e.g. daily); without it the reminder is still sent opportunistically on the user's next authenticated request (throttled per process; at most once per user via `users.trial_reminder_sent_at`).
 - Optional env: `ALLOW_SANDBOX_IAP` — `true` lets RevenueCat SANDBOX purchases (TestFlight / Play test tracks) grant access; default off (sandbox webhook events are acked and ignored, sandbox entitlements are skipped by sync). Sandbox events never complete or reverse referrals either way. Never enable in production.
 
+## Local development (Mac)
+
+Replit still hosts production (API + Postgres) and its own dev workflow; the commands above are unchanged. To develop the app on a Mac:
+
+- pnpm is pinned via `packageManager` (pnpm 10). A newer global pnpm switches to it automatically; don't regenerate the lockfile with pnpm 11.
+- `cp artifacts/kkamera/.env.example artifacts/kkamera/.env.local` and fill in the RevenueCat keys (from `.replit` `[userenv.shared]`). With no `EXPO_PUBLIC_API_URL` the app talks to production (`https://app.kkamera.app`); set it to the Replit dev API or a local API to avoid touching production data.
+- The app uses native modules (RevenueCat, document scanner, expo-dev-client), so it runs as a **dev build**, not in Expo Go:
+  - iOS: needs Xcode, an iOS Simulator runtime and CocoaPods (`brew install cocoapods`). `pnpm --filter @workspace/kkamera run ios` (first run prebuilds `ios/` and compiles; later runs only need `run start`).
+  - Android: needs Android Studio (SDK + emulator, `ANDROID_HOME` set). `pnpm --filter @workspace/kkamera run android`.
+  - `ios/` and `android/` are generated from `app.json` (git-ignored). Change native config in `app.json`/config plugins, then `run prebuild`.
+- Running the API locally is optional: it needs Postgres (`brew install postgresql@17`) plus `DATABASE_URL` and `SESSION_SECRET` (≥32 chars), then `pnpm --filter @workspace/api-server run dev` (port 8080; migrations auto-apply). Never point a local server at the production database.
+
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
@@ -32,7 +44,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
-- Mobile/Web: Expo (Expo Router 6), React Native
+- Mobile/Web: Expo SDK 57 (Expo Router, React Native 0.86)
 - Billing: App Store / Play in-app purchases via RevenueCat (server mirror through the RevenueCat webhook)
 
 ## Where things live
@@ -85,7 +97,8 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Google Fonts (via `@expo-google-fonts/inter`) may not load in Replit sandbox. Do not block rendering on font load.
 - `Platform.OS` can be used at module level safely in Expo Metro bundles.
 - API server uses path `/api` — all routes must start with `/api`.
-- **Pnpm + Metro stale hash**: `metro.config.js` patches `server.unstable_serverRoot` to the project root (not workspace root) and includes a resolver interceptor that rewrites stale pnpm-hashed paths to stable symlinks. The dev script also clears `/tmp/metro-file-map-*` on each start. Do not remove these guards.
+- **Pnpm + Metro stale hash**: `metro.config.js` keeps Metro's server root at the workspace root (do not force it to the app dir) and includes a resolver interceptor that rewrites stale pnpm-hashed paths to stable symlinks. The dev script also clears `/tmp/metro-file-map-*` on each start. Do not remove these guards. (The old `@expo/cli` serverRoot patch was dropped in the SDK 57 upgrade.)
+- **Expo SDK 57 + iOS 27**: Xcode 27 builds require the UIScene lifecycle; it's enabled with `expo-build-properties` `ios.enableSceneSupport` in `app.json`. `plugins/withPodsDeploymentTarget.js` raises old pods' deployment targets so Xcode 27 accepts them. Keep `expo`, `react` and `react-native` in `dependencies` (not dev) or `expo prebuild` rewrites package.json.
 
 ## Pointers
 

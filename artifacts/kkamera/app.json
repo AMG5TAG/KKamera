@@ -7,26 +7,10 @@
     "icon": "./assets/images/icon.png",
     "scheme": "kkamera",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/images/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#0d0b08"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "app.kkamera",
       "buildNumber": "1",
-      "splash": {
-        "image": "./assets/images/splash.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#0d0b08",
-        "dark": {
-          "image": "./assets/images/splash.png",
-          "resizeMode": "contain",
-          "backgroundColor": "#0d0b08"
-        }
-      },
       "infoPlist": {
         "NSCameraUsageDescription": "KKamera uses the camera to capture photos and videos for direct cloud upload.",
         "NSMicrophoneUsageDescription": "KKamera uses the microphone to record audio with your videos.",
@@ -44,16 +28,6 @@
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#0d0b08"
       },
-      "splash": {
-        "image": "./assets/images/splash.png",
-        "resizeMode": "contain",
-        "backgroundColor": "#0d0b08",
-        "dark": {
-          "image": "./assets/images/splash.png",
-          "resizeMode": "contain",
-          "backgroundColor": "#0d0b08"
-        }
-      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -63,6 +37,15 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash.png",
+          "imageWidth": 300,
+          "resizeMode": "contain",
+          "backgroundColor": "#0d0b08"
+        }
+      ],
       "expo-font",
       "expo-web-browser",
       [
@@ -102,7 +85,16 @@
         {
           "motionPermission": "KKamera uses motion sensors for the level guide and panorama capture."
         }
-      ]
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "enableSceneSupport": true
+          }
+        }
+      ],
+      "./plugins/withPodsDeploymentTarget"
     ],
     "experiments": {
       "typedRoutes": true,

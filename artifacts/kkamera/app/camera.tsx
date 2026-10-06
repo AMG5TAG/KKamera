@@ -2621,7 +2621,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 3, borderRadius: 6,
   },
   countdownOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.25)",
   },
@@ -2705,7 +2705,7 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   modeGlassBg: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(14,11,8,0.62)",
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "rgba(255,255,255,0.12)",

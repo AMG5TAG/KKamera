@@ -7,9 +7,12 @@ import { API_BASE_URL } from "@/lib/config";
 
 // expo-media-library is native-only; import it lazily so the web bundle never
 // evaluates it (see .agents/memory/expo-web-module-crashes.md).
+// Since SDK 56 the root export is the object-oriented API and the old
+// functions there (saveToLibraryAsync, ...) are stubs that always throw, so
+// this must come from "/legacy".
 async function getMediaLibrary() {
   if (Platform.OS === "web") return null;
-  return await import("expo-media-library");
+  return await import("expo-media-library/legacy");
 }
 
 export type CameraRollResult = "saved" | "denied" | "unavailable" | "failed";
@@ -36,7 +39,7 @@ export async function saveToCameraRoll(uri: string): Promise<CameraRollResult> {
 }
 
 /**
- * Best-effort delete of a temporary capture file. Uses the SDK 54 File API —
+ * Best-effort delete of a temporary capture file. Uses the expo-file-system File API —
  * the legacy `deleteAsync` export is a stub that always throws.
  */
 export function deleteTempFile(uri: string | null | undefined) {
