@@ -20,7 +20,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const BENEFITS = [
   { icon: "gift-outline", title: "Earn free years", text: "Every 5 co-workers who start a paid subscription adds 1 free year to your plan — no limit." },
-  { icon: "time-outline", title: "They start free", text: "Everyone you invite gets a full 14-day trial. No credit card needed." },
+  { icon: "time-outline", title: "They start free", text: "Everyone you invite gets a 24-hour free trial. No credit card needed." },
   { icon: "cloud-done-outline", title: "Same workflow, whole team", text: "Shots upload straight to each person's own cloud storage — nothing left on devices." },
 ];
 

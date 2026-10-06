@@ -43,7 +43,7 @@ export default function Invite() {
         <h1 className="text-3xl md:text-4xl font-bold tracking-tight">You've been invited to KKamera</h1>
         <p className="mt-4 text-lg text-muted-foreground leading-relaxed">
           Snap work photos straight to your business cloud and keep your personal camera roll clean.
-          Start with a 14-day free trial — no payment details needed.
+          Start with a 24-hour free trial — no payment details needed.
         </p>
 
         {code && (

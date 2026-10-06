@@ -2,20 +2,25 @@ import React from "react";
 import { Text, StyleSheet, TouchableOpacity } from "react-native";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import { trialTimeLeft } from "@/lib/trialTime";
 
 const PRIMARY = "#b19870";
 
 interface Props {
-  daysLeft: number;
+  trialEnd: Date | string;
 }
 
-export function TrialBanner({ daysLeft }: Props) {
-  if (daysLeft > 3) return null;
+const HOUR_MS = 3_600_000;
 
-  const urgent = daysLeft <= 1;
-  const message = daysLeft === 0
-    ? "Your trial expires today"
-    : `Your trial ends in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`;
+export function TrialBanner({ trialEnd }: Props) {
+  const left = trialTimeLeft(trialEnd);
+  // A 24-hour trial is always inside this window; older 14-day trials show in their last 3 days.
+  if (left.ms > 72 * HOUR_MS) return null;
+
+  const urgent = left.ms <= 3 * HOUR_MS;
+  const message = left.ms === 0
+    ? "Your trial has ended"
+    : `Your trial ends in ${left.label}`;
 
   return (
     <TouchableOpacity

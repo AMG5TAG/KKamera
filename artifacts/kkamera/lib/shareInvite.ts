@@ -22,7 +22,7 @@ export function inviteMessage(code: string): string {
   return (
     "Join me on KKamera — the privacy-first camera app that uploads photos & " +
     "videos straight to your own cloud storage.\n\n" +
-    `Sign up with my invite for a free 14-day trial:\n${inviteLink(trimmed)}\n\n` +
+    `Sign up with my invite for a free 24-hour trial:\n${inviteLink(trimmed)}\n\n` +
     `Or use code: ${trimmed}`
   );
 }

@@ -20,10 +20,10 @@ import {
 // the housekeeping sweep (which locks the same rows) can't delete an account
 // while a code is being issued for it.
 
-export const TRIAL_DAYS = 14;
+export const TRIAL_HOURS = 24;
 
 /**
- * Start the 14-day free trial for a user whose email has just been proven,
+ * Start the 24-hour free trial for a user whose email has just been proven,
  * unless the account already has/had a subscription or trial, or the mailbox
  * already used its one trial. The trial_history row (keyed by an HMAC of the
  * email) outlives account deletion, so deleting and re-registering the same
@@ -45,8 +45,7 @@ export async function grantTrialIfEligible(tx: DbTx, user: { id: number; email: 
   if (priorTrial) return false;
 
   const trialStart = new Date();
-  const trialEnd = new Date(trialStart);
-  trialEnd.setDate(trialEnd.getDate() + TRIAL_DAYS);
+  const trialEnd = new Date(trialStart.getTime() + TRIAL_HOURS * 3_600_000);
   await tx.update(subscriptionsTable)
     .set({ status: "trial", trialStart, trialEnd })
     .where(eq(subscriptionsTable.id, sub.id));

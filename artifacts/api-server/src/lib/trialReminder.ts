@@ -7,7 +7,7 @@ import { db, usersTable, subscriptionsTable } from "@workspace/db";
 import { and, eq, gt, isNull, lte } from "drizzle-orm";
 import { logger } from "./logger.js";
 import { sendEmail, trialEndingEmail } from "./email.js";
-import { isTrialReminderDue, trialDaysLeft, TRIAL_REMINDER_WINDOW_DAYS } from "./accountRules.js";
+import { isTrialReminderDue, trialTimeLeftText, TRIAL_REMINDER_WINDOW_HOURS } from "./accountRules.js";
 
 // Per-process throttle so the opportunistic check costs at most one small query
 // per user every few hours, not one per request.
@@ -26,7 +26,7 @@ async function claimAndSend(user: { id: number; email: string; name: string; tri
     .returning({ id: usersTable.id });
   if (!claimed) return false; // another request / instance already claimed it
 
-  const sent = await sendEmail({ to: user.email, ...trialEndingEmail(user.name, trialDaysLeft(user.trialEnd, now)) });
+  const sent = await sendEmail({ to: user.email, ...trialEndingEmail(user.name, trialTimeLeftText(user.trialEnd, now)) });
   if (!sent) {
     await db.update(usersTable)
       .set({ trialReminderSentAt: null })
@@ -64,7 +64,7 @@ export function maybeSendTrialReminder(userId: number): void {
 /** Send every due reminder (for an external scheduler). */
 export async function sweepTrialReminders(limit = 500): Promise<{ due: number; sent: number }> {
   const now = new Date();
-  const windowEnd = new Date(now.getTime() + TRIAL_REMINDER_WINDOW_DAYS * 86_400_000);
+  const windowEnd = new Date(now.getTime() + TRIAL_REMINDER_WINDOW_HOURS * 3_600_000);
   const rows = await db.select({
     id: usersTable.id, email: usersTable.email, name: usersTable.name,
     trialEnd: subscriptionsTable.trialEnd,

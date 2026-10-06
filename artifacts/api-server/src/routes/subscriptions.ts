@@ -10,7 +10,7 @@ import { RevenueCatNotConfiguredError, syncUserFromRevenueCat } from "../lib/rev
 // Billing is IAP-only (App Store / Play via RevenueCat). Purchases, renewals and
 // cancellations happen store-side and are mirrored into subscriptionsTable by the
 // RevenueCat webhook (routes/revenuecat.ts). These endpoints only read local
-// state and start the 14-day trial; there is no server-side checkout/cancel.
+// state and start the 24-hour trial; there is no server-side checkout/cancel.
 // POST /subscriptions/sync reconciles from the RevenueCat REST API when the app
 // knows a purchase/restore just happened (webhooks can lag or be missed).
 

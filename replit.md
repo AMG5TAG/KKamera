@@ -48,7 +48,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 ## Architecture decisions
 
 - JWT-based auth (bcrypt passwords, optional TOTP 2FA via otplib, QR code via qrcode). The TOTP secret is stored AES-256-GCM encrypted (legacy plaintext secrets are accepted and re-encrypted on next successful use); each accepted TOTP time step is recorded in `users.totp_last_step` so a code can't be replayed. Backup codes are 10-char Crockford base32 (`XXXXX-XXXXX`, 50 bits), single-use, stored as HMAC-SHA256 under an HKDF-derived key (legacy 8-hex SHA-256 codes still verify); pure logic in `lib/twoFactor.ts`; a 401 from any request signals the client to clear its session, so authenticated endpoints return 400/403 (never 401) for a wrong password or code. Sessions carry a `tv` claim checked against `users.token_version` (bumped by password change/reset, 2FA changes and "sign out all other devices"); accounts lock after repeated failed sign-ins (`failed_login_count` / `login_locked_until`)
-- Email verification (code-based, no links — universal links aren't configured): `POST /auth/register` never signs in; it always returns `202 {status:"verification_required", nonce, email}` (same shape/timing for new, pending and already-verified addresses — no enumeration). A 6-digit code is emailed (30-min expiry, 5 wrong tries per code, HMAC-SHA256 under an HKDF-derived key, constant-time compare) and redeemed with `POST /auth/verify-email {nonce, code}`, which verifies the account, applies the password/name of the registration that requested that code, starts the 14-day trial (`grantTrialIfEligible` — the trial is no longer granted at register) and returns `{token, user}`. `POST /auth/resend-verification {nonce}` issues a replacement code (always 200 with a nonce). A correct password on an unverified account gets `403 {code:"email_not_verified", nonce, email}` from `/auth/login` (code emailed). Registering an already-verified address only emails the owner a throttled "someone tried to create an account" notice. A completed password reset also verifies the address. Pure rules in `lib/emailVerification.ts`, DB side in `lib/emailVerificationStore.ts`; app screen `app/auth/verify-email.tsx`
+- Email verification (code-based, no links — universal links aren't configured): `POST /auth/register` never signs in; it always returns `202 {status:"verification_required", nonce, email}` (same shape/timing for new, pending and already-verified addresses — no enumeration). A 6-digit code is emailed (30-min expiry, 5 wrong tries per code, HMAC-SHA256 under an HKDF-derived key, constant-time compare) and redeemed with `POST /auth/verify-email {nonce, code}`, which verifies the account, applies the password/name of the registration that requested that code, starts the 24-hour trial (`grantTrialIfEligible` — the trial is no longer granted at register) and returns `{token, user}`. `POST /auth/resend-verification {nonce}` issues a replacement code (always 200 with a nonce). A correct password on an unverified account gets `403 {code:"email_not_verified", nonce, email}` from `/auth/login` (code emailed). Registering an already-verified address only emails the owner a throttled "someone tried to create an account" notice. A completed password reset also verifies the address. Pure rules in `lib/emailVerification.ts`, DB side in `lib/emailVerificationStore.ts`; app screen `app/auth/verify-email.tsx`
 - Cloud connection credentials stored AES-256-GCM encrypted in DB (key HKDF-derived from `SESSION_SECRET`, separate from the JWT secret); legacy raw-key GCM values still decrypt (CBC support was removed)
 - OAuth connect flow uses stateless signed-JWT state with the PKCE verifier encrypted inside it (autoscale-safe, no in-memory store); state tokens carry `typ: "oauth-state"` and their own audience, so they and session JWTs (aud `kkamera-session`, no `typ`) can never verify as each other
 - Express runs with `trust proxy` (required behind Replit's proxy for per-client rate limiting)
@@ -62,7 +62,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Security/billing pure logic is unit-tested (`artifacts/api-server/test/`) — extend the tests when changing it.
 - Production deployment is one server: the API on `/api` plus the static website everywhere else; the native apps ship via EAS and talk to the API
 - Affiliate programme: 5 successful referral signups = 1 free year added to subscription
-- App Store / Play in-app purchases (via RevenueCat) handle subscription billing (14-day trial → $30/year)
+- App Store / Play in-app purchases (via RevenueCat) handle subscription billing (24-hour trial → $30/year)
 - Offline upload queue (in-app retry with backoff)
 
 ## Product
@@ -79,7 +79,7 @@ A subscription-based native camera app (iOS/Android) that directly uploads photo
 - Brand colours: #b19870 (primary/gold), #c3b091 (secondary)
 - Dark background: #0d0b08
 - iOS/Android target — Expo managed workflow
-- Subscription: 14-day trial then $30/year via App Store / Play (RevenueCat)
+- Subscription: 24-hour trial then $30/year (trial reminder email in its last 6 hours) via App Store / Play (RevenueCat)
 - Affiliate: 5 referrals = 1 free year
 
 ## Gotchas

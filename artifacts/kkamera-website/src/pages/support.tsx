@@ -34,7 +34,7 @@ export default function Support() {
 
           <Card icon={CreditCard} title="Subscription & billing">
             <p>
-              KKamera starts with a 14-day free trial, then is billed through the Apple App Store or Google Play.
+              KKamera starts with a 24-hour free trial, then is billed through the Apple App Store or Google Play.
             </p>
             <p>
               To cancel or change your plan, use your App Store or Google Play subscription settings. Deleting the app or

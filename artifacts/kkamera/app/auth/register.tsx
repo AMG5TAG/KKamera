@@ -69,11 +69,11 @@ export default function RegisterScreen() {
         bottomOffset={24}
       >
         <Text style={styles.title} accessibilityRole="header">Create Account</Text>
-        <Text style={styles.subtitle}>Start your 14-day free trial — no credit card needed</Text>
+        <Text style={styles.subtitle}>Start your 24-hour free trial — no credit card needed</Text>
 
         <View style={styles.trialBadge}>
           <Ionicons name="gift-outline" size={18} color={PRIMARY} accessible={false} />
-          <Text style={styles.trialText}>14-day free trial · Then an annual subscription</Text>
+          <Text style={styles.trialText}>24-hour free trial · Then an annual subscription</Text>
         </View>
 
         {error ? (

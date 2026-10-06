@@ -97,7 +97,7 @@ function wrap(title: string, body: string, reason: string = DEFAULT_REASON): str
 
 export function welcomeEmail(name: string, trialActive: boolean = true): { subject: string; html: string } {
   const trialLine = trialActive
-    ? `<p>Your <strong style="color:#b19870">14-day free trial</strong> is active. Explore everything before deciding — no credit card required.</p>`
+    ? `<p>Your <strong style="color:#b19870">24-hour free trial</strong> is active. Explore everything before deciding — no credit card required.</p>`
     : `<p>Subscribe from <strong>Settings → Subscription</strong> in the app whenever you're ready to start uploading.</p>`;
   return {
     subject: "Welcome to KKamera 📷",
@@ -110,15 +110,15 @@ export function welcomeEmail(name: string, trialActive: boolean = true): { subje
   };
 }
 
-export function trialEndingEmail(name: string, daysLeft: number): { subject: string; html: string } {
-  const days = `${daysLeft} day${daysLeft !== 1 ? "s" : ""}`;
+/** `timeLeft` is ready-made copy such as "6 hours" (see trialTimeLeftText). */
+export function trialEndingEmail(name: string, timeLeft: string): { subject: string; html: string } {
   // No price here: it varies by App Store / Play storefront and country, so the
   // store's own subscription sheet is the only accurate source.
   return {
-    subject: `Your KKamera trial ends in ${days}`,
+    subject: `Your KKamera trial ends in ${timeLeft}`,
     html: wrap("Your trial is almost over", `
       <p>Hi ${escapeHtml(name)},</p>
-      <p>Your 14-day KKamera trial ends in <strong style="color:#b19870">${days}</strong>.</p>
+      <p>Your KKamera free trial ends in <strong style="color:#b19870">${escapeHtml(timeLeft)}</strong>.</p>
       <p>To keep uploading directly to your cloud storage, subscribe from <strong>Settings → Subscription</strong> in the KKamera app. You'll see the price for your country before you confirm.</p>
       <a href="${getPublicBaseUrl()}/settings/subscription" class="btn">Open KKamera</a>
       <p>Your cloud connections and settings are kept either way.</p>
@@ -136,7 +136,7 @@ export function coworkerInviteEmail(inviterName: string, referralCode: string): 
     subject: `${subjectName} invited you to KKamera 📷`,
     html: wrap(`${safeName} thinks you'd love KKamera`, `
       <p><strong style="color:#b19870">${safeName}</strong> uses KKamera — the privacy-first camera app that uploads photos and videos straight to your own cloud storage (Google Drive, OneDrive, Dropbox, FTP, WebDAV), leaving no trace on the device.</p>
-      <p>Sign up with their invite and you'll get a <strong style="color:#b19870">14-day free trial</strong> — no credit card required.</p>
+      <p>Sign up with their invite and you'll get a <strong style="color:#b19870">24-hour free trial</strong> — no credit card required.</p>
       <a href="${link}" class="btn">Accept Invite — Try Free</a>
       <p>Or enter the code <strong style="color:#b19870">${safeCode}</strong> when you register.</p>
     `),

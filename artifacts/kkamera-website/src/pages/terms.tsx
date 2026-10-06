@@ -29,7 +29,7 @@ export default function Terms() {
       </Section>
 
       <Section title="4. Free trial and subscription">
-        <p><B>Free trial:</B> when you create an account, KKamera gives you a 14-day free trial with full access. No payment details are needed for the trial, and it is available once per email address.</p>
+        <p><B>Free trial:</B> when you create an account, KKamera gives you a 24-hour free trial with full access. No payment details are needed for the trial, and it is available once per email address.</p>
         <p><B>Subscription:</B> after the trial, uploading requires a paid subscription, bought as an in-app purchase through the Apple App Store or Google Play. The price is shown in the app and in the store before you buy.</p>
         <p><B>Auto-renewal:</B> subscriptions renew automatically at the end of each period and are charged to your store account unless you cancel at least 24 hours before the renewal date.</p>
         <p><B>Cancelling:</B> manage or cancel your subscription in your App Store or Google Play account settings. Deleting the app or your KKamera account does not cancel it. After cancelling, you keep access until the end of the period you have paid for.</p>

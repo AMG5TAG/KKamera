@@ -386,9 +386,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     || (accessUnknown && (cachedSub === undefined || cachedSub === null || subscriptionAllows(cachedSub)))
     || (Platform.OS !== "web" && rcSub.isSubscribed);
 
-  const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
-    ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
-    : null;
+  const trialEnd = sub?.status === "trial" && sub?.trialEnd ? sub.trialEnd : null;
 
   const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission, getMicPermission] = useMicrophonePermissions();
@@ -1984,7 +1982,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     <GestureDetector gesture={pinchGesture}>
       <View style={styles.container}>
         <StatusBar barStyle="light-content" />
-        {trialDaysLeft !== null && <TrialBanner daysLeft={trialDaysLeft} />}
+        {trialEnd !== null && <TrialBanner trialEnd={trialEnd} />}
 
         {cameraMounted && (
           <CameraView

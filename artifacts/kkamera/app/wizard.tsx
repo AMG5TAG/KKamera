@@ -12,6 +12,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import type { AuthUser } from "@/contexts/AuthContext";
 import { useGetSubscription, useUpdateMe } from "@workspace/api-client-react";
 import { subscriptionAllows } from "@/lib/offlineCache";
+import { trialTimeLeft } from "@/lib/trialTime";
 import { KeyboardAvoidingViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
@@ -46,7 +47,7 @@ export default function WizardScreen() {
   // re-registered account can arrive here with status "none".
   const trialEnd = sub?.status === "trial" && sub.trialEnd ? new Date(sub.trialEnd) : null;
   const trialActive = !!trialEnd && trialEnd.getTime() >= Date.now();
-  const trialDaysLeft = trialEnd ? Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000)) : 0;
+  const trialLeft = trialEnd ? trialTimeLeft(trialEnd) : null;
   const paidAccess = !!sub && sub.status !== "trial" && subscriptionAllows(sub);
   const trialUsed = !!sub && !trialActive && !paidAccess;
   const [step, setStep] = useState(0);
@@ -230,11 +231,11 @@ export default function WizardScreen() {
         {step === 3 && !subLoading && trialActive && (
           <View>
             <View style={styles.trialBadge}>
-              <Text style={styles.trialDays}>{trialDaysLeft}</Text>
-              <Text style={styles.trialLabel}>{trialDaysLeft === 1 ? "Day" : "Days"} of Free Trial Left</Text>
+              <Text style={styles.trialDays}>{trialLeft!.value}</Text>
+              <Text style={styles.trialLabel}>{trialLeft!.value === 1 ? trialLeft!.unit : `${trialLeft!.unit}s`} of free trial left</Text>
             </View>
             <Text style={styles.bodyText}>
-              Your free trial is active until {trialEnd!.toLocaleDateString()}. Enjoy full access to all KKamera features — no credit card required right now.
+              Your free trial is active until {trialEnd!.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} on {trialEnd!.toLocaleDateString()}. Enjoy full access to all KKamera features — no credit card required right now.
             </Text>
             <InfoCard icon="checkmark-circle-outline" text="Unlimited photo & video uploads during your trial." />
             <InfoCard icon="calendar-outline" text="When the trial ends, an annual subscription keeps KKamera running — see Settings → Subscription for the price in your store." />
@@ -253,7 +254,7 @@ export default function WizardScreen() {
             <Text style={styles.bodyText}>
               Your free trial was already used — subscribe to keep uploading.
             </Text>
-            <InfoCard icon="information-circle-outline" text="Each email address gets one 14-day free trial. You can still finish setup and subscribe whenever you're ready." />
+            <InfoCard icon="information-circle-outline" text="Each email address gets one 24-hour free trial. You can still finish setup and subscribe whenever you're ready." />
             <TouchableOpacity
               style={styles.subscribeBtn}
               onPress={() => router.push("/settings/subscription")}
@@ -268,7 +269,7 @@ export default function WizardScreen() {
         {step === 3 && !subLoading && !sub && (
           <View>
             <Text style={styles.bodyText}>
-              New accounts include a 14-day free trial. Check Settings → Subscription for your trial status and the price in your store.
+              New accounts include a 24-hour free trial. Check Settings → Subscription for your trial status and the price in your store.
             </Text>
             <InfoCard icon="close-circle-outline" text="Nothing is charged unless you choose to subscribe." />
           </View>
