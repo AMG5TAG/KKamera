@@ -1,7 +1,10 @@
-import path from "path";
-import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
+import { is } from "drizzle-orm";
+import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
+import { pool } from "@workspace/db";
+import * as schema from "@workspace/db/schema";
 import app from "./app.js";
-import { setMigrationState } from "./routes/health.js";
+import { setDatabaseState } from "./routes/health.js";
+import { verifyDatabaseSchema } from "./lib/databaseReadiness.js";
 import { logger } from "./lib/logger.js";
 
 // A rejected promise with no handler is logged rather than crashing the whole
@@ -31,58 +34,62 @@ if (!sessionSecret || sessionSecret.length < 32) {
   );
 }
 
-const MIGRATION_ATTEMPTS = 3;
-const MIGRATION_BACKOFF_MS = [2_000, 8_000];
+const DATABASE_CHECK_ATTEMPTS = 3;
+const DATABASE_CHECK_BACKOFF_MS = [2_000, 8_000];
 
 /**
- * Apply versioned Drizzle migrations so a fresh database is fully provisioned on
- * boot (no manual `push` step) and existing databases stay in sync. The baseline
- * migration is idempotent, so this is safe to run on every start.
+ * Replit Publish applies the managed production schema. Validate it read-only
+ * rather than replaying migration history that may predate the publish diff.
  */
-async function runAppMigrations() {
-  // No DATABASE_URL check needed: @workspace/db throws at import without it.
-  // Migration SQL lives in lib/db/drizzle at the repo root. From the bundled
-  // entry (artifacts/api-server/dist/index.mjs) that is three levels up.
-  const migrationsFolder = path.resolve(import.meta.dirname, "../../../lib/db/drizzle");
-  await runDbMigrations(migrationsFolder);
-  logger.info("Database migrations applied");
+async function checkDatabaseSchema() {
+  const expected = Object.values(schema).flatMap((table) => {
+    if (!is(table, PgTable)) return [];
+    const config = getTableConfig(table);
+    return config.columns.map((column) => ({
+      table_schema: config.schema ?? "public",
+      table_name: config.name,
+      column_name: column.name,
+    }));
+  });
+  await verifyDatabaseSchema(
+    (text) => {
+      const config = { text, query_timeout: 10_000 };
+      return pool.query(config);
+    },
+    expected,
+  );
+  logger.info("Database schema verified");
 }
 
 /**
- * Run migrations with retry + backoff (a cold DB often fails the first
- * connection), tracking state for /api/readyz. After the final failure the
- * instance refuses API traffic (503) rather than serving on a stale schema.
+ * Check the database with retry + backoff (a cold DB can fail the first
+ * connection), tracking state for /api/readyz. Fail closed if required columns
+ * are missing, without making any changes to the database.
  */
-async function migrateWithRetry() {
-  for (let attempt = 1; attempt <= MIGRATION_ATTEMPTS; attempt++) {
+async function checkDatabaseWithRetry() {
+  for (let attempt = 1; attempt <= DATABASE_CHECK_ATTEMPTS; attempt++) {
     try {
-      await runAppMigrations();
-      setMigrationState("ok");
+      await checkDatabaseSchema();
+      setDatabaseState("ok");
       return;
     } catch (err) {
-      if (attempt === MIGRATION_ATTEMPTS) {
-        setMigrationState("failed");
+      if (attempt === DATABASE_CHECK_ATTEMPTS) {
+        setDatabaseState("failed");
         logger.fatal(
           { err, attempts: attempt },
-          "Database migration failed — refusing API traffic (503) until restarted",
+          "Database schema check failed — refusing API traffic (503) until restarted",
         );
         return;
       }
-      const delay = MIGRATION_BACKOFF_MS[attempt - 1] ?? 8_000;
-      logger.warn({ err, attempt, retryInMs: delay }, "Database migration attempt failed — retrying");
+      const delay = DATABASE_CHECK_BACKOFF_MS[attempt - 1] ?? 8_000;
+      logger.warn({ err, attempt, retryInMs: delay }, "Database schema check failed — retrying");
       await new Promise((r) => setTimeout(r, delay));
     }
   }
 }
 
-// Listen FIRST so the health-check probe succeeds immediately — do NOT await
-// migrations before binding. In production (autoscale / Cloud Run), the
-// deployer only gives the container ~60 s to open its port; if the database
-// connection is slow on cold-start the old ordering caused the process to be
-// killed before it ever called listen(). Migrations are idempotent and guarded
-// by a Postgres advisory lock, so running them concurrently with the first
-// requests is safe: DB-touching routes will get a brief connection error during
-// migration (rare) rather than the whole deployment failing every time.
+// Bind before checking the database so cold-start latency cannot prevent port
+// detection. API traffic remains gated until the read-only schema check passes.
 app.listen(port, (err?: Error) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
@@ -91,6 +98,5 @@ app.listen(port, (err?: Error) => {
   logger.info({ port }, "Server listening");
 });
 
-// Run migrations in the background after the port is open. /api/readyz
-// reports progress; a definitive failure turns API routes into 503s.
-void migrateWithRetry();
+// /api/readyz reports database availability separately from process liveness.
+void checkDatabaseWithRetry();
