@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "product-showcase": {
+      "source": "jezweb/claude-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/frontend/skills/product-showcase/SKILL.md",
+      "computedHash": "ff1cb76865d567c8cee8876543e21bc41be323983d15eec3961c8517dca076ee"
+    }
+  }
+}
