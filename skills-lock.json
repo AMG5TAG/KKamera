@@ -13,6 +13,12 @@
       "skillPath": "skills/ios-pentesting-tricks/SKILL.md",
       "computedHash": "02462796651bc9e4be6d5d5dea9afea68386f8396b93192b23ef6fe6e217ddd9"
     },
+    "mobile-app-testing": {
+      "source": "aj-geddes/useful-ai-prompts",
+      "sourceType": "github",
+      "skillPath": "skills/mobile-app-testing/SKILL.md",
+      "computedHash": "5d5c5e25d2dda5ad96c7e95cad5c7fef73358047f5113f9b87e3996f5e19489a"
+    },
     "product-showcase": {
       "source": "jezweb/claude-skills",
       "sourceType": "github",
