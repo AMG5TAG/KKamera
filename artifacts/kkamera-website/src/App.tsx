@@ -9,6 +9,7 @@ import Terms from "@/pages/terms";
 import Support from "@/pages/support";
 import Invite from "@/pages/invite";
 import OpenInApp from "@/pages/open-in-app";
+import ResetPassword from "@/pages/reset-password";
 
 const queryClient = new QueryClient();
 
@@ -22,6 +23,8 @@ function Router() {
       {/* Invite links shared from the app and sent by email */}
       <Route path="/auth/register" component={Invite} />
       <Route path="/invite" component={Invite} />
+      {/* Linked from the password-reset email */}
+      <Route path="/auth/reset-password" component={ResetPassword} />
       {/* Linked from subscription emails */}
       <Route path="/settings/subscription">
         <OpenInApp
