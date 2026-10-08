@@ -118,7 +118,7 @@ export default function AffiliateScreen() {
       <Text style={styles.sectionTitle} accessibilityRole="header">How It Works</Text>
       {[
         { step: "1", text: "Share your unique referral code with friends and family." },
-        { step: "2", text: "They sign up with your code and get a free 14-day trial." },
+        { step: "2", text: "They sign up with your code and get a free 24-hour trial." },
         { step: "3", text: "A referral counts when their first paid subscription starts — signups and trials alone don't count. Refunded or lapsed subscriptions aren't counted." },
         { step: "4", text: "Every 5 counted referrals earns you 1 free year of KKamera." },
         { step: "5", text: "There's no limit — 50 referrals = 10 free years!" },

@@ -220,7 +220,7 @@ function maxDate(...ds: (Date | null | undefined)[]): Date | null {
 /**
  * The access end a row already carries: its period end, plus a still-running
  * server trial (a row in `trial` only has trialEnd). Folding the trial in means a
- * short store-side trial / early purchase never shortens the 14-day server trial.
+ * short store-side trial / early purchase never shortens the 24-hour server trial.
  */
 function existingAccessEnd(row: MirrorRow): Date | null {
   return maxDate(row.currentPeriodEnd, row.status === "trial" ? row.trialEnd : null);

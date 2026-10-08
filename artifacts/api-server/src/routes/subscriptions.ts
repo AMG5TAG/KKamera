@@ -5,12 +5,14 @@ import { subscriptionsTable, usersTable, trialHistoryTable } from "@workspace/db
 import { eq, inArray } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { emailTrialHashes } from "../lib/emailHash.js";
+import { evaluateAccess } from "../lib/subscriptionAccess.js";
+import { isTesterUser } from "../middlewares/requireSubscription.js";
 import { RevenueCatNotConfiguredError, syncUserFromRevenueCat } from "../lib/revenueCatApi.js";
 
 // Billing is IAP-only (App Store / Play via RevenueCat). Purchases, renewals and
 // cancellations happen store-side and are mirrored into subscriptionsTable by the
 // RevenueCat webhook (routes/revenuecat.ts). These endpoints only read local
-// state and start the 14-day trial; there is no server-side checkout/cancel.
+// state and start the 24-hour trial; there is no server-side checkout/cancel.
 // POST /subscriptions/sync reconciles from the RevenueCat REST API when the app
 // knows a purchase/restore just happened (webhooks can lag or be missed).
 
@@ -18,6 +20,16 @@ const router = Router();
 
 async function subscriptionJson(userId: number) {
   const [sub] = await db.select().from(subscriptionsTable).where(eq(subscriptionsTable.userId, userId)).limit(1);
+  // Alpha testers (TESTER_EMAILS) whose own row doesn't grant access are shown
+  // as active so the app unlocks the camera; requireSubscription lets them upload.
+  if (!evaluateAccess(sub, new Date()).allow && await isTesterUser(userId)) {
+    const now = new Date();
+    return {
+      id: sub?.id ?? 0, userId, status: "active", trialEnd: null,
+      currentPeriodEnd: new Date(now.getTime() + 365 * 86_400_000).toISOString(),
+      createdAt: (sub?.createdAt ?? now).toISOString(),
+    };
+  }
   if (!sub) {
     return { id: 0, userId, status: "none", trialEnd: null, currentPeriodEnd: null, createdAt: new Date().toISOString() };
   }

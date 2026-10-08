@@ -38,7 +38,10 @@ export function normalizeReferralCode(code: string | null | undefined): string |
 
 // ─── Trial reminder ───────────────────────────────────────────────────────────
 
-export const TRIAL_REMINDER_WINDOW_DAYS = 3;
+/** The trial is 24 hours, so the reminder goes out in its last 6 hours. */
+export const TRIAL_REMINDER_WINDOW_HOURS = 6;
+const MINUTE_MS = 60_000;
+const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
 export interface TrialReminderInput {
@@ -54,18 +57,25 @@ export interface TrialReminderInput {
 export function isTrialReminderDue(
   input: TrialReminderInput,
   now: Date,
-  windowDays: number = TRIAL_REMINDER_WINDOW_DAYS,
+  windowHours: number = TRIAL_REMINDER_WINDOW_HOURS,
 ): boolean {
   if (input.status !== "trial") return false;
   if (input.trialReminderSentAt) return false;
   if (!input.trialEnd) return false;
   const remaining = input.trialEnd.getTime() - now.getTime();
-  return remaining > 0 && remaining <= windowDays * DAY_MS;
+  return remaining > 0 && remaining <= windowHours * HOUR_MS;
 }
 
-/** Whole days left in the trial, rounded up, never below 1 (for email copy). */
-export function trialDaysLeft(trialEnd: Date, now: Date): number {
-  return Math.max(1, Math.ceil((trialEnd.getTime() - now.getTime()) / DAY_MS));
+/**
+ * Time left in the trial for email copy, rounded up and never "0": minutes
+ * under an hour, hours under two days, otherwise days (older 14-day trials).
+ */
+export function trialTimeLeftText(trialEnd: Date, now: Date): string {
+  const ms = Math.max(0, trialEnd.getTime() - now.getTime());
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  if (ms < HOUR_MS) return unit(Math.max(1, Math.ceil(ms / MINUTE_MS)), "minute");
+  if (ms < 2 * DAY_MS) return unit(Math.ceil(ms / HOUR_MS), "hour");
+  return unit(Math.ceil(ms / DAY_MS), "day");
 }
 
 // ─── GDPR export ──────────────────────────────────────────────────────────────

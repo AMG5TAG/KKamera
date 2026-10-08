@@ -1,12 +1,12 @@
-modules = ["nodejs-24", "python-3.11"]
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
 
 [deployment]
 router = "application"
 deploymentTarget = "autoscale"
-# Build the workspace libs and bundle the API server (esbuild -> dist/index.mjs).
-# The API server is JSON-only; the iOS/Android apps are built and shipped via EAS.
-build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build"]
-# Start the API server.
+# Build the workspace libs, the static website (Vite -> artifacts/kkamera-website/dist/public)
+# and bundle the API server (esbuild -> dist/index.mjs). The iOS/Android apps ship via EAS.
+build = ["sh", "-c", "pnpm run typecheck:libs && PORT=19386 BASE_PATH=/ pnpm --filter @workspace/kkamera-website run build && pnpm --filter @workspace/api-server run build"]
+# Start the API server: JSON API on /api, the website on every other path.
 run = ["sh", "-c", "pnpm --filter @workspace/api-server run start"]
 
 [deployment.postBuild]

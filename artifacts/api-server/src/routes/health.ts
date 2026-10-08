@@ -3,31 +3,30 @@ import { HealthCheckResponse } from "@workspace/api-zod";
 
 const router: IRouter = Router();
 
-// ─── Migration state ──────────────────────────────────────────────────────────
-// The server listens before migrations finish (see index.ts), so readiness is
+// ─── Database state ───────────────────────────────────────────────────────────
+// The server listens before its database check finishes, so readiness is
 // tracked separately from liveness: /healthz is always 200, /readyz is 200 only
-// once the schema is current.
+// once the required schema has been verified.
 
-export type MigrationState = "pending" | "ok" | "failed";
-let migrationState: MigrationState = "pending";
+export type DatabaseState = "pending" | "ok" | "failed";
+let databaseState: DatabaseState = "pending";
 
-export function setMigrationState(state: MigrationState): void {
-  migrationState = state;
+export function setDatabaseState(state: DatabaseState): void {
+  databaseState = state;
 }
 
-export function getMigrationState(): MigrationState {
-  return migrationState;
+export function getDatabaseState(): DatabaseState {
+  return databaseState;
 }
 
 const UNGATED_PATHS = new Set(["/healthz", "/readyz"]);
 
 /**
- * After a DEFINITIVE migration failure, refuse API traffic with 503 rather than
- * serving on a stale schema. While migrations are still pending (first seconds
- * after boot) requests pass through as usual. Mount under /api.
+ * Refuse API traffic until the read-only schema check passes. Health endpoints
+ * remain available while the database is pending or failed. Mount under /api.
  */
-export const requireMigratedSchema: RequestHandler = (req, res, next) => {
-  if (migrationState !== "failed" || UNGATED_PATHS.has(req.path)) {
+export const requireVerifiedSchema: RequestHandler = (req, res, next) => {
+  if (databaseState === "ok" || UNGATED_PATHS.has(req.path)) {
     next();
     return;
   }
@@ -40,9 +39,10 @@ router.get("/healthz", (_req, res) => {
   res.json(data);
 });
 
-// Readiness — database migrations have been applied.
-router.get("/readyz", (_req, res) => {
-  const state = migrationState;
+// Readiness — database is reachable and required columns exist.
+// Monitoring also probes the artifact's base path (/api).
+router.get(["/", "/readyz"], (_req, res) => {
+  const state = databaseState;
   res.status(state === "ok" ? 200 : 503).json({ status: state === "ok" ? "ok" : state });
 });
 

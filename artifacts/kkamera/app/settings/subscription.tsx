@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { trialTimeLeft } from "@/lib/trialTime";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Platform, Modal, ActivityIndicator, Alert,
@@ -67,7 +68,7 @@ export default function SubscriptionScreen() {
 
   const status = sub?.status ?? "none";
   const trialEnd = sub?.trialEnd ? new Date(sub.trialEnd) : null;
-  const daysLeft = trialEnd ? Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000)) : 0;
+  const trialLeft = trialEnd ? trialTimeLeft(trialEnd) : null;
   const periodEnd = sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
   const cancelledButActive = status === "cancelled" && !!periodEnd && periodEnd.getTime() > Date.now();
 
@@ -199,8 +200,8 @@ export default function SubscriptionScreen() {
       return (
         <View style={styles.statusCard}>
           <Badge label="TRIAL" color={PRIMARY} bg="rgba(177,152,112,0.2)" />
-          <Text style={styles.statusTitle}>{daysLeft} days remaining</Text>
-          <Text style={styles.statusSub}>Free trial ends {trialEnd?.toLocaleDateString() ?? "soon"}</Text>
+          <Text style={styles.statusTitle}>{trialLeft ? `${trialLeft.label} remaining` : "Trial active"}</Text>
+          <Text style={styles.statusSub}>Free trial ends {trialEnd ? `${trialEnd.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} on ${trialEnd.toLocaleDateString()}` : "soon"}</Text>
         </View>
       );
     }

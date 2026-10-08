@@ -1,5 +1,5 @@
 kind = "mobile"
-previewPath = "/"
+previewPath = "/kkamera/"
 title = "KKamera"
 version = "1.0.0"
 id = "artifacts/kkamera"
@@ -12,21 +12,16 @@ version = "1.0.0"
 [[services]]
 ensurePreviewReachable = "/status"
 name = "expo"
-paths = [ "/" ]
+paths = [ "/kkamera/" ]
 localPort = 24623
 
 [services.development]
 run = "pnpm --filter @workspace/kkamera run dev"
 
-[services.production.build]
-args = ["pnpm", "--filter", "@workspace/kkamera", "run", "build"]
-
-[services.production.run]
-args = ["pnpm", "--filter", "@workspace/kkamera", "run", "serve"]
-
-[services.production.run.env]
-PORT = "24623"
+# No production service: the iOS/Android apps ship via EAS. The route stays off
+# "/" (dev runs on the Expo domain anyway) so the website artifact alone owns "/"
+# in production; a "/" claim with no production service made the router 500.
 
 [services.env]
 PORT = "24623"
-BASE_PATH = "/"
+BASE_PATH = "/kkamera/"

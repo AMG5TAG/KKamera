@@ -55,11 +55,19 @@ const WIZARD_KEY = "kkamera_wizard_done";
  */
 const POST_LOGIN_401_GRACE_MS = 5_000;
 
+// Keep the session token off encrypted backups and other devices (THIS_DEVICE_ONLY),
+// and unreadable until the first unlock after boot. AFTER_FIRST_UNLOCK (not
+// WHEN_UNLOCKED) so a backgrounded upload can still read it on a locked device.
+// Matches the PIN's protection class in lib/appLock.ts.
+const TOKEN_SECURE_OPTS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+};
+
 async function storeToken(token: string) {
   if (Platform.OS === "web") {
     await AsyncStorage.setItem(TOKEN_KEY, token);
   } else {
-    await SecureStore.setItemAsync(TOKEN_KEY, token);
+    await SecureStore.setItemAsync(TOKEN_KEY, token, TOKEN_SECURE_OPTS);
   }
 }
 
@@ -67,7 +75,7 @@ async function getToken(): Promise<string | null> {
   if (Platform.OS === "web") {
     return AsyncStorage.getItem(TOKEN_KEY);
   }
-  return SecureStore.getItemAsync(TOKEN_KEY);
+  return SecureStore.getItemAsync(TOKEN_KEY, TOKEN_SECURE_OPTS);
 }
 
 async function removeToken() {

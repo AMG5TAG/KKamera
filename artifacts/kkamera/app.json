@@ -40,6 +40,7 @@
     "android": {
       "package": "app.kkamera",
       "versionCode": 1,
+      "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#0d0b08"

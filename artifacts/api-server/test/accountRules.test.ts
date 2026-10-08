@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   newPasswordSchema, normalizedEmailSchema, normalizeReferralCode,
-  isTrialReminderDue, trialDaysLeft, buildUserExport, type ExportSource,
+  isTrialReminderDue, trialTimeLeftText, buildUserExport, type ExportSource,
 } from "../src/lib/accountRules.ts";
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
 
 // ─── Password rule ────────────────────────────────────────────────────────────
 
@@ -50,31 +51,35 @@ test("referral code: trimmed and uppercased; blank → null", () => {
 const now = new Date("2026-01-10T12:00:00Z");
 const at = (ms: number) => new Date(now.getTime() + ms);
 
-test("reminder: due for a trial ending within 3 days, not yet sent", () => {
-  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(2 * DAY), trialReminderSentAt: null }, now), true);
-  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(3 * DAY), trialReminderSentAt: null }, now), true);
+test("reminder: due for a trial ending within 6 hours, not yet sent", () => {
+  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(2 * HOUR), trialReminderSentAt: null }, now), true);
+  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(6 * HOUR), trialReminderSentAt: null }, now), true);
   assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(60_000), trialReminderSentAt: null }, now), true);
 });
 
 test("reminder: not due when too early, already ended, or already sent", () => {
-  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(3 * DAY + 1), trialReminderSentAt: null }, now), false);
+  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(6 * HOUR + 1), trialReminderSentAt: null }, now), false);
+  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(DAY), trialReminderSentAt: null }, now), false);
   assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(0), trialReminderSentAt: null }, now), false);
   assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(-DAY), trialReminderSentAt: null }, now), false);
-  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(DAY), trialReminderSentAt: at(-DAY) }, now), false);
+  assert.equal(isTrialReminderDue({ status: "trial", trialEnd: at(HOUR), trialReminderSentAt: at(-HOUR) }, now), false);
 });
 
 test("reminder: not due for non-trial statuses or a trial with no end date", () => {
   for (const status of ["active", "cancelled", "past_due", "expired", "none"]) {
-    assert.equal(isTrialReminderDue({ status, trialEnd: at(DAY), trialReminderSentAt: null }, now), false);
+    assert.equal(isTrialReminderDue({ status, trialEnd: at(HOUR), trialReminderSentAt: null }, now), false);
   }
   assert.equal(isTrialReminderDue({ status: "trial", trialEnd: null, trialReminderSentAt: null }, now), false);
 });
 
-test("trialDaysLeft rounds up and never reports 0", () => {
-  assert.equal(trialDaysLeft(at(3 * DAY), now), 3);
-  assert.equal(trialDaysLeft(at(2 * DAY + 1), now), 3);
-  assert.equal(trialDaysLeft(at(DAY), now), 1);
-  assert.equal(trialDaysLeft(at(60_000), now), 1);
+test("trialTimeLeftText rounds up and never reports 0", () => {
+  assert.equal(trialTimeLeftText(at(DAY), now), "24 hours");
+  assert.equal(trialTimeLeftText(at(5 * HOUR + 1), now), "6 hours");
+  assert.equal(trialTimeLeftText(at(HOUR), now), "1 hour");
+  assert.equal(trialTimeLeftText(at(HOUR - 1), now), "60 minutes");
+  assert.equal(trialTimeLeftText(at(60_000), now), "1 minute");
+  assert.equal(trialTimeLeftText(at(1), now), "1 minute");
+  assert.equal(trialTimeLeftText(at(3 * DAY), now), "3 days");
 });
 
 // ─── GDPR export shape ────────────────────────────────────────────────────────

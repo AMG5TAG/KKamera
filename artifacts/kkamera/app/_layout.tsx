@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router, useRootNavigationState, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, BackHandler, Keyboard, StyleSheet, View } from "react-native";
+import { AppState, BackHandler, Image, Keyboard, StyleSheet, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -46,6 +46,10 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
 
   // null = not decided yet (settings/session still hydrating from storage).
   const [lockedState, setLockedState] = useState<boolean | null>(null);
+  // Obscure the UI whenever the app isn't active (`inactive` or `background`), so
+  // the snapshot iOS takes for the app switcher — and keeps on disk — shows the
+  // splash, not live content (captured photos, cloud settings). See §7.1.
+  const [obscured, setObscured] = useState(false);
   // Derive the initial decision synchronously during render, so the frame in
   // which hydration finishes already shows the lock — a deep-linked screen never
   // paints unlocked on a cold start. A session restored from storage (no
@@ -86,6 +90,7 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
   useEffect(() => { lockEnabledRef.current = lockEnabled; }, [lockEnabled]);
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
+      setObscured(next !== "active");
       if (next === "background") {
         if (backgroundedAt.current === null && !isAuthPromptActive()) {
           backgroundedAt.current = Date.now();
@@ -156,6 +161,11 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
       >
         {children}
       </View>
+      {obscured && isAuthenticated && locked !== true && (
+        <View style={styles.coverCenter} pointerEvents="none">
+          <Image source={require("../assets/images/splash.png")} style={styles.coverLogo} resizeMode="contain" />
+        </View>
+      )}
       {locked === null && <View style={styles.cover} />}
       {locked === true && (
         <View style={styles.cover} accessibilityViewIsModal>
@@ -185,6 +195,11 @@ function isPublicRoute(segments: string[]): boolean {
 const styles = StyleSheet.create({
   gateRoot: { flex: 1, backgroundColor: "#0d0b08" },
   cover: { ...StyleSheet.absoluteFillObject, backgroundColor: "#0d0b08", zIndex: 1000, elevation: 1000 },
+  coverCenter: {
+    ...StyleSheet.absoluteFillObject, backgroundColor: "#0d0b08",
+    alignItems: "center", justifyContent: "center", zIndex: 999, elevation: 999,
+  },
+  coverLogo: { width: 160, height: 160 },
 });
 
 // ---------------------------------------------------------------------------

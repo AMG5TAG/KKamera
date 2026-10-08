@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- kkamera.app is the canonical site host: send www visitors there, keeping path/query/hash.
+         The site is served statically, so this runs client-side before anything else loads. -->
+    <script>
+      if (location.hostname === "www.kkamera.app") {
+        location.replace("https://kkamera.app" + location.pathname + location.search + location.hash);
+      }
+    </script>
+    <title>KKamera — Cloud-Based Photography for Trades &amp; Business</title>
+    <meta name="description" content="KKamera instantly uploads your work photos and videos to a secure business cloud — keeping your personal camera roll clean, private and clutter-free. Built for tradespeople and professionals across Australia." />
+    <meta name="robots" content="index, follow" />
+    <meta property="og:title" content="KKamera — Cloud-Based Photography for Trades &amp; Business" />
+    <meta property="og:description" content="Instantly upload work photos to a secure business cloud. Keep your personal gallery clean, private and clutter-free." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="KKamera — Cloud-Based Photography for Trades &amp; Business" />
+    <meta name="twitter:description" content="Instantly upload work photos to a secure business cloud. Keep your personal gallery clean, private and clutter-free." />
+    <link rel="icon" type="image/png" href="/favicon.png" sizes="512x512" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
