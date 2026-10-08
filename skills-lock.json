@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "android-pentesting-tricks": {
+      "source": "yaklang/hack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/android-pentesting-tricks/SKILL.md",
+      "computedHash": "1c4627b9e0d151ae81a0d5edee44e9c1278ba48b11f7622b7c7ea51fd0547ff5"
+    },
     "product-showcase": {
       "source": "jezweb/claude-skills",
       "sourceType": "github",
