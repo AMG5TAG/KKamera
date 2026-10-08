@@ -7,6 +7,12 @@
       "skillPath": "skills/android-pentesting-tricks/SKILL.md",
       "computedHash": "1c4627b9e0d151ae81a0d5edee44e9c1278ba48b11f7622b7c7ea51fd0547ff5"
     },
+    "ios-pentesting-tricks": {
+      "source": "yaklang/hack-skills",
+      "sourceType": "github",
+      "skillPath": "skills/ios-pentesting-tricks/SKILL.md",
+      "computedHash": "02462796651bc9e4be6d5d5dea9afea68386f8396b93192b23ef6fe6e217ddd9"
+    },
     "product-showcase": {
       "source": "jezweb/claude-skills",
       "sourceType": "github",
