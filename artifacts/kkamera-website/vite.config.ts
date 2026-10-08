@@ -1,7 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import fs from "fs";
 import path from "path";
+import type { Plugin } from "vite";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
 const rawPort = process.env.PORT;
@@ -26,10 +28,30 @@ if (!basePath) {
   );
 }
 
+/**
+ * The marketing pages are the static showcase site (repo-root showcase/).
+ * After the build, the SPA shell moves to app.html (it still answers /privacy,
+ * /terms, /support, /invite, ...) and the showcase is copied over the top so
+ * its index.html is the home page.
+ */
+function showcaseSite(): Plugin {
+  const showcaseDir = path.resolve(import.meta.dirname, "..", "..", "showcase");
+  return {
+    name: "kkamera-showcase",
+    apply: "build",
+    closeBundle() {
+      const outDir = path.resolve(import.meta.dirname, "dist/public");
+      fs.renameSync(path.join(outDir, "index.html"), path.join(outDir, "app.html"));
+      fs.cpSync(showcaseDir, outDir, { recursive: true });
+    },
+  };
+}
+
 export default defineConfig({
   base: basePath,
   plugins: [
     react(),
+    showcaseSite(),
     tailwindcss(),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== "production" &&

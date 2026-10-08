@@ -22,6 +22,10 @@ function resolveWebsiteDir(): string {
 export function mountWebsite(app: Express): void {
   const dir = resolveWebsiteDir();
   const indexHtml = path.join(dir, "index.html");
+  // The build moves the SPA shell to app.html and puts the showcase home page
+  // at index.html; older builds only have the SPA at index.html.
+  const appHtml = path.join(dir, "app.html");
+  const spaShell = fs.existsSync(appHtml) ? appHtml : indexHtml;
   if (!fs.existsSync(indexHtml)) {
     logger.warn({ dir }, "Website build not found — serving the API only");
     return;
@@ -29,7 +33,9 @@ export function mountWebsite(app: Express): void {
 
   const assetsDir = path.join(dir, "assets") + path.sep;
   const serveStatic = express.static(dir, {
-    index: false,
+    // "/" is the showcase home page; /features and /how-it-works map to .html files.
+    index: spaShell === appHtml ? "index.html" : false,
+    extensions: spaShell === appHtml ? ["html"] : false,
     setHeaders(res, filePath) {
       // Vite fingerprints everything under /assets, so it can be cached forever.
       if (filePath.startsWith(assetsDir)) {
@@ -47,7 +53,7 @@ export function mountWebsite(app: Express): void {
   app.use((req, res, next) => {
     if (!isWebsiteRequest(req.method, req.path)) { next(); return; }
     res.setHeader("Cache-Control", "no-cache");
-    res.sendFile(indexHtml);
+    res.sendFile(spaShell);
   });
 
   logger.info({ dir }, "Serving website");
