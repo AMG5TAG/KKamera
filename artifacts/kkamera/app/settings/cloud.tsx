@@ -89,7 +89,7 @@ export default function CloudScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.canGoBack() ? router.back() : router.replace("/")}>
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
       <FlatList

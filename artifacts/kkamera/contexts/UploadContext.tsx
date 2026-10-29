@@ -14,7 +14,7 @@ import { useAuth } from "./AuthContext";
 import { useSettings } from "./SettingsContext";
 import { API_BASE_URL, MAX_UPLOAD_BYTES } from "@/lib/config";
 import { resolveUploadTarget, type ResolvedTarget } from "@/lib/uploadTarget";
-import { getUploadTarget } from "@workspace/api-client-react";
+import { getUploadTarget, listCloudConnections } from "@workspace/api-client-react";
 
 export type UploadStatus = "idle" | "queued" | "uploading" | "done" | "failed" | "partial";
 
@@ -696,13 +696,22 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
   processRef.current = () => { void processQueue(); };
 
-  /** Make parked items (and not-yet-due waiting ones) eligible right now. */
-  const wake = useCallback((includeAuth: boolean) => {
+  /**
+   * Make parked items (and not-yet-due waiting ones) eligible right now.
+   * Auth- and no-cloud-parked items only wake when asked: re-sending a whole
+   * file on every foreground/network change just gets it 202-queued again
+   * while the user still has no cloud connected.
+   */
+  const wake = useCallback((opts: { auth?: boolean; noCloud?: boolean } = {}) => {
     const owner = userIdRef.current;
     const now = Date.now();
     for (const item of offlineQueue) {
       if (item.ownerId !== owner || inFlight.has(item.id)) continue;
-      if (item.state === "parked" && (includeAuth || item.parkReason !== "auth")) {
+      if (
+        item.state === "parked"
+        && (opts.auth || item.parkReason !== "auth")
+        && (opts.noCloud || item.parkReason !== "no-cloud")
+      ) {
         item.state = "waiting";
         item.parkReason = undefined;
       }
@@ -757,9 +766,29 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     processRef.current();
   }, [addUpload, updateUpload, syncQueue]);
 
+  // Explicit retry (a cloud was just connected, the subscription changed…):
+  // also wakes captures parked for having no cloud.
   const retryQueued = useCallback((token?: string | null) => {
     if (token) tokenRef.current = token;
-    wake(false);
+    wake({ noCloud: true });
+  }, [wake]);
+
+  /**
+   * Foreground/network wake. Captures parked for "no cloud" are only re-sent
+   * once the account actually has an active connection again — one cheap GET
+   * instead of re-uploading every parked file.
+   */
+  const wakeOnResume = useCallback(() => {
+    wake();
+    const owner = userIdRef.current;
+    const hasNoCloud = offlineQueue.some(i =>
+      i.ownerId === owner && i.state === "parked" && i.parkReason === "no-cloud");
+    if (!hasNoCloud || !tokenRef.current) return;
+    listCloudConnections()
+      .then(conns => {
+        if (userIdRef.current === owner && conns.some(c => c.active)) wake({ noCloud: true });
+      })
+      .catch(() => { /* offline / signed out — stay parked */ });
   }, [wake]);
 
   const retryItem = useCallback(async (id: string) => {
@@ -893,7 +922,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       });
     }
     // Signed in (again): resume everything, including auth-parked captures.
-    wake(true);
+    wake({ auth: true, noCloud: true });
   }, [queueReady, authLoading, userId, token, reflect, wake]);
 
   // Settings finished loading or Wi-Fi-only was switched: re-evaluate.
@@ -904,10 +933,10 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   // Retry immediately when the app returns to the foreground…
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
-      if (next === "active") wake(false);
+      if (next === "active") wakeOnResume();
     });
     return () => sub.remove();
-  }, [wake]);
+  }, [wakeOnResume]);
 
   // …and when connectivity comes back (or switches to Wi-Fi).
   useEffect(() => {
@@ -915,11 +944,11 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     let sub: { remove: () => void } | null = null;
     try {
       sub = Network.addNetworkStateListener((state) => {
-        if (state.isConnected !== false) wake(false);
+        if (state.isConnected !== false) wakeOnResume();
       });
     } catch { /* listener unavailable — foreground/timer retries still apply */ }
     return () => sub?.remove();
-  }, [wake]);
+  }, [wakeOnResume]);
 
   useEffect(() => () => clearTimer(), []);
 

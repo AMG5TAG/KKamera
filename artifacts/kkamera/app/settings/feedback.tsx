@@ -4,7 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
-import { useSubmitFeedback } from "@workspace/api-client-react";
+import { useSubmitFeedback, getUserFacingMessage } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -32,8 +32,8 @@ export default function FeedbackScreen() {
       await submitMutation.mutateAsync({ data: { type, message: message.trim() } });
       setSent(true);
       setMessage("");
-    } catch {
-      Alert.alert("Error", "Could not submit feedback. Please try again.");
+    } catch (e) {
+      Alert.alert("Error", getUserFacingMessage(e, "Could not submit feedback. Please try again."));
     }
   };
 

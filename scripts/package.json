@@ -6,6 +6,7 @@
   "scripts": {
     "seed:revenuecat": "tsx ./src/seedRevenueCat.ts",
     "seed:revenuecat-webhook": "tsx ./src/setupRevenueCatWebhook.ts",
+    "grant-premium": "tsx ./src/grantPremium.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
@@ -13,6 +14,8 @@
     "tsx": "catalog:"
   },
   "dependencies": {
-    "@replit/revenuecat-sdk": "catalog:"
+    "@replit/revenuecat-sdk": "catalog:",
+    "@workspace/db": "workspace:*",
+    "drizzle-orm": "catalog:"
   }
 }

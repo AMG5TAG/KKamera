@@ -20,6 +20,7 @@
     "@expo/ngrok": "^4.1.0",
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native/metro-config": "0.86.3",
     "@stardazed/streams-text-encoding": "^1.0.2",
     "@tanstack/react-query": "catalog:",
     "@types/react": "~19.2.10",
@@ -50,10 +51,10 @@
     "react-native-worklets": "0.10.1",
     "typescript": "~5.9.2",
     "zod": "catalog:",
-    "zod-validation-error": "^3.4.0",
-    "@react-native/metro-config": "0.86.3"
+    "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
+    "@sentry/react-native": "~7.11.0",
     "expo": "~57.0.26",
     "expo-build-properties": "~57.0.22",
     "expo-camera": "~57.0.6",

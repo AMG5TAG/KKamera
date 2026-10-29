@@ -201,9 +201,9 @@ export default function HistoryScreen() {
         {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
         <View style={styles.center}>
           <Ionicons name="eye-off-outline" size={48} color="#333" accessible={false} />
-          <Text style={styles.emptyTitle}>History is disabled</Text>
+          <Text style={styles.emptyTitle}>History is hidden</Text>
           <Text style={styles.emptyText}>
-            Enable "Record History" in Settings → Upload to start tracking uploads.
+            Turn on "Show Upload History" in Settings → Upload to see past uploads on this device.
           </Text>
           <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push("/settings/upload" as any)} accessibilityRole="button">
             <Text style={styles.settingsBtnText}>Open Upload Settings</Text>

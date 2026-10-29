@@ -4,10 +4,10 @@ import { eq, lt } from "drizzle-orm";
 import { logger } from "./logger.js";
 import type { DbTx } from "./referrals.js";
 import {
-  allowSandboxIap,
   isStaleDecision,
   mapSubscriberEntitlement,
   mergeDecision,
+  sandboxIapOptions,
   type MergeOptions,
   type MirrorDecision,
 } from "./revenueCatMapping.js";
@@ -145,7 +145,7 @@ export interface SyncOptions {
  */
 export async function syncUserFromRevenueCat(userId: number, opts: SyncOptions = {}): Promise<MirrorResult> {
   const body = await fetchSubscriber(String(userId));
-  const mapped = mapSubscriberEntitlement(body, userId, new Date(), { allowSandbox: allowSandboxIap() });
+  const mapped = mapSubscriberEntitlement(body, userId, new Date(), sandboxIapOptions());
 
   // REST reads are snapshots of current store state: never blocked by (and they
   // stamp) subscriptions.last_event_at, so older in-flight webhooks can't undo them.

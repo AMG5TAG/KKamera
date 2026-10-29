@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, TextInput, Image, Alert, Platform, ActivityIndicator, Linking, Share } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Image, Alert, Platform, ActivityIndicator, Linking, Share } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
@@ -8,6 +8,7 @@ import {
   useSetup2FA, useVerify2FA, useDisable2FA, useLogoutAll, getGetMeQueryKey, getUserFacingMessage,
 } from "@workspace/api-client-react";
 import { useAuth, type AuthUser } from "@/contexts/AuthContext";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -156,7 +157,7 @@ export default function SecurityScreen() {
     <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
     </TouchableOpacity>
-    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
+    <KeyboardAwareScrollViewCompat style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
       {/* Status card */}
       <View style={[styles.statusCard, is2FAEnabled && styles.statusCardOn]}>
         <Ionicons name={is2FAEnabled ? "shield-checkmark" : "shield-outline"} size={40} color={is2FAEnabled ? "#22c55e" : "#888"} />
@@ -337,7 +338,7 @@ export default function SecurityScreen() {
           </TouchableOpacity>
         </>
       )}
-    </ScrollView>
+    </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

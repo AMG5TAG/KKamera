@@ -7,7 +7,7 @@ import { MailLink } from "@/components/MailLink";
 
 const PRIMARY = "#b19870";
 
-const LAST_UPDATED = "28 September 2026";
+const LAST_UPDATED = "29 October 2026";
 const CONTACT = "development@koastal.com.au";
 
 export default function TermsScreen() {
@@ -71,7 +71,7 @@ export default function TermsScreen() {
       </Section>
 
       <Section title="11. Governing law">
-        These terms are governed by the laws of England and Wales. Any disputes shall be subject to the exclusive jurisdiction of the courts of England and Wales. This does not take away consumer protections you have under the laws of the country where you live.
+        These terms are governed by the laws of New South Wales, Australia. Any disputes shall be subject to the exclusive jurisdiction of the courts of New South Wales and the courts entitled to hear appeals from them. This does not take away rights you have under the Australian Consumer Law or the consumer protection laws of the country where you live.
       </Section>
 
       <Section title="12. Changes to these terms">

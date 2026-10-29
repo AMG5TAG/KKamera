@@ -20,6 +20,7 @@ import {
   DRIVE_RESUMABLE_THRESHOLD,
   DROPBOX_CHUNK_SIZE,
   DROPBOX_SESSION_THRESHOLD,
+  MAX_UPLOAD_DEADLINE_MS,
   ONEDRIVE_CHUNK_SIZE,
   ONEDRIVE_SESSION_THRESHOLD,
   RemoteHttpError,
@@ -200,10 +201,23 @@ async function refreshAndPersistToken(conn: CloudConn, signal?: AbortSignal): Pr
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    // A rejected refresh token (400 invalid_grant / 401) means the user must
-    // re-connect; surface it as an auth failure rather than a generic one.
+    let oauthError: string | undefined;
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      if (typeof parsed.error === "string") oauthError = parsed.error;
+    } catch { /* not JSON */ }
+    // Only a rejected refresh token (invalid_grant, or a 401) means the user
+    // must re-connect. invalid_client / unauthorized_client are OUR credentials
+    // (missing or wrong client id/secret) — telling every user to re-connect
+    // wouldn't help, so log it loudly as a server misconfiguration instead.
+    const clientProblem = oauthError === "invalid_client" || oauthError === "unauthorized_client";
+    if (clientProblem) {
+      logger.error({ type: conn.type, status: res.status, oauthError },
+        `OAuth token refresh rejected our client credentials — check ${cfg.clientIdEnv} / ${cfg.clientSecretEnv}`);
+    }
+    const reauth = !clientProblem && (res.status === 401 || oauthError === "invalid_grant");
     throw Object.assign(new Error(`Token refresh failed (${res.status}): ${text.slice(0, 500)}`), {
-      code: res.status === 400 || res.status === 401 ? "REAUTH" : undefined,
+      code: reauth ? "REAUTH" : undefined,
     });
   }
 
@@ -226,14 +240,19 @@ async function refreshAndPersistToken(conn: CloudConn, signal?: AbortSignal): Pr
   return data.access_token;
 }
 
+// A token fetched at the start of a provider upload must outlive the whole
+// upload (up to MAX_UPLOAD_DEADLINE_MS), plus a little clock-skew slack.
+const TOKEN_REFRESH_MARGIN_MS = MAX_UPLOAD_DEADLINE_MS + 5 * 60_000;
+
 /**
  * Return a valid decrypted access token. Automatically refreshes when the
- * token is absent, already expired, or expiring within the next 5 minutes.
+ * token is absent, already expired, or would expire before the longest
+ * possible upload finishes (TOKEN_REFRESH_MARGIN_MS).
  */
 async function getAccessToken(conn: CloudConn, signal?: AbortSignal): Promise<string> {
   const raw = decryptCredential(conn.accessTokenEncrypted);
-  const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
-  const expiringSoon = conn.tokenExpiry != null && conn.tokenExpiry < fiveMinFromNow;
+  const refreshBefore = new Date(Date.now() + TOKEN_REFRESH_MARGIN_MS);
+  const expiringSoon = conn.tokenExpiry != null && conn.tokenExpiry < refreshBefore;
 
   if ((!raw || expiringSoon) && conn.refreshToken) {
     return refreshAndPersistToken(conn, signal);

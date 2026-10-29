@@ -98,8 +98,9 @@ const changePasswordLimiter = rateLimit({
   message: { message: "Too many password change attempts. Please try again in 15 minutes." },
 });
 
-// Password re-authentication on sensitive authenticated routes (2FA setup /
-// enable / disable, "sign out everywhere") — bound guesses per account.
+// Per-account bound on sensitive authenticated routes: password
+// re-authentication for 2FA setup / enable / disable, plus "sign out
+// everywhere" (which takes no password — the limit just caps token churn).
 const reauthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -421,10 +422,21 @@ router.post("/auth/verify-email", verifyEmailLimiter, async (req, res) => {
 
     const result = await db.transaction(async (tx) => {
       const now = new Date();
+      // Lock order is user row → verification rows, the same as
+      // issueVerificationCode and password reset (the reverse could deadlock
+      // against them). So find the owner unlocked, lock the user, then lock the
+      // verification row and re-check it still belongs to that user.
+      const [owner] = await tx.select({ userId: emailVerificationsTable.userId }).from(emailVerificationsTable)
+        .where(eq(emailVerificationsTable.nonceHash, nonceHash)).limit(1);
+      if (!owner) return null;
+      const [user] = await tx.select().from(usersTable)
+        .where(eq(usersTable.id, owner.userId)).for("update").limit(1);
+      if (!user) return null;
       // Row lock: concurrent guesses against one code serialise, so the attempt
       // counter can't be raced past the limit and a code is redeemed only once.
       const [row] = await tx.select().from(emailVerificationsTable)
-        .where(eq(emailVerificationsTable.nonceHash, nonceHash)).for("update").limit(1);
+        .where(and(eq(emailVerificationsTable.nonceHash, nonceHash), eq(emailVerificationsTable.userId, user.id)))
+        .for("update").limit(1);
       if (!row || !isVerificationRedeemable(row, now)) return null;
 
       if (!verificationCodeMatches(row.codeHash, nonceHash, code)) {
@@ -434,12 +446,10 @@ router.post("/auth/verify-email", verifyEmailLimiter, async (req, res) => {
         return null;
       }
 
-      const [user] = await tx.select().from(usersTable)
-        .where(eq(usersTable.id, row.userId)).for("update").limit(1);
       // Codes are only issued to unverified accounts, and verifying (or a
       // password reset) voids the rest — a still-open row on a verified account
       // must never be able to overwrite its password.
-      if (!user || user.emailVerifiedAt) return null;
+      if (user.emailVerifiedAt) return null;
 
       await tx.update(emailVerificationsTable).set({ usedAt: now }).where(eq(emailVerificationsTable.id, row.id));
       await invalidateUnusedVerifications(tx, user.id, now);
@@ -709,11 +719,18 @@ router.post("/auth/2fa/setup", requireAuth, reauthLimiter, async (req, res) => {
 
     // The secret is stored encrypted (crypto.ts); a fresh secret starts a fresh
     // replay window.
-    await db.update(usersTable).set({
+    // Conditional on 2FA still being off: a concurrent /2fa/enable between the
+    // check above and here must not have its active secret overwritten.
+    const [stored] = await db.update(usersTable).set({
       twoFASecret: encrypt(secret),
       twoFABackupCodes: JSON.stringify(backupCodesHashed),
       totpLastStep: null,
-    }).where(eq(usersTable.id, req.userId!));
+    }).where(and(eq(usersTable.id, req.userId!), eq(usersTable.twoFAEnabled, false)))
+      .returning({ id: usersTable.id });
+    if (!stored) {
+      res.status(400).json({ message: "2FA is already enabled. Disable it before setting up again." });
+      return;
+    }
 
     const otpauth = authenticator.keyuri(user.email, "KKamera", secret);
     const qrCodeUrl = await QRCode.toDataURL(otpauth);

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  ScrollView, Platform, Alert, ActivityIndicator,
+  Platform, Alert, ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -10,10 +10,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
 import {
   useCreateCloudConnection, useUpdateCloudConnection, useListCloudConnections,
-  getListCloudConnectionsQueryKey, getUserFacingMessage,
-  type CloudConnectionUpdate,
+  getListCloudConnectionsQueryKey, getUserFacingMessage, initiateOAuth,
+  type CloudConnectionUpdate, type OAuthNotConfigured,
 } from "@workspace/api-client-react";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUpload } from "@/contexts/UploadContext";
 import { API_BASE_URL } from "@/lib/config";
 import { completeOAuthConnection, forgetOAuthNonce, rememberOAuthNonce } from "@/lib/oauthPending";
 
@@ -110,6 +112,7 @@ export default function AddCloudScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const { token } = useAuth();
+  const { retryQueued } = useUpload();
   const createMutation = useCreateCloudConnection();
   const updateMutation = useUpdateCloudConnection();
 
@@ -175,21 +178,20 @@ export default function AddCloudScreen() {
     setOauthLoading(true);
     try {
       const platform = Platform.OS === "web" ? "web" : "native";
-      const res = await fetch(`${BASE_URL}/api/oauth/${provider}/initiate`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
+      // Through the shared client: base URL, bearer token, 401 → sign-out, a
+      // request timeout, and no JSON.parse of an HTML proxy error page.
+      let data: Awaited<ReturnType<typeof initiateOAuth>>;
+      try {
+        data = await initiateOAuth(provider as Parameters<typeof initiateOAuth>[0], {
           name: name.trim() || selected?.label,
           platform,
           uploadPath: uploadPath || "/KKamera",
-        }),
-      });
-
-      const data = await res.json() as any;
-
-      if (!res.ok) {
-        const msg = data?.message ?? "Failed to start OAuth";
-        if (data?.missingEnv) {
+        });
+      } catch (e) {
+        // ApiError carries the server's JSON body; a 503 here is OAuthNotConfigured.
+        const errData = (e as { data?: Partial<OAuthNotConfigured> | null } | null)?.data;
+        const msg = getUserFacingMessage(e, "Failed to start OAuth");
+        if (errData && typeof errData === "object" && errData.missingEnv) {
           Alert.alert(
             "OAuth Not Configured",
             `${msg}\n\nAsk the app developer to add the required keys to the server environment.`,
@@ -239,6 +241,8 @@ export default function AddCloudScreen() {
             });
             queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
             if (completion.ok) {
+              // Captures parked waiting for a cloud can upload now.
+              retryQueued(token);
               Alert.alert(
                 "Connected!",
                 `"${completion.name}" added successfully.`,
@@ -262,8 +266,8 @@ export default function AddCloudScreen() {
           Alert.alert("Auth Error", "OAuth flow did not complete. Please try again.");
         }
       }
-    } catch (err: any) {
-      Alert.alert("Error", err?.message ?? "OAuth failed");
+    } catch (err) {
+      Alert.alert("Error", getUserFacingMessage(err, "OAuth failed"));
     } finally {
       setOauthLoading(false);
     }
@@ -296,6 +300,8 @@ export default function AddCloudScreen() {
         },
       });
       queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+      // Captures parked waiting for a cloud can upload now.
+      retryQueued(token);
       Alert.alert("Connection Added", `"${name}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
     } catch (e: any) {
       // This client throws ApiError (custom fetch mutator), not an axios error —
@@ -339,6 +345,13 @@ export default function AddCloudScreen() {
       // password" sends null; anything typed replaces it.
       if (clearPassword) data.password = null;
       else if (password) data.password = password;
+      // The server won't send a saved password to a different host/port
+      // unless it's re-entered in the same save (see retargetNeedsPassword).
+      const retargeted = data.host !== (editing.host ?? "") || portNum !== (editing.port ?? null);
+      if (retargeted && editing.hasPassword && data.password === undefined) {
+        Alert.alert("Re-enter Password", "You changed the server host or port. Please re-enter the password for the new server (or clear the saved one).");
+        return;
+      }
     }
     try {
       await updateMutation.mutateAsync({ id: editing.id, data });
@@ -356,7 +369,7 @@ export default function AddCloudScreen() {
       <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <KeyboardAwareScrollViewCompat contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionTitle}>{editId != null ? "Edit Connection" : "Choose Storage Type"}</Text>
 
         {editId != null && !editing && (
@@ -503,7 +516,7 @@ export default function AddCloudScreen() {
                       editable={!clearPassword}
                       placeholder={
                         clearPassword ? "Saved password will be removed"
-                          : editing?.hasPassword ? "Leave blank to keep the saved password"
+                          : editing?.hasPassword ? "Leave blank to keep (re-enter if you change the host)"
                           : "password"
                       }
                       placeholderTextColor="#555"
@@ -555,7 +568,7 @@ export default function AddCloudScreen() {
             )}
           </>
         )}
-      </ScrollView>
+      </KeyboardAwareScrollViewCompat>
     </View>
   );
 }

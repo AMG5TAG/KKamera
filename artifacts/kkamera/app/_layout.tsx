@@ -22,11 +22,13 @@ import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
 import { API_BASE_URL } from "@/lib/config";
 import LockScreen, { type LockSignOutReason } from "@/components/LockScreen";
 import { clearPin, isAuthPromptActive, RELOCK_GRACE_MS } from "@/lib/appLock";
+import { initErrorReporting } from "@/lib/errorReporting";
 
 if (API_BASE_URL) {
   setBaseUrl(API_BASE_URL);
 }
 
+initErrorReporting();
 SplashScreen.preventAutoHideAsync().catch(() => {});
 initializeRevenueCat();
 
@@ -124,12 +126,25 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
   // signed-out deep link (kkamera://camera, kkamera://settings/cloud, …) is sent
   // there too instead of rendering a screen that can only fail. A signed-in
   // user who hasn't finished onboarding can't reach the main app via a deep link
-  // or restored route — they're sent back to the wizard.
+  // or restored route — they're sent back to the wizard. A signed-in user who
+  // lands on Sign In / Register (e.g. tapping an invite link) is sent to the
+  // index route, which picks camera vs wizard. Other auth screens (verify-email,
+  // reset-password, forgot-password) stay reachable so their links still work.
   const segments = useSegments();
   const navReady = !!useRootNavigationState()?.key;
+  // A sign-in that happens ON an auth screen (login / verify-email) navigates
+  // onward itself; the guard must not race it with a second replace.
+  const prevAuthenticated = useRef<boolean | null>(null);
+  const signInNavigating = useRef(false);
   useEffect(() => {
-    if (!ready || !navReady) return;
+    if (!ready) return;
     const top = segments[0] as string | undefined;
+    if (prevAuthenticated.current === false && isAuthenticated && top === "auth") {
+      signInNavigating.current = true;
+    }
+    prevAuthenticated.current = isAuthenticated;
+    if (top !== "auth" || !isAuthenticated) signInNavigating.current = false;
+    if (!navReady) return;
     if (!isAuthenticated && !isPublicRoute(segments as string[])) {
       router.replace("/auth/login");
     } else if (
@@ -137,6 +152,11 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
       top !== undefined && ONBOARDING_GATED.has(top)
     ) {
       router.replace("/wizard");
+    } else if (
+      isAuthenticated && !signInNavigating.current &&
+      top === "auth" && AUTH_ONLY_SIGNED_OUT.has(segments[1] as string)
+    ) {
+      router.replace("/");
     }
   }, [ready, navReady, isAuthenticated, hasCompletedWizard, segments]);
 
@@ -171,6 +191,9 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
 // Main-app routes that require a finished onboarding wizard. Settings, auth,
 // legal and OAuth routes stay reachable (the wizard itself opens Add Cloud).
 const ONBOARDING_GATED = new Set(["camera", "(tabs)", "history", "markup", "invite"]);
+
+// Auth screens that make no sense once signed in (see the routing guard).
+const AUTH_ONLY_SIGNED_OUT = new Set(["login", "register"]);
 
 // Routes a signed-out user may open. The index route (no segments) redirects
 // on its own; OAuth result pages must still render to show their message.

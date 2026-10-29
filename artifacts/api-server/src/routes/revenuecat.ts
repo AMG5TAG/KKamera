@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "@workspace/db";
 import { logger } from "../lib/logger.js";
-import { allowSandboxIap, eventIdOf, mapRevenueCatEvent, secretsEqual } from "../lib/revenueCatMapping.js";
+import { eventIdOf, mapRevenueCatEvent, sandboxIapOptions, secretsEqual } from "../lib/revenueCatMapping.js";
 import {
   applyMirrorDecisionInTx,
   claimRevenueCatEvent,
@@ -26,8 +26,8 @@ const router = Router();
  * dashboard and as REVENUECAT_WEBHOOK_AUTH here) — the route fails closed if it
  * is unset, so an unconfigured deploy never trusts an unauthenticated caller.
  *
- * SANDBOX events are ignored unless ALLOW_SANDBOX_IAP=true, and even then never
- * complete or reverse referrals. Row writes go through applyMirrorDecisionInTx
+ * SANDBOX events are ignored unless ALLOW_SANDBOX_IAP=true or the user is in
+ * SANDBOX_IAP_USER_IDS, and even then never complete or reverse referrals. Row writes go through applyMirrorDecisionInTx
  * (forward-only period ends, refunds pinned, no rows for deleted users, events
  * older than subscriptions.last_event_at can't change status).
  *
@@ -78,7 +78,7 @@ router.post("/revenuecat/webhook", async (req, res) => {
   if (!eventId) logger.warn({ type: ev.type }, "RevenueCat event without an id — processing without idempotency record");
 
   try {
-    const decision = mapRevenueCatEvent(ev, Date.now(), { allowSandbox: allowSandboxIap() });
+    const decision = mapRevenueCatEvent(ev, Date.now(), sandboxIapOptions());
 
     if (decision.kind === "transfer") {
       // Purchases moved between app user ids. RevenueCat sends this only for

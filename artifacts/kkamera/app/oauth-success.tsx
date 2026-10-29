@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
+import { useUpload } from "@/contexts/UploadContext";
 import { completeOAuthConnection } from "@/lib/oauthPending";
 
 const PRIMARY = "#b19870";
@@ -29,6 +30,7 @@ export default function OAuthSuccessScreen() {
     error?: string;
   }>();
   const { token, isLoading: authLoading } = useAuth();
+  const { retryQueued } = useUpload();
 
   const queryClient = useQueryClient();
   const scale = useRef(new Animated.Value(0)).current;
@@ -62,6 +64,8 @@ export default function OAuthSuccessScreen() {
     const id = typeof connectionId === "string" && /^\d+$/.test(connectionId) ? Number(connectionId) : null;
     void completeOAuthConnection({ provider: providerKey!, code: String(code), connectionId: id }).then((result) => {
       queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+      // Captures parked waiting for a cloud can upload now.
+      if (result.ok) retryQueued(token);
       setPhase(result.ok ? { kind: "done", name: result.name } : { kind: "failed", message: result.message });
     });
   }, [phase.kind, authLoading, token]); // eslint-disable-line react-hooks/exhaustive-deps

@@ -30,6 +30,13 @@ test("milestone math: award/clawback are idempotent against freeYearsAwarded", (
   const future = new Date(now.getTime() + 30 * DAY);
   assert.equal(milestoneAward(5, 0, future, now)!.newEnd.getFullYear(), future.getFullYear() + 1);
   assert.equal(milestoneAward(5, 0, new Date(now.getTime() - 30 * DAY), now)!.newEnd.getTime(), YEAR_LATER.getTime());
+  // A referrer on trial (no period end yet) keeps the rest of the trial.
+  const trialEnd = new Date(now.getTime() + 10 * DAY);
+  assert.equal(milestoneAward(5, 0, null, now, trialEnd)!.newEnd.getTime(), trialEnd.getTime() + 365 * DAY);
+  // Latest of the three wins; an expired trial end is ignored.
+  assert.equal(milestoneAward(5, 0, future, now, trialEnd)!.newEnd.getFullYear(), future.getFullYear() + 1);
+  assert.equal(milestoneAward(5, 0, future, now, trialEnd)!.newEnd.getTime(), new Date(future).setFullYear(future.getFullYear() + 1));
+  assert.equal(milestoneAward(5, 0, null, now, new Date(now.getTime() - DAY))!.newEnd.getTime(), YEAR_LATER.getTime());
   assert.equal(milestoneClawback(5, 1, YEAR_LATER, now), null);
   assert.deepEqual(milestoneClawback(4, 1, YEAR_LATER, now), { targetYears: 0, yearsToRemove: 1, newEnd: now });
   // Never pulls the end below now.

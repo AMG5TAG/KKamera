@@ -58,7 +58,7 @@ export default function RegisterScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.topRow}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back">
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.canGoBack() ? router.back() : router.replace("/auth/login")} accessibilityRole="button" accessibilityLabel="Back">
           <Ionicons name="chevron-back" size={24} color={PRIMARY} accessible={false} />
         </TouchableOpacity>
       </View>
@@ -135,7 +135,7 @@ export default function RegisterScreen() {
           <Text style={styles.registerText}>{registerMutation.isPending ? "Creating Account..." : "Create Free Account"}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.loginLink} onPress={() => router.back()} accessibilityRole="link">
+        <TouchableOpacity style={styles.loginLink} onPress={() => router.canGoBack() ? router.back() : router.replace("/auth/login")} accessibilityRole="link">
           <Text style={styles.loginLinkText}>Already have an account? <Text style={{ color: PRIMARY }}>Sign in</Text></Text>
         </TouchableOpacity>
       </KeyboardAwareScrollViewCompat>

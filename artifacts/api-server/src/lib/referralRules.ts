@@ -46,19 +46,23 @@ function addYears(d: Date, years: number): Date {
 /**
  * Milestone award after a completion. Idempotency is anchored on
  * `freeYearsAwarded` (read under the referrer's row lock): only years earned
- * beyond what was already granted are added, extending from the later of the
- * current period end or now. Null = nothing to award.
+ * beyond what was already granted are added, extending from the latest of the
+ * current period end, the end of a still-running trial, or now — so a referrer
+ * on trial keeps their remaining trial days. Pass `trialEnd` only while the
+ * subscription is actually trialing. Null = nothing to award.
  */
 export function milestoneAward(
   completedCount: number,
   freeYearsAwarded: number,
   currentPeriodEnd: Date | null,
   now: Date,
+  trialEnd: Date | null = null,
 ): { targetYears: number; yearsToAdd: number; newEnd: Date } | null {
   const targetYears = earnedFreeYears(completedCount);
   if (targetYears <= freeYearsAwarded) return null;
   const yearsToAdd = targetYears - freeYearsAwarded;
-  const base = currentPeriodEnd && currentPeriodEnd > now ? currentPeriodEnd : now;
+  let base = now;
+  for (const end of [currentPeriodEnd, trialEnd]) if (end && end > base) base = end;
   return { targetYears, yearsToAdd, newEnd: addYears(base, yearsToAdd) };
 }
 

@@ -100,7 +100,8 @@
           }
         }
       ],
-      "./plugins/withPodsDeploymentTarget"
+      "./plugins/withPodsDeploymentTarget",
+      "@sentry/react-native"
     ],
     "experiments": {
       "typedRoutes": true,

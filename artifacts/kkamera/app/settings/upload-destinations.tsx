@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  ActivityIndicator, Platform,
+  ActivityIndicator, Platform, Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -9,7 +9,7 @@ import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   useListCloudConnections, useGetUploadTarget, useSetUploadTarget,
-  getGetUploadTargetQueryKey,
+  getGetUploadTargetQueryKey, getUserFacingMessage,
 } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
@@ -68,8 +68,9 @@ export default function UploadDestinationsScreen() {
       await setMutation.mutateAsync({ data: { mode, connectionIds } });
       queryClient.invalidateQueries({ queryKey: getGetUploadTargetQueryKey() });
       router.back();
-    } catch {
-      // Surfaced by the button staying enabled; keep the user on-screen to retry.
+    } catch (e) {
+      // Keep the user on-screen to retry.
+      Alert.alert("Couldn't save", getUserFacingMessage(e, "Failed to save your upload destination. Please try again."));
     }
   };
 

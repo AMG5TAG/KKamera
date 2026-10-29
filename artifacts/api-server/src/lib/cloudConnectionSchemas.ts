@@ -165,3 +165,22 @@ export function connectionUpdatePlan(input: UpdateConnectionInput): ConnectionUp
   if (input.password !== undefined) plan.password = input.password ? input.password : null;
   return plan;
 }
+
+/**
+ * A PATCH that points a connection with a saved password at a different
+ * server (host or port) must carry the password itself. Otherwise a stolen
+ * session could retarget the stored secret to an attacker's host and make the
+ * server send it there via /test or the next upload. Returns the 400 message,
+ * or null when the change is allowed. The app always re-sends host/port, so
+ * only an actual change counts.
+ */
+export function retargetNeedsPassword(
+  plan: ConnectionUpdatePlan,
+  stored: { host: string | null; port: number | null; hasPassword: boolean },
+): string | null {
+  if (!stored.hasPassword || plan.password !== undefined) return null;
+  const hostChanged = plan.host !== undefined && plan.host !== (stored.host ?? "");
+  const portChanged = plan.port !== undefined && plan.port !== stored.port;
+  if (!hostChanged && !portChanged) return null;
+  return "password: Re-enter the password (or clear it) when changing the server host or port";
+}

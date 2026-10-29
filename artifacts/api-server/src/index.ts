@@ -83,13 +83,22 @@ async function migrateWithRetry() {
 // by a Postgres advisory lock, so running them concurrently with the first
 // requests is safe: DB-touching routes will get a brief connection error during
 // migration (rare) rather than the whole deployment failing every time.
-app.listen(port, (err?: Error) => {
+const server = app.listen(port, (err?: Error) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
   logger.info({ port }, "Server listening");
 });
+
+// Node's default requestTimeout (300 s) would cut off a large video on a slow
+// uplink long before the app gives up: its XHR timeout scales with file size up
+// to 60 min (uploadTimeoutMs in artifacts/kkamera/contexts/UploadContext.tsx).
+// Allow the whole body that long plus a margin; headers must still arrive
+// promptly (slowloris), so headersTimeout stays short.
+const MAX_CLIENT_UPLOAD_MS = 60 * 60_000;
+server.requestTimeout = MAX_CLIENT_UPLOAD_MS + 5 * 60_000;
+server.headersTimeout = 60_000;
 
 // Run migrations in the background after the port is open. /api/readyz
 // reports progress; a definitive failure turns API routes into 503s.

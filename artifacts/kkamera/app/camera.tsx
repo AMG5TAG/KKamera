@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
   Animated, Easing, StatusBar, Alert, ScrollView, Modal, Image,
-  useWindowDimensions, Linking, AppState,
+  useWindowDimensions, Linking, AppState, ActivityIndicator,
 } from "react-native";
 import * as Speech from "expo-speech";
 import * as Location from "expo-location";
@@ -26,6 +26,7 @@ import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
 import { resolveUploadTarget } from "@/lib/uploadTarget";
 import { MAX_RECORDING_BYTES } from "@/lib/config";
+import { File } from "expo-file-system";
 import { useUploadTargetResolver } from "@/lib/useUploadTargetResolver";
 import {
   readCachedSubscription, writeCachedSubscription, subscriptionAllows, type SubscriptionSnapshot,
@@ -257,6 +258,17 @@ type ExecuteUpload = ReturnType<typeof useUpload>["executeUpload"];
 // wrapper subscribes to it; the (heavy) camera body is memoised and receives
 // just the stable executeUpload callback, so progress events re-render the
 // wrapper and the small UploadIndicators overlay — never the camera itself.
+/** Size of a local file:// capture in bytes, or null when unknown. */
+function fileSizeOf(uri: string | undefined): number | null {
+  if (!uri || Platform.OS === "web" || !uri.startsWith("file:")) return null;
+  try {
+    const file = new File(uri);
+    return file.exists ? file.size : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function CameraScreen() {
   const { executeUpload } = useUpload();
   return <CameraScreenBody executeUpload={executeUpload} />;
@@ -378,14 +390,25 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // the grace window. When the server can't be reached we fall back to the
   // cached subscription; with nothing cached we allow capture — the server
   // still enforces access and the upload queue parks refused (402) uploads, so
-  // nothing shot while access is unknown is lost. On native, a RevenueCat
-  // (App Store / Play) entitlement also grants access so IAP payers aren't
-  // paywalled before the RevenueCat webhook reconciles the server row.
+  // nothing shot while access is unknown is lost. A RevenueCat entitlement alone
+  // does NOT grant access: uploads are gated on the server row, so a store
+  // purchase that hasn't reached it yet gets a "Refresh" (sync) on the paywall
+  // instead of a camera whose every upload is refused.
   const accessUnknown = subLoading || (subError && !sub);
   const hasAccess =
     (sub ? subscriptionAllows(sub) : false)
-    || (accessUnknown && (cachedSub === undefined || cachedSub === null || subscriptionAllows(cachedSub)))
-    || (Platform.OS !== "web" && rcSub.isSubscribed);
+    || (accessUnknown && (cachedSub === undefined || cachedSub === null || subscriptionAllows(cachedSub)));
+  const storeNotSynced = !hasAccess && Platform.OS !== "web" && rcSub.isSubscribed;
+  const [syncingStore, setSyncingStore] = useState(false);
+  const refreshStoreSubscription = useCallback(async () => {
+    setSyncingStore(true);
+    try {
+      const ok = await rcSub.syncServerSubscription();
+      if (!ok) Alert.alert("Couldn't refresh", "We couldn't reach KKamera to check your purchase. Please try again.");
+    } finally {
+      setSyncingStore(false);
+    }
+  }, [rcSub.syncServerSubscription]);
 
   const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
     ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
@@ -437,6 +460,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const [scanUri, setScanUri] = useState<string | null>(null);
   const [scanFileName, setScanFileName] = useState("");
   const [showScanModal, setShowScanModal] = useState(false);
+  const retakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Mode strip scroll ref
   const modeScrollRef = useRef<ScrollView>(null);
@@ -519,9 +543,12 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // would keep running behind them. `screenActive` drives CameraView `active`
   // (iOS) / mounting (Android, web) and every sensor subscription below.
   const [isFocused, setIsFocused] = useState(true);
+  // Live mirror for async capture hand-offs (doUpload), which finish after renders.
+  const isFocusedRef = useRef(true);
   useFocusEffect(useCallback(() => {
     setIsFocused(true);
-    return () => setIsFocused(false);
+    isFocusedRef.current = true;
+    return () => { setIsFocused(false); isFocusedRef.current = false; };
   }, []));
   // iOS reports "inactive" for transient overlays (permission prompts, the
   // notification shade); only a real trip to the background pauses capture.
@@ -826,6 +853,11 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       }
       if (roll === "denied") showToast("Photos access off — uploading only", 2200);
 
+      // Finished after the user left the camera (e.g. a sweep stitched on blur):
+      // don't push the markup screen over whatever screen they're on now. The
+      // prompt-before-upload Alert still shows — it works over any screen, and
+      // a user who opted into reviewing uploads must never be skipped.
+      const offCamera = !isFocusedRef.current;
       const confirmed = await confirmUpload();
       if (!confirmed) {
         // Skipped: keep the temp file only if it isn't safe in the library.
@@ -837,7 +869,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       // confirmed uploaded; a no-op keeps it when the user has turned that off.
       const onDeleteLocal = settings.deleteLocalAfterUpload ? undefined : async () => {};
 
-      if (type === "image" && settings.photoMarkup && !opts?.skipMarkup) {
+      if (type === "image" && settings.photoMarkup && !opts?.skipMarkup && !offCamera) {
         // The markup screen performs the actual upload — and the witness
         // notice, for whichever version it really uploads.
         router.push({ pathname: "/markup", params: { uri, fileName } });
@@ -1529,6 +1561,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     const maxDuration = settings.maxVideoDurationSeconds > 0 ? settings.maxVideoDurationSeconds : 600;
     const codec = await pickVideoCodec();
     if (!recordingRef.current || recordStopping.current) { endRecordingUi(); return; }
+    const startedAt = Date.now();
     const recording = cameraRef.current?.recordAsync({
       maxDuration,
       // Stop before the server's upload cap so the clip can actually upload.
@@ -1537,7 +1570,20 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     });
     if (!recording) { endRecordingUi(); return; }
     recording.then((video) => {
+      // Stopped by the recorder itself (not a tap / leaving the camera) well
+      // before maxDuration: it hit the upload size cap.
+      // Other early stops (iOS session interruption, storage full) also land
+      // here, so confirm the file really is near the cap before saying so.
+      const hitSizeCap = !recordStopping.current && isFocusedRef.current
+        && Date.now() - startedAt < (maxDuration - 2) * 1000
+        && (fileSizeOf(video?.uri) ?? 0) >= MAX_RECORDING_BYTES * 0.9;
       endRecordingUi();
+      if (hitSizeCap && video?.uri) {
+        Alert.alert(
+          "Recording Stopped",
+          `This clip reached the ${Math.round(MAX_RECORDING_BYTES / (1024 * 1024))} MB upload size limit, so recording stopped. Everything recorded up to that point has been kept.`,
+        );
+      }
       if (video?.uri) {
         // Name the file after the container the recorder actually wrote
         // (.mov on iOS, .mp4 on Android) — never relabel the bytes.
@@ -1562,6 +1608,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
       if (programmaticClearTimer.current) clearTimeout(programmaticClearTimer.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (retakeTimer.current) clearTimeout(retakeTimer.current);
       // Stop the panorama sweep too — its sensor listener and fallback timer
       // would otherwise keep firing takePictureAsync on a torn-down camera.
       panoActive.current = false;
@@ -1677,7 +1724,8 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // is still animating out — so wait for the dismissal first.
   const retakeScan = useCallback(() => {
     discardScan();
-    setTimeout(() => { void handleScan(); }, 450);
+    if (retakeTimer.current) clearTimeout(retakeTimer.current);
+    retakeTimer.current = setTimeout(() => { retakeTimer.current = null; void handleScan(); }, 450);
   }, [discardScan, handleScan]);
 
   // INTERVAL (time-lapse) mode: a photo every INTERVAL_SECONDS until stopped,
@@ -1750,7 +1798,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
         // Library copy BEFORE queueing: the queue may move the file.
         if (settings.saveToCameraRoll && Platform.OS !== "web") await saveToCameraRoll(frameUri);
         const name = `INT_${stamp}_${String(i + 1).padStart(3, "0")}.${extensionOf(frameUri, "jpg")}`;
-        void executeUpload(frameUri, name, "image", token, target.ids, onDeleteLocal);
+        void executeUpload(frameUri, name, "image", token, target.ids, onDeleteLocal, () => notifyWitness(name));
       }
     };
     Alert.alert(
@@ -1763,7 +1811,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       // Dismissing the dialog (Android back / tap outside) must not lose the series.
       { cancelable: false },
     );
-  }, [settings.deleteLocalAfterUpload, settings.saveToCameraRoll, getUploadTarget, executeUpload, token, showToast]);
+  }, [settings.deleteLocalAfterUpload, settings.saveToCameraRoll, getUploadTarget, executeUpload, token, notifyWitness, showToast]);
 
   const handleTimelapse = useCallback(() => {
     if (intervalRunning.current) void stopInterval();
@@ -1872,6 +1920,11 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const filterOverlay = Platform.OS !== "web" ? (activeFilter?.overlay ?? null) : null;
   const filterCssWeb = Platform.OS === "web" ? (activeFilter?.css ?? null) : null;
 
+  // Mode-scroll settle timer (used by handleModeScrollEndDrag below). Declared
+  // before the early returns — hooks must run in the same order every render.
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current); }, []);
+
   if (!cameraPermission) return <View style={styles.container} />;
 
   if (!cameraPermission.granted) {
@@ -1915,12 +1968,38 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       (p) => p.packageType === "ANNUAL" || p.identifier === "$rc_annual",
     );
     const paywallPrice = paywallPkg?.product.priceString ?? null;
+    const lapsedStatus = sub?.status ?? cachedSub?.status;
+    const paywallMessage = storeNotSynced
+      ? "Your store purchase hasn't reached your KKamera account yet. Tap Refresh to check again."
+      : lapsedStatus === "trial"
+        ? "Your free trial has ended.\nSubscribe to keep using KKamera."
+        : lapsedStatus === "past_due"
+          ? "Your payment is overdue.\nUpdate your payment method in your store account to keep using KKamera."
+          : lapsedStatus === "active" || lapsedStatus === "cancelled" || lapsedStatus === "expired"
+            ? "Your subscription has ended.\nResubscribe to keep using KKamera."
+            : "Subscribe to start using KKamera.";
     return (
       <View style={[styles.container, styles.centeredContainer]}>
         <StatusBar barStyle="light-content" />
         <Ionicons name="lock-closed" size={52} color={PRIMARY} style={{ marginBottom: 20 }} accessible={false} />
         <Text style={styles.paywallTitle} accessibilityRole="header">Subscription Required</Text>
-        <Text style={styles.paywallBody}>Your free trial has ended.{"\n"}Subscribe to keep using KKamera.</Text>
+        <Text style={styles.paywallBody}>{paywallMessage}</Text>
+        {storeNotSynced && (
+          <TouchableOpacity
+            style={[styles.paywallBtn, { marginBottom: 12 }, syncingStore && { opacity: 0.6 }]}
+            onPress={() => { void refreshStoreSubscription(); }}
+            disabled={syncingStore}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: syncingStore, busy: syncingStore }}
+          >
+            {syncingStore
+              ? <ActivityIndicator color="white" />
+              : <>
+                  <Ionicons name="refresh" size={18} color="white" accessible={false} />
+                  <Text style={styles.paywallBtnText}>Refresh</Text>
+                </>}
+          </TouchableOpacity>
+        )}
         <TouchableOpacity
           style={styles.paywallBtn}
           onPress={() => router.push("/settings/subscription")}
@@ -1988,8 +2067,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // A drag that ends without momentum (slow Android drags, web) never fires
   // onMomentumScrollEnd, so settle shortly after the finger lifts unless a
   // momentum phase starts — which then settles on its own end.
-  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (settleTimer.current) clearTimeout(settleTimer.current); }, []);
   const clearSettleTimer = () => {
     if (settleTimer.current) { clearTimeout(settleTimer.current); settleTimer.current = null; }
   };

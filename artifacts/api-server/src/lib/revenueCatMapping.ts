@@ -24,11 +24,52 @@ const REFUND_CANCEL_REASON = "CUSTOMER_SUPPORT";
 /**
  * Whether sandbox (TestFlight / Play test track) purchases may grant access.
  * Off by default so a sandbox receipt can never unlock production uploads;
- * enable with ALLOW_SANDBOX_IAP=true for staging/testing. Sandbox events never
- * complete or reverse referrals regardless.
+ * enable with ALLOW_SANDBOX_IAP=true for staging/testing, or per tester with
+ * SANDBOX_IAP_USER_IDS (below). Sandbox events never complete or reverse
+ * referrals regardless.
  */
 export function allowSandboxIap(): boolean {
   return process.env["ALLOW_SANDBOX_IAP"] === "true";
+}
+
+/**
+ * Parse SANDBOX_IAP_USER_IDS: comma-separated KKamera user ids whose sandbox
+ * purchases are honoured even with ALLOW_SANDBOX_IAP off (named tester
+ * accounts on production). Entries that aren't a plain positive integer are
+ * ignored.
+ */
+export function parseSandboxUserIds(raw: string | undefined): ReadonlySet<number> {
+  const ids = new Set<number>();
+  for (const part of (raw ?? "").split(",")) {
+    const t = part.trim();
+    if (!/^\d+$/.test(t)) continue;
+    const n = Number(t);
+    if (Number.isSafeInteger(n) && n > 0) ids.add(n);
+  }
+  return ids;
+}
+
+let sandboxUserIdsCache: ReadonlySet<number> | undefined;
+/** SANDBOX_IAP_USER_IDS, parsed once per process. */
+export function sandboxIapUserIds(): ReadonlySet<number> {
+  sandboxUserIdsCache ??= parseSandboxUserIds(process.env["SANDBOX_IAP_USER_IDS"]);
+  return sandboxUserIdsCache;
+}
+
+/** Sandbox policy from the environment, for injecting into the pure mappers. */
+export function sandboxIapOptions(): MapOptions {
+  return { allowSandbox: allowSandboxIap(), sandboxUserIds: sandboxIapUserIds() };
+}
+
+/**
+ * Whether a sandbox event/entitlement concerning `userIds` may change access:
+ * always with ALLOW_SANDBOX_IAP, otherwise only when every id involved is an
+ * allowlisted tester (and there is at least one).
+ */
+function sandboxHonoured(opts: MapOptions, userIds: number[]): boolean {
+  if (opts.allowSandbox) return true;
+  const allow = opts.sandboxUserIds;
+  return !!allow && userIds.length > 0 && userIds.every((id) => allow.has(id));
 }
 
 /**
@@ -63,6 +104,8 @@ export interface RCEvent {
 export interface MapOptions {
   /** Result of allowSandboxIap() — injected so the mapping stays pure. */
   allowSandbox: boolean;
+  /** Result of sandboxIapUserIds(): testers whose sandbox purchases count. */
+  sandboxUserIds?: ReadonlySet<number>;
 }
 
 // `referrals` is false for sandbox events: they may touch access (when allowed)
@@ -138,15 +181,22 @@ export function mapRevenueCatEvent(ev: RCEvent, nowMs: number, opts: MapOptions)
   if (!ev || typeof ev.type !== "string") return { kind: "ignore", reason: "no event type" };
 
   // Missing `environment` is treated as production (RevenueCat always sends it).
+  // Allowlisted testers are matched on the user the event applies to (for a
+  // TRANSFER, every user on either side). Referrals stay production-only.
   const sandbox = ev.environment === "SANDBOX";
-  if (sandbox && !opts.allowSandbox) return { kind: "ignore", reason: "sandbox event (ALLOW_SANDBOX_IAP off)" };
+  const fromUserIds = ev.type === "TRANSFER" ? numericUserIds(ev.transferred_from) : [];
+  const toUserIds = ev.type === "TRANSFER" ? numericUserIds(ev.transferred_to) : [];
+  if (sandbox) {
+    const involved = ev.type === "TRANSFER" ? [...fromUserIds, ...toUserIds] : [resolveUserId(ev)].filter((n): n is number => n !== null);
+    if (!sandboxHonoured(opts, involved)) {
+      return { kind: "ignore", reason: "sandbox event (ALLOW_SANDBOX_IAP off, user not in SANDBOX_IAP_USER_IDS)" };
+    }
+  }
   const referrals = !sandbox;
 
   // TRANSFER carries no app_user_id — only the from/to id lists. The route
   // re-syncs each affected user from the REST API rather than guessing.
   if (ev.type === "TRANSFER") {
-    const fromUserIds = numericUserIds(ev.transferred_from);
-    const toUserIds = numericUserIds(ev.transferred_to);
     if (fromUserIds.length === 0 && toUserIds.length === 0) {
       return { kind: "ignore", reason: "transfer between anonymous ids" };
     }
@@ -355,7 +405,9 @@ export function mapSubscriberEntitlement(
   const productId = typeof ent.product_identifier === "string" ? ent.product_identifier : null;
   const sub = productId ? subscriber.subscriptions?.[productId] ?? null : null;
   const sandbox = sub?.is_sandbox === true;
-  if (sandbox && !opts.allowSandbox) return { kind: "none", reason: "sandbox entitlement (ALLOW_SANDBOX_IAP off)" };
+  if (sandbox && !sandboxHonoured(opts, [userId])) {
+    return { kind: "none", reason: "sandbox entitlement (ALLOW_SANDBOX_IAP off, user not in SANDBOX_IAP_USER_IDS)" };
+  }
 
   // A null expires_date is a lifetime/non-expiring grant — never mirrored as
   // perpetual access (same rule as the webhook).

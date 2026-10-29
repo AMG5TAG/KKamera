@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  OAUTH_ONLY_PROVIDERS, connectionUpdatePlan, createConnectionSchema, hostHasUserinfo, updateConnectionSchema,
+  OAUTH_ONLY_PROVIDERS, connectionUpdatePlan, createConnectionSchema, hostHasUserinfo, retargetNeedsPassword,
+  updateConnectionSchema,
 } from "../src/lib/cloudConnectionSchemas.ts";
 import { hasParentSegment } from "../src/lib/cloudUploadPolicy.ts";
 import { CLOUD_PROVIDER } from "../src/lib/constants.ts";
@@ -231,4 +232,22 @@ test("upload paths with '..' segments are rejected on create and update", () => 
 test("update still rejects unknown keys", () => {
   assert.equal(updateConnectionSchema.safeParse({ type: "ftp" }).success, false);
   assert.equal(updateConnectionSchema.safeParse({ userId: 1 }).success, false);
+});
+
+test("update: moving a saved password to another host or port requires re-entering it", () => {
+  const stored = { host: "ftp.example.com", port: 21, hasPassword: true };
+  const plan = (body: unknown) => connectionUpdatePlan(updateConnectionSchema.parse(body));
+  // The app re-sends unchanged host/port on every edit — that's fine.
+  assert.equal(retargetNeedsPassword(plan({ host: "ftp.example.com", port: 21, name: "x" }), stored), null);
+  // Changing host or port without the password is refused.
+  assert.match(retargetNeedsPassword(plan({ host: "evil.example.net" }), stored) ?? "", /password/);
+  assert.match(retargetNeedsPassword(plan({ port: 2121 }), stored) ?? "", /password/);
+  assert.match(retargetNeedsPassword(plan({ port: null }), stored) ?? "", /password/);
+  // With a new password, or an explicit clear, it is allowed.
+  assert.equal(retargetNeedsPassword(plan({ host: "evil.example.net", password: "new" }), stored), null);
+  assert.equal(retargetNeedsPassword(plan({ host: "evil.example.net", password: null }), stored), null);
+  // No saved password → nothing to protect.
+  assert.equal(retargetNeedsPassword(plan({ host: "other.example.com" }), { ...stored, hasPassword: false }), null);
+  // A username change on the same server doesn't send the secret anywhere new.
+  assert.equal(retargetNeedsPassword(plan({ username: "bob" }), stored), null);
 });

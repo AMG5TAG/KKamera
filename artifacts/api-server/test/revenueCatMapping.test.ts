@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   eventIdOf, eventTimeOf, isStaleDecision, mapRevenueCatEvent as mapWith, mapSubscriberEntitlement, mergeDecision, numericUserIds,
+  parseSandboxUserIds,
   resolveUserId, secretsEqual, touchesProEntitlement, type MirrorDecision, type MirrorRow, type RCEvent,
 } from "../src/lib/revenueCatMapping.ts";
 
@@ -90,6 +91,38 @@ test("SANDBOX events may change access when allowed, but never touch referrals",
   const exp = mapWith({ type: "EXPIRATION", environment: "SANDBOX", app_user_id: "5", expiration_at_ms: PAST }, NOW, { allowSandbox: true });
   assert.equal(exp.kind, "expire");
   if (exp.kind === "expire") assert.equal(exp.referrals, false);
+});
+
+test("SANDBOX_IAP_USER_IDS: parses ids, ignoring junk entries", () => {
+  assert.deepEqual([...parseSandboxUserIds(" 5, 12 ,abc,,-3,0,1.5,0x10,7e2, 12")], [5, 12]);
+  assert.equal(parseSandboxUserIds(undefined).size, 0);
+  assert.equal(parseSandboxUserIds("").size, 0);
+});
+
+test("SANDBOX events for an allowlisted tester change access but never touch referrals", () => {
+  const testers = { allowSandbox: false, sandboxUserIds: parseSandboxUserIds("5") };
+  const grant = mapWith({ type: "INITIAL_PURCHASE", environment: "SANDBOX", app_user_id: "5", expiration_at_ms: FUTURE }, NOW, testers);
+  assert.equal(grant.kind, "grant");
+  if (grant.kind === "grant") assert.equal(grant.referrals, false);
+  const refund = mapWith({ type: "CANCELLATION", cancel_reason: "CUSTOMER_SUPPORT", environment: "SANDBOX", app_user_id: "5", expiration_at_ms: PAST }, NOW, testers);
+  assert.equal(refund.kind, "refund");
+  if (refund.kind === "refund") assert.equal(refund.referrals, false);
+  const exp = mapWith({ type: "EXPIRATION", environment: "SANDBOX", app_user_id: "5", expiration_at_ms: PAST }, NOW, testers);
+  assert.equal(exp.kind, "expire");
+  if (exp.kind === "expire") assert.equal(exp.referrals, false);
+});
+
+test("SANDBOX events for users not on the allowlist are still ignored", () => {
+  const testers = { allowSandbox: false, sandboxUserIds: parseSandboxUserIds("5") };
+  for (const app_user_id of ["6", "$RCAnonymousID:abc"]) {
+    const d = mapWith({ type: "INITIAL_PURCHASE", environment: "SANDBOX", app_user_id, expiration_at_ms: FUTURE }, NOW, testers);
+    assert.equal(d.kind, "ignore", app_user_id);
+  }
+  // A transfer is honoured only when every user on both sides is a tester.
+  const mixed = mapWith({ type: "TRANSFER", environment: "SANDBOX", transferred_from: ["5"], transferred_to: ["6"] }, NOW, testers);
+  assert.equal(mixed.kind, "ignore");
+  const own = mapWith({ type: "TRANSFER", environment: "SANDBOX", transferred_from: ["$RCAnonymousID:x"], transferred_to: ["5"] }, NOW, testers);
+  assert.equal(own.kind, "transfer");
 });
 
 test("PRODUCTION (or missing environment) events drive referrals", () => {
@@ -232,6 +265,10 @@ test("subscriber sync: sandbox entitlement respects ALLOW_SANDBOX_IAP", () => {
   const ok = mapSubscriberEntitlement(body, 5, now, { allowSandbox: true });
   assert.equal(ok.kind, "entitled");
   if (ok.kind === "entitled") assert.equal(ok.sandbox, true);
+  // Allowlisted tester: honoured for that user only.
+  const testers = { allowSandbox: false, sandboxUserIds: parseSandboxUserIds("5") };
+  assert.equal(mapSubscriberEntitlement(body, 5, now, testers).kind, "entitled");
+  assert.equal(mapSubscriberEntitlement(body, 6, now, testers).kind, "none");
 });
 
 test("merge + access: EXPIRATION after a referral award keeps upload access; refund removes it", async () => {

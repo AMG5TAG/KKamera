@@ -7,11 +7,12 @@ import rateLimit from "express-rate-limit";
 import { requireAuth } from "../middlewares/auth.js";
 import { encrypt } from "../lib/crypto.js";
 import {
-  purgeExpiredPendingConnections, revokeProviderTokens, revokeRemovedConnectionIfUnshared, testCloudConnection,
+  purgeExpiredPendingConnections, revokeRemovedConnectionIfUnshared, testCloudConnection,
 } from "../lib/cloudUpload.js";
 import { DEFAULT_UPLOAD_PATH, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
-import { connectionUpdatePlan, createConnectionSchema, updateConnectionSchema } from "../lib/cloudConnectionSchemas.js";
-import { logger } from "../lib/logger.js";
+import {
+  connectionUpdatePlan, createConnectionSchema, retargetNeedsPassword, updateConnectionSchema,
+} from "../lib/cloudConnectionSchemas.js";
 import { retainTargetIds } from "../lib/accountRules.js";
 
 const router = Router();
@@ -58,21 +59,6 @@ const testLimiter = rateLimit({
   keyGenerator: (req) => `user:${req.userId}`,
   message: { success: false, message: "Too many connection tests. Please wait a minute and try again." },
 });
-
-/** Providers with a token-revocation endpoint (see revokeProviderTokens). */
-const REVOCABLE = new Set(["googledrive", "dropbox"]);
-
-/**
- * Revoke provider grants for deleted connections without holding up the
- * response — deletion already happened and never depends on the provider.
- */
-function revokeInBackground(conns: Array<typeof cloudConnectionsTable.$inferSelect>): void {
-  const targets = conns.filter((c) => REVOCABLE.has(c.type) && (c.refreshToken || c.accessTokenEncrypted));
-  if (targets.length === 0) return;
-  void Promise.allSettled(targets.map((c) => revokeProviderTokens(c))).then(() => {
-    logger.info({ count: targets.length }, "Revoked provider tokens for deleted connections");
-  });
-}
 
 /**
  * Render the first validation issue, prefixed with the offending field. Zod's
@@ -165,30 +151,32 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
     if (plan.username !== undefined) updates.username = plan.username;
     if (plan.password !== undefined) updates.passwordEncrypted = plan.password === null ? null : encrypt(plan.password);
 
-    // Nextcloud's DAV endpoint is built from the username — it can't be cleared.
-    if (updates.username === null) {
-      const [existing] = await db.select({ type: cloudConnectionsTable.type }).from(cloudConnectionsTable)
+    // Checks against the stored row run under a row lock so a concurrent PATCH
+    // can't change host/password between the check and this update.
+    type Row = typeof cloudConnectionsTable.$inferSelect;
+    type Outcome = { conn: Row } | { status: 400 | 404; message: string };
+    const result = await db.transaction(async (tx): Promise<Outcome> => {
+      const [existing] = await tx.select().from(cloudConnectionsTable)
         .where(ownConfirmed(id, req.userId!))
+        .for("update")
         .limit(1);
-      if (!existing) { res.status(404).json({ message: "Connection not found" }); return; }
-      if (existing.type === "nextcloud") {
-        res.status(400).json({ message: "username: Nextcloud username is required" });
-        return;
+      if (!existing) return { status: 404, message: "Connection not found" };
+      // Nextcloud's DAV endpoint is built from the username — it can't be cleared.
+      if (updates.username === null && existing.type === "nextcloud") {
+        return { status: 400, message: "username: Nextcloud username is required" };
       }
-    }
-    if (Object.keys(updates).length === 0) {
-      const [current] = await db.select().from(cloudConnectionsTable)
+      const retarget = retargetNeedsPassword(plan, {
+        host: existing.host, port: existing.port, hasPassword: !!existing.passwordEncrypted,
+      });
+      if (retarget) return { status: 400, message: retarget };
+      if (Object.keys(updates).length === 0) return { conn: existing };
+      const [conn] = await tx.update(cloudConnectionsTable).set(updates)
         .where(ownConfirmed(id, req.userId!))
-        .limit(1);
-      if (!current) { res.status(404).json({ message: "Connection not found" }); return; }
-      res.json(formatConn(current));
-      return;
-    }
-    const [conn] = await db.update(cloudConnectionsTable).set(updates)
-      .where(ownConfirmed(id, req.userId!))
-      .returning();
-    if (!conn) { res.status(404).json({ message: "Connection not found" }); return; }
-    res.json(formatConn(conn));
+        .returning();
+      return conn ? { conn } : { status: 404, message: "Connection not found" };
+    });
+    if (!("conn" in result)) { res.status(result.status).json({ message: result.message }); return; }
+    res.json(formatConn(result.conn));
   } catch (err) {
     req.log.error({ err }, "Update cloud connection error");
     res.status(500).json({ message: "Failed to update connection" });
@@ -208,8 +196,9 @@ router.delete("/cloud-connections", requireAuth, async (req, res) => {
       return rows;
     });
     res.json({ message: "All connections deleted" });
-    // Every row is gone, so no surviving connection can share a grant. One
-    // revoke per distinct token is enough.
+    // None of this user's rows survive, but another user's connection can ride
+    // on the same provider account (same accountId), so each grant goes through
+    // the shared-grant check. One check per distinct token is enough.
     const seen = new Set<string>();
     const toRevoke = removed.filter((c) => {
       const key = `${c.type}:${c.refreshToken ?? c.accessTokenEncrypted ?? ""}`;
@@ -217,7 +206,7 @@ router.delete("/cloud-connections", requireAuth, async (req, res) => {
       seen.add(key);
       return true;
     });
-    revokeInBackground(toRevoke);
+    void Promise.allSettled(toRevoke.map((c) => revokeRemovedConnectionIfUnshared(c)));
   } catch (err) {
     req.log.error({ err }, "Bulk delete cloud connections error");
     res.status(500).json({ message: "Failed to delete connections" });

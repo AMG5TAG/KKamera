@@ -4,6 +4,7 @@ import { eq, and, inArray } from "drizzle-orm";
 import { logger } from "./logger.js";
 import { sendEmail, referralRewardEmail } from "./email.js";
 import { milestoneAward, milestoneClawback } from "./referralRules.js";
+import { SUBSCRIPTION_STATUS } from "./constants.js";
 
 /**
  * Referral milestone logic (1 free year per 5 completed referrals), driven by the
@@ -68,7 +69,12 @@ export async function completeReferralInTx(tx: DbTx, referredUserId: number): Pr
     .where(and(eq(referralsTable.referrerId, referrerId), eq(referralsTable.status, "completed")));
   const total = completed.length;
 
-  const award = milestoneAward(total, referrerSub?.freeYearsAwarded ?? 0, referrerSub?.currentPeriodEnd ?? null, new Date());
+  // A referrer still on trial has no currentPeriodEnd; the free year starts
+  // when the trial would have ended, not now.
+  const trialEnd = referrerSub?.status === SUBSCRIPTION_STATUS.TRIAL ? referrerSub.trialEnd : null;
+  const award = milestoneAward(
+    total, referrerSub?.freeYearsAwarded ?? 0, referrerSub?.currentPeriodEnd ?? null, new Date(), trialEnd,
+  );
   if (!award) return null; // milestone already paid
 
   await tx.update(subscriptionsTable)

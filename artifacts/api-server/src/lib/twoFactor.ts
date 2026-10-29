@@ -15,14 +15,22 @@ export function totpStepAt(nowMs: number): number {
 }
 
 /**
- * The time step a 6-digit code matches at `nowMs`, or null when it doesn't
- * match (within otplib's configured window — 0 by default). The epoch is pinned
- * once, so the returned step is exactly the one the code was checked against.
+ * Steps either side of "now" a code may come from (±30 s), so ordinary phone
+ * clock drift doesn't fail logins and accrue lockouts. Replay protection still
+ * holds: the caller claims the *matched* step, not the current one.
+ */
+export const TOTP_WINDOW_STEPS = 1;
+
+/**
+ * The time step a 6-digit code matches at `nowMs` (within ±TOTP_WINDOW_STEPS),
+ * or null when it doesn't match. The epoch is pinned once, so the returned step
+ * is exactly the one the code was generated for — callers must claim that step
+ * (see isTotpStepFresh) so a previous-step code can't be used after a newer one.
  */
 export function matchTotpStep(token: string, secret: string, nowMs: number): number | null {
   if (!/^\d{6}$/.test(token) || !secret) return null;
   try {
-    const delta = authenticator.clone({ epoch: nowMs }).checkDelta(token, secret);
+    const delta = authenticator.clone({ epoch: nowMs, window: TOTP_WINDOW_STEPS }).checkDelta(token, secret);
     return typeof delta === "number" ? totpStepAt(nowMs) + delta : null;
   } catch {
     // Malformed secret — treat as a non-match, never a crash.

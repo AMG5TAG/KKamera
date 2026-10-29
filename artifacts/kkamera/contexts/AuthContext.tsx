@@ -4,6 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import { Platform } from "react-native";
 import { setAuthTokenGetter, setUnauthorizedHandler, updateMe } from "@workspace/api-client-react";
+import { setReportingUser } from "@/lib/errorReporting";
 
 export interface AuthUser {
   id: number;
@@ -92,6 +93,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const tokenRef = useRef<string | null>(null);
   const lastLoginAtRef = useRef(0);
   const logoutListeners = useRef(new Set<() => void>());
+
+  // Crash reports carry only the numeric account id (see lib/errorReporting).
+  useEffect(() => { setReportingUser(user?.id); }, [user?.id]);
 
   useEffect(() => {
     async function restore() {

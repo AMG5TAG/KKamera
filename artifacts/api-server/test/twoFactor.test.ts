@@ -22,9 +22,32 @@ test("totp: a current code matches the current step", () => {
   assert.equal(matchTotpStep(codeAt(NOW), SECRET, NOW), totpStepAt(NOW));
 });
 
-test("totp: a code from another step doesn't match (window 0)", () => {
+test("totp: codes one step either side match, and report their own step (clock drift)", () => {
+  const step = totpStepAt(NOW);
   const prev = codeAt(NOW - 30_000);
-  if (prev !== codeAt(NOW)) assert.equal(matchTotpStep(prev, SECRET, NOW), null);
+  const next = codeAt(NOW + 30_000);
+  if (prev !== codeAt(NOW)) assert.equal(matchTotpStep(prev, SECRET, NOW), step - 1);
+  if (next !== codeAt(NOW)) assert.equal(matchTotpStep(next, SECRET, NOW), step + 1);
+});
+
+test("totp: a code two steps away doesn't match", () => {
+  const old = codeAt(NOW - 60_000);
+  const recent = [codeAt(NOW - 30_000), codeAt(NOW), codeAt(NOW + 30_000)];
+  if (!recent.includes(old)) assert.equal(matchTotpStep(old, SECRET, NOW), null);
+  const future = codeAt(NOW + 60_000);
+  if (!recent.includes(future)) assert.equal(matchTotpStep(future, SECRET, NOW), null);
+});
+
+test("totp replay: the previous step's code is refused once the current one was used", () => {
+  // Accept the current code, then try the (still in-window) previous code.
+  const current = matchTotpStep(codeAt(NOW), SECRET, NOW)!;
+  const prevCode = codeAt(NOW - 30_000);
+  if (prevCode === codeAt(NOW)) return;
+  const prevStep = matchTotpStep(prevCode, SECRET, NOW + 1_000)!;
+  assert.equal(prevStep, current - 1);
+  assert.equal(isTotpStepFresh(prevStep, current), false);
+  // ...and the same code a moment later is refused too.
+  assert.equal(isTotpStepFresh(matchTotpStep(codeAt(NOW), SECRET, NOW + 1_000)!, current), false);
 });
 
 test("totp: rejects non-6-digit input and a bad secret without throwing", () => {

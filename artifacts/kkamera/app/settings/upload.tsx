@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSettings } from "@/contexts/SettingsContext";
+import { MAX_RECORDING_BYTES } from "@/lib/config";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -108,8 +109,8 @@ export default function UploadScreen() {
         <View style={styles.card}>
           <ToggleRow
             icon="time-outline"
-            label="Record Upload History"
-            hint="Keep a list of past uploads. The camera always shows upload status and failures."
+            label="Show Upload History"
+            hint="Show a list of past uploads on this device. Your account still keeps an upload record; the camera always shows upload status and failures."
             value={settings.recordHistory}
             onToggle={v => updateSetting("recordHistory", v)}
           />
@@ -223,7 +224,7 @@ export default function UploadScreen() {
         <Text style={styles.sectionLabel}>Video Duration Limit</Text>
         <View style={styles.card}>
           {([
-            { label: "Unlimited", hint: "Up to 10 minutes per clip", value: 0 },
+            { label: "Unlimited", hint: "Up to 10 minutes, or the size cap below", value: 0 },
             { label: "30 seconds", hint: "Good for quick evidence clips", value: 30 },
             { label: "1 minute", hint: "Balanced for mobile uploads", value: 60 },
             { label: "5 minutes", hint: "Long-form capture", value: 300 },
@@ -239,6 +240,9 @@ export default function UploadScreen() {
             </React.Fragment>
           ))}
         </View>
+        <Text style={styles.footnote}>
+          Each clip also stops at about {Math.round(MAX_RECORDING_BYTES / (1024 * 1024))} MB so it can upload — roughly 1½ minutes at 1080p or 30 seconds at 4K.
+        </Text>
       </ScrollView>
     </View>
   );
@@ -274,5 +278,6 @@ const styles = StyleSheet.create({
     alignItems: "center", justifyContent: "center",
   },
   radioActive: { borderColor: PRIMARY },
+  footnote: { fontSize: 11, color: "#555", fontFamily: "Inter_400Regular", paddingHorizontal: 4, paddingTop: 8, lineHeight: 16 },
   radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: PRIMARY },
 });

@@ -8,7 +8,7 @@ import { MailLink } from "@/components/MailLink";
 const BG = "#0d0b08";
 const PRIMARY = "#b19870";
 
-const LAST_UPDATED = "28 September 2026";
+const LAST_UPDATED = "29 October 2026";
 const CONTACT = "development@koastal.com.au";
 
 export default function PrivacyScreen() {
@@ -58,7 +58,7 @@ export default function PrivacyScreen() {
         — To send service emails: welcome, password reset, trial and subscription notices, referral rewards, and invites you ask us to send{"\n"}
         — To answer your feedback and support requests{"\n"}
         — To prevent abuse and keep the service secure{"\n\n"}
-        We do not use your information for advertising, we do not include advertising, analytics or crash-reporting SDKs in the app, and we do not sell or rent your personal information.
+        We do not use your information for advertising, we do not include advertising or analytics SDKs in the app, and we do not sell or rent your personal information.
       </Section>
 
       <Section title="7. Who we share information with">
@@ -66,6 +66,7 @@ export default function PrivacyScreen() {
         <Bold>Apple App Store and Google Play</Bold> process subscription payments. We never see your card details.{"\n\n"}
         <Bold>RevenueCat</Bold> manages subscription status. It receives your KKamera account number (not your name or email) and purchase information from the store.{"\n\n"}
         <Bold>Resend</Bold> delivers our emails, so it processes the recipient address and message content.{"\n\n"}
+        <Bold>Sentry</Bold> receives crash and error reports from the app so we can fix problems: the error details, device model, operating system and app version, and your KKamera account number. Reports do not include your name, email, photos, videos or cloud credentials.{"\n\n"}
         <Bold>Hosting:</Bold> our server and database run on Replit, which uses Google Cloud infrastructure. Your information may therefore be stored or processed outside Australia.{"\n\n"}
         <Bold>Witness mode:</Bold> if you turn it on, after each upload we email the address you enter with your name, the file name and the time. The file itself is not sent to the witness. Only add someone who has agreed to receive these emails.{"\n\n"}
         <Bold>Invites:</Bold> if you invite someone from the Refer & Earn screen, we email them your name and referral code. Their address is used only to send that email — we don't add it to our database, although it appears in our email delivery logs.{"\n\n"}

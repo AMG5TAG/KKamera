@@ -9,6 +9,11 @@ export type BodyType<T> = T;
 export type AuthTokenGetter = () => Promise<string | null> | string | null;
 
 const NO_BODY_STATUS = new Set([204, 205, 304]);
+// Ceiling for an ordinary API call (headers + body). Without it a request on a
+// dead connection can hang a spinner forever. File uploads/downloads are exempt.
+// Longer than the server's 30 s cloud-connection test budget, so its own error wins.
+const DEFAULT_TIMEOUT_MS = 45_000;
+const TIMEOUT_MESSAGE = "The request timed out. Check your connection and try again.";
 const DEFAULT_JSON_ACCEPT = "application/json, application/problem+json";
 
 // ---------------------------------------------------------------------------
@@ -251,6 +256,20 @@ export class ResponseParseError extends Error {
   }
 }
 
+/** Thrown when a request exceeds the default timeout (see `customFetch`). */
+export class RequestTimeoutError extends Error {
+  readonly name = "RequestTimeoutError";
+  readonly method: string;
+  readonly url: string;
+
+  constructor(requestInfo: { method: string; url: string }) {
+    super(TIMEOUT_MESSAGE);
+    Object.setPrototypeOf(this, new.target.prototype);
+    this.method = requestInfo.method;
+    this.url = requestInfo.url;
+  }
+}
+
 /**
  * Convert a thrown request error into a short, user-safe message.
  *
@@ -266,6 +285,8 @@ export function getUserFacingMessage(
   error: unknown,
   fallback = "Something went wrong. Please try again.",
 ): string {
+  if (error instanceof RequestTimeoutError) return TIMEOUT_MESSAGE;
+
   // fetch() rejects with a TypeError when the network is unreachable — except
   // Expo's native fetch (installed as the global fetch on iOS/Android), which throws
   // a FetchError whose message starts with "fetch failed".
@@ -429,16 +450,64 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
-
-  if (!response.ok) {
-    const errorData = await parseErrorBody(response, method);
-    // A 401 means the bearer token is missing/expired/revoked — notify the app
-    // so it can clear the session instead of leaving the user on a screen where
-    // every request silently fails.
-    if (response.status === 401) _onUnauthorized?.();
-    throw new ApiError(response, errorData, requestInfo);
+  // Default timeout, combined with the caller's signal (React Query passes one
+  // to every query so it can cancel): either aborting cancels the request, and
+  // the caller's own abort still surfaces as its usual AbortError. Bodies that
+  // carry a file (multipart / binary) and blob downloads are exempt — they can
+  // legitimately take longer than any fixed ceiling.
+  const callerSignal = init.signal ?? undefined;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  let unlinkCaller: (() => void) | null = null;
+  let signal = init.signal;
+  if (!isFileTransfer(init.body, responseType) && typeof AbortController !== "undefined") {
+    const controller = new AbortController();
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort();
+      else {
+        const onAbort = () => controller.abort();
+        callerSignal.addEventListener("abort", onAbort);
+        unlinkCaller = () => callerSignal.removeEventListener("abort", onAbort);
+      }
+    }
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, DEFAULT_TIMEOUT_MS);
+    signal = controller.signal;
   }
 
-  return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  try {
+    const response = await fetch(input, { ...init, method, headers, signal });
+
+    if (!response.ok) {
+      const errorData = await parseErrorBody(response, method);
+      // A 401 means the bearer token is missing/expired/revoked — notify the app
+      // so it can clear the session instead of leaving the user on a screen where
+      // every request silently fails.
+      if (response.status === 401) _onUnauthorized?.();
+      throw new ApiError(response, errorData, requestInfo);
+    }
+
+    return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  } catch (error) {
+    if (timedOut && !callerSignal?.aborted) throw new RequestTimeoutError(requestInfo);
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+    unlinkCaller?.();
+  }
+}
+
+function isFileTransfer(
+  body: BodyInit | null | undefined,
+  responseType: CustomFetchOptions["responseType"],
+): boolean {
+  if (responseType === "blob") return true;
+  if (body == null || typeof body === "string") return false;
+  if (typeof FormData !== "undefined" && body instanceof FormData) return true;
+  if (typeof Blob !== "undefined" && body instanceof Blob) return true;
+  if (typeof ArrayBuffer !== "undefined" && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) return true;
+  if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return true;
+  return false;
 }

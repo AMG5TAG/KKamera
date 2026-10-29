@@ -80,6 +80,17 @@ const MAX_UPLOAD_WAITERS = 20;
 // global slot and starve everyone else.
 const MAX_UPLOADS_PER_USER = 2;
 const RETRY_AFTER_SECONDS = 30;
+// Global cap on request bodies being received (admitted but not yet fully on
+// disk), so many users uploading at once can't fill os.tmpdir() or hold an
+// unbounded number of open sockets/files before the wait queue above applies.
+function envPositiveInt(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+const MAX_RECEIVING_UPLOADS = envPositiveInt("MAX_RECEIVING_UPLOADS", 20);
+// Drop an upload whose body has sent nothing for this long (frees its slot).
+const UPLOAD_BODY_IDLE_TIMEOUT_MS = 60_000;
+let receivingUploads = 0;
 let activeUploads = 0;
 const uploadWaiters: Array<() => void> = [];
 const userInFlight = new Map<number, number>();
@@ -117,7 +128,7 @@ function sendBusy(res: Response, status: 409 | 429 | 503, message: string): void
  * the response closes if the handler never ran (e.g. multer rejected the body).
  */
 function uploadAdmission(req: Request, res: Response, next: NextFunction): void {
-  if (uploadQueueFull()) {
+  if (uploadQueueFull() || receivingUploads >= MAX_RECEIVING_UPLOADS) {
     sendBusy(res, 503, "Upload server is busy. Please try again shortly.");
     return;
   }
@@ -127,6 +138,24 @@ function uploadAdmission(req: Request, res: Response, next: NextFunction): void 
     sendBusy(res, 429, "Too many uploads in progress. Please wait for one to finish.");
     return;
   }
+  // Held while multer streams the body; freed once the handler starts (the
+  // body is fully on disk) or when the response closes first (multer error,
+  // client abort, timeout).
+  receivingUploads += 1;
+  let receiving = true;
+  // A body that stops arriving (dead uplink, stalled client) would otherwise
+  // hold its slot until the 65-min requestTimeout. Slow-but-moving bodies are
+  // fine: this is socket inactivity, not total time.
+  req.setTimeout(UPLOAD_BODY_IDLE_TIMEOUT_MS, () => req.destroy());
+  const releaseReceiving = () => {
+    if (!receiving) return;
+    receiving = false;
+    receivingUploads -= 1;
+    // Body is in; the cloud transfer that follows sends nothing inbound for
+    // minutes, so the idle timer must not apply to it.
+    req.setTimeout(0);
+  };
+  res.locals["releaseReceivingSlot"] = releaseReceiving;
   userInFlight.set(userId, inFlight + 1);
   let released = false;
   const release = () => {
@@ -137,7 +166,10 @@ function uploadAdmission(req: Request, res: Response, next: NextFunction): void 
     else userInFlight.set(userId, n);
   };
   res.locals["releaseUserUploadSlot"] = release;
-  res.once("close", () => { if (!res.locals["uploadHandlerStarted"]) release(); });
+  res.once("close", () => {
+    releaseReceiving();
+    if (!res.locals["uploadHandlerStarted"]) release();
+  });
   next();
 }
 
@@ -308,6 +340,7 @@ router.post(
   upload.single("file"),
   async (req, res) => {
     res.locals["uploadHandlerStarted"] = true;
+    (res.locals["releaseReceivingSlot"] as (() => void) | undefined)?.();
     const releaseUserSlot = res.locals["releaseUserUploadSlot"] as (() => void) | undefined;
     const tmpPath = req.file?.path;
     try {

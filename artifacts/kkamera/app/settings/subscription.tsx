@@ -1,15 +1,16 @@
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Platform, Modal, ActivityIndicator, Alert,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useGetSubscription } from "@workspace/api-client-react";
 import {
   STORE_NAME, isPaymentPending, isPurchaseCancelled, openManageSubscriptions, useSubscription,
 } from "@/lib/revenuecat";
+import { subscriptionAllows } from "@/lib/offlineCache";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -54,13 +55,24 @@ const fmtDate = (d: string | Date | null | undefined) => (d ? new Date(d).toLoca
 export default function SubscriptionScreen() {
   const insets = useSafeAreaInsets();
 
-  const { data: sub } = useGetSubscription();
+  const { data: sub, refetch: refetchSub } = useGetSubscription();
 
   const rcSub = useSubscription();
   const [confirmVisible, setConfirmVisible] = useState(false);
   const [confirmPackage, setConfirmPackage] = useState<any>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // RevenueCat is the source of truth for an active subscription.
+  // Coming back here (e.g. after a failed load, or from the store) re-reads the
+  // plans and the server subscription instead of showing a stale failure.
+  const { refetchOfferings, offerings: loadedOfferings } = rcSub;
+  useFocusEffect(useCallback(() => {
+    if (rcSub.isReady && !loadedOfferings) void refetchOfferings();
+    void refetchSub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rcSub.isReady, !!loadedOfferings]));
+
+  // The server subscription row is what gates uploads; RevenueCat describes the
+  // store side (renewal, billing issues).
   const isRcSubscribed = rcSub.isSubscribed;
   const entitlement = rcSub.customerInfo?.entitlements.active?.["pro"];
   const managementURL = rcSub.customerInfo?.managementURL ?? null;
@@ -70,6 +82,13 @@ export default function SubscriptionScreen() {
   const daysLeft = trialEnd ? Math.max(0, Math.ceil((trialEnd.getTime() - Date.now()) / 86400000)) : 0;
   const periodEnd = sub?.currentPeriodEnd ? new Date(sub.currentPeriodEnd) : null;
   const cancelledButActive = status === "cancelled" && !!periodEnd && periodEnd.getTime() > Date.now();
+  // Same rule the server applies to uploads (a trial whose end has passed is over).
+  const serverAllows = subscriptionAllows(sub);
+  const trialActive = status === "trial" && serverAllows;
+  // The store says entitled but the server row doesn't grant access yet (webhook
+  // lag/miss, sandbox purchase on a production server…): uploads would be
+  // refused, so show the server truth with a way to reconcile.
+  const storeNotSynced = isRcSubscribed && !!sub && !serverAllows;
 
   const currentOffering = rcSub.offerings?.current;
   const annualPackage = currentOffering?.availablePackages.find(
@@ -118,6 +137,24 @@ export default function SubscriptionScreen() {
     }
   };
 
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      const ok = await rcSub.syncServerSubscription();
+      const { data: fresh } = await refetchSub();
+      if (!subscriptionAllows(fresh)) {
+        Alert.alert(
+          "Not linked yet",
+          ok
+            ? "Your store purchase still hasn't reached your KKamera account. Try again in a few minutes, or contact support if this continues."
+            : "We couldn't reach KKamera to check your purchase. Please check your connection and try again.",
+        );
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleRestore = async () => {
     try {
       const info = await rcSub.restore();
@@ -129,8 +166,11 @@ export default function SubscriptionScreen() {
       } else {
         Alert.alert("No Purchases Found", "We couldn't find an active subscription linked to your store account.");
       }
-    } catch {
-      Alert.alert("Restore Failed", "We couldn't restore your purchases. Please check your connection and try again.");
+    } catch (err: any) {
+      const detail = typeof err?.message === "string" && err.message.startsWith("We're still linking")
+        ? err.message
+        : "We couldn't restore your purchases. Please check your connection and try again.";
+      Alert.alert("Restore Failed", detail);
     }
   };
 
@@ -153,6 +193,29 @@ export default function SubscriptionScreen() {
           <Text style={[styles.statusSub, { textAlign: "center" }]}>
             {STORE_NAME} couldn't charge your payment method. Update it in your {STORE_NAME} account to keep your subscription.
           </Text>
+        </View>
+      );
+    }
+    if (storeNotSynced) {
+      return (
+        <View style={[styles.statusCard, { borderColor: "rgba(234,179,8,0.3)" }]}>
+          <Badge label="NOT LINKED YET" color="#eab308" bg="rgba(234,179,8,0.15)" />
+          <Text style={[styles.statusTitle, { fontSize: 20, textAlign: "center" }]}>Purchase not on your account yet</Text>
+          <Text style={[styles.statusSub, { textAlign: "center" }]}>
+            Your store purchase hasn't reached your KKamera account yet, so uploads are paused. Refresh to check again.
+          </Text>
+          <TouchableOpacity
+            style={[styles.refreshBtn, refreshing && styles.btnDisabled]}
+            onPress={handleRefresh}
+            disabled={refreshing}
+            accessibilityRole="button"
+            accessibilityLabel="Refresh subscription"
+            accessibilityState={{ disabled: refreshing, busy: refreshing }}
+          >
+            {refreshing
+              ? <ActivityIndicator color={PRIMARY} size="small" />
+              : <Text style={styles.refreshBtnText}>Refresh</Text>}
+          </TouchableOpacity>
         </View>
       );
     }
@@ -184,18 +247,19 @@ export default function SubscriptionScreen() {
         </View>
       );
     }
-    if (status === "active") {
-      // The server can't tell us whether the store will renew — only claim
-      // "Renews" when RevenueCat says willRenew (handled above).
+    if (status === "active" && serverAllows) {
+      // Active on the server with no store entitlement here: a staff grant, a
+      // referral year, or a store subscription RevenueCat hasn't reported on
+      // this device. Don't claim a price or renewal we can't vouch for.
       return (
         <View style={styles.statusCard}>
           <Badge label="ACTIVE" color="#22c55e" bg="rgba(34,197,94,0.2)" />
-          <Text style={styles.statusTitle}>{priceLine}</Text>
-          <Text style={styles.statusSub}>Current period ends {fmtDate(periodEnd)}</Text>
+          <Text style={styles.statusTitle}>Active</Text>
+          <Text style={styles.statusSub}>Active until {fmtDate(periodEnd)}</Text>
         </View>
       );
     }
-    if (status === "trial") {
+    if (trialActive) {
       return (
         <View style={styles.statusCard}>
           <Badge label="TRIAL" color={PRIMARY} bg="rgba(177,152,112,0.2)" />
@@ -206,14 +270,18 @@ export default function SubscriptionScreen() {
     }
     return (
       <View style={styles.statusCard}>
-        <Badge label={status === "cancelled" ? "CANCELLED" : status === "expired" ? "EXPIRED" : "INACTIVE"} color="#9ca3af" bg="rgba(107,114,128,0.2)" />
+        <Badge
+          label={status === "trial" ? "TRIAL ENDED" : status === "cancelled" ? "CANCELLED" : status === "expired" || status === "active" ? "EXPIRED" : "INACTIVE"}
+          color="#9ca3af"
+          bg="rgba(107,114,128,0.2)"
+        />
         <Text style={styles.statusTitle}>No active subscription</Text>
         <Text style={styles.statusSub}>Subscribe to continue using KKamera</Text>
       </View>
     );
   };
 
-  const hasSubscription = isRcSubscribed || status === "active" || status === "past_due" || cancelledButActive;
+  const hasSubscription = isRcSubscribed || (status === "active" && serverAllows) || status === "past_due" || cancelledButActive;
   const showSubscribeButton = !hasSubscription;
 
   const disclosure = priceString
@@ -251,6 +319,25 @@ export default function SubscriptionScreen() {
           <View style={styles.unavailableCard}>
             <ActivityIndicator color={PRIMARY} accessibilityLabel="Loading subscription options" />
           </View>
+        ) : rcSub.offeringsError ? (
+          <View style={styles.unavailableCard}>
+            <Ionicons name="cloud-offline-outline" size={22} color="#9ca3af" accessible={false} />
+            <Text style={styles.unavailableTitle}>Couldn't load plans</Text>
+            <Text style={styles.unavailableText}>
+              We couldn't reach the {STORE_NAME}. Check your connection and try again.
+            </Text>
+            <TouchableOpacity
+              style={[styles.refreshBtn, rcSub.isOfferingsFetching && styles.btnDisabled]}
+              onPress={() => { void rcSub.refetchOfferings(); }}
+              disabled={rcSub.isOfferingsFetching}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: rcSub.isOfferingsFetching, busy: rcSub.isOfferingsFetching }}
+            >
+              {rcSub.isOfferingsFetching
+                ? <ActivityIndicator color={PRIMARY} size="small" />
+                : <Text style={styles.refreshBtnText}>Try again</Text>}
+            </TouchableOpacity>
+          </View>
         ) : !purchasesAvailable ? (
           <View style={styles.unavailableCard}>
             <Ionicons name="alert-circle-outline" size={22} color="#9ca3af" accessible={false} />
@@ -267,7 +354,7 @@ export default function SubscriptionScreen() {
               <Text style={styles.priceSub}>Auto-renews {period.adverb} · Cancel anytime</Text>
             </View>
 
-            {status === "trial" && (
+            {trialActive && (
               <Text style={styles.trialNote}>
                 Your paid {period.unit} starts today; remaining trial days aren't carried over.
               </Text>
@@ -336,7 +423,7 @@ export default function SubscriptionScreen() {
             <Text style={styles.modalTitle} accessibilityRole="header">Confirm Purchase</Text>
             <Text style={styles.modalBody}>
               Subscribe to KKamera for {priceString} per {period.unit}?{"\n\n"}
-              {status === "trial" ? `Your paid ${period.unit} starts today; remaining trial days aren't carried over.\n\n` : ""}
+              {trialActive ? `Your paid ${period.unit} starts today; remaining trial days aren't carried over.\n\n` : ""}
               Payment is charged to your {STORE_NAME} account and renews automatically {period.adverb} unless cancelled at least 24 hours before the end of the current period.
             </Text>
             <TouchableOpacity style={styles.modalConfirm} onPress={confirmPurchase} accessibilityRole="button">
@@ -382,6 +469,8 @@ const styles = StyleSheet.create({
   subscribeBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 16, marginBottom: 10 },
   btnDisabled: { opacity: 0.6 },
   subscribeBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
+  refreshBtn: { marginTop: 12, paddingVertical: 10, paddingHorizontal: 24, borderRadius: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.35)", minWidth: 120, alignItems: "center" },
+  refreshBtnText: { fontSize: 14, color: PRIMARY, fontFamily: "Inter_600SemiBold" },
   restoreBtn: { alignItems: "center", paddingVertical: 12, marginBottom: 6 },
   restoreBtnText: { fontSize: 14, color: PRIMARY, fontFamily: "Inter_500Medium" },
   footnote: { fontSize: 12, color: "#555", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 18 },

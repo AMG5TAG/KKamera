@@ -9,7 +9,8 @@
       "distribution": "internal",
       "environment": "development",
       "env": {
-        "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY": "test_EeMOwLvsDSdIXMlgAwslVdkDIIQ"
+        "EXPO_PUBLIC_REVENUECAT_TEST_API_KEY": "test_EeMOwLvsDSdIXMlgAwslVdkDIIQ",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     },
     "preview": {
@@ -20,7 +21,8 @@
       },
       "env": {
         "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_TFHVoaPvLiXpMTMLlCqVyhmTBfW",
-        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_yaGBOKjGHSXhTULboFWQCyfsJnM"
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_yaGBOKjGHSXhTULboFWQCyfsJnM",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     },
     "alpha": {
@@ -33,7 +35,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_REVENUECAT_IOS_API_KEY": "appl_TFHVoaPvLiXpMTMLlCqVyhmTBfW",
-        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_yaGBOKjGHSXhTULboFWQCyfsJnM"
+        "EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY": "goog_yaGBOKjGHSXhTULboFWQCyfsJnM",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     }
   },

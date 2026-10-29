@@ -1,5 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { Linking, Platform } from "react-native";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { AppState, Linking, Platform } from "react-native";
 import Purchases from "react-native-purchases";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Constants from "expo-constants";
@@ -88,21 +88,29 @@ function useSubscriptionContext() {
   // anonymous RevenueCat id the server can't map back to an account.
   const [identifiedUserId, setIdentifiedUserId] = useState<number | null>(null);
   const identityReady = user?.id != null && identifiedUserId === user.id;
+  // Live mirrors for the async logIn path below, which outlives renders.
+  const userIdRef = useRef<number | null>(user?.id ?? null);
+  userIdRef.current = user?.id ?? null;
+  const identifiedRef = useRef<number | null>(null);
+  const loginInFlight = useRef<Promise<boolean> | null>(null);
 
   // Ask the server to reconcile from RevenueCat (webhooks can lag or be missed),
   // then refetch the server subscription that gates uploads. Best effort — the
-  // webhook remains the primary path.
-  const syncServerSubscription = useCallback(async () => {
+  // webhook remains the primary path. Resolves false when the sync call failed.
+  const syncServerSubscription = useCallback(async (): Promise<boolean> => {
+    let ok = true;
     try {
       await syncSubscription();
     } catch {
       // Sync unavailable / rate-limited — the webhook will still catch up.
+      ok = false;
     } finally {
       await queryClient.invalidateQueries({ queryKey: getGetSubscriptionQueryKey() });
       // Captures parked on 402 only wake on foreground/network events; the wake
       // when the store sheet closes usually beats this sync and gets 402 again.
       retryQueued();
     }
+    return ok;
   }, [queryClient, retryQueued]);
 
   const customerInfoQuery = useQuery({
@@ -113,33 +121,70 @@ function useSubscriptionContext() {
     retry: false,
   });
 
+  /**
+   * Log RevenueCat in as the signed-in user (once; concurrent callers share
+   * the attempt). Resolves true when RevenueCat is identified as that user.
+   */
+  const ensureIdentity = useCallback(async (): Promise<boolean> => {
+    if (Platform.OS === "web" || !_revenueCatReady) return false;
+    const uid = userIdRef.current;
+    if (uid == null) return false;
+    if (identifiedRef.current === uid) return true;
+    if (!loginInFlight.current) {
+      loginInFlight.current = (async () => {
+        try {
+          await Purchases.logIn(String(uid));
+          if (userIdRef.current !== uid) return false;
+          identifiedRef.current = uid;
+          setIdentifiedUserId(uid);
+          // Pick up purchases already on this store account (reinstall, other
+          // device, or a TRANSFER) without waiting for a webhook.
+          void syncServerSubscription();
+          void queryClient.invalidateQueries({ queryKey: ["revenuecat", "customer-info"] });
+          return true;
+        } catch {
+          return false;
+        } finally {
+          loginInFlight.current = null;
+        }
+      })();
+    }
+    return loginInFlight.current;
+  }, [syncServerSubscription, queryClient]);
+
   // Link RevenueCat purchases to the KKamera account (native only) so entitlements
   // follow the user across devices/reinstalls and the RevenueCat webhook can map
   // `app_user_id` back to our numeric userId. Without logIn, purchases are
-  // anonymous per-device and the server can never reconcile them.
+  // anonymous per-device and the server can never reconcile them. A failed logIn
+  // (offline at launch, RevenueCat hiccup) is retried with backoff and whenever
+  // the app returns to the foreground, so purchases aren't blocked all session.
   useEffect(() => {
     if (Platform.OS === "web" || !_revenueCatReady) return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    identifiedRef.current = null;
     setIdentifiedUserId(null);
-    (async () => {
-      try {
-        if (user?.id != null) {
-          await Purchases.logIn(String(user.id));
-          if (cancelled) return;
-          setIdentifiedUserId(user.id);
-          // Pick up purchases already on this store account (reinstall, other
-          // device, or a TRANSFER) without waiting for a webhook.
-          syncServerSubscription();
-        } else {
-          await Purchases.logOut();
-        }
-        if (!cancelled) customerInfoQuery.refetch();
-      } catch {
-        // RevenueCat identity sync failed — entitlement checks fall back to
-        // whatever the last-known customer info was; non-fatal.
-      }
-    })();
-    return () => { cancelled = true; };
+    if (user?.id == null) {
+      Purchases.logOut()
+        .then(() => { if (!cancelled) customerInfoQuery.refetch(); })
+        .catch(() => { /* already anonymous — non-fatal */ });
+      return () => { cancelled = true; };
+    }
+    let attempt = 0;
+    const run = async () => {
+      if (cancelled || (await ensureIdentity()) || cancelled) return;
+      if (attempt >= 6) return; // foreground / purchase / restore still retry
+      timer = setTimeout(run, Math.min(60_000, 2_000 * 2 ** attempt++));
+    };
+    void run();
+    const appSub = AppState.addEventListener("change", (st) => {
+      if (st === "active" && !cancelled) void ensureIdentity();
+    });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      appSub.remove();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
@@ -148,12 +193,14 @@ function useSubscriptionContext() {
     queryFn: () => Purchases.getOfferings(),
     staleTime: 300_000,
     enabled,
-    retry: false,
+    // A transient failure must not read as "purchases unavailable" — retry a
+    // couple of times; the subscription screen also refetches on focus.
+    retry: 2,
   });
 
   const purchaseMutation = useMutation({
     mutationFn: async (packageToPurchase: any) => {
-      if (!identityReady) {
+      if (!identityReady && !(await ensureIdentity())) {
         throw new Error("We're still linking your account to the store. Please wait a moment and try again.");
       }
       const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
@@ -166,7 +213,14 @@ function useSubscriptionContext() {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: () => Purchases.restorePurchases(),
+    // Restore onto the signed-in user's RevenueCat id, never an anonymous one
+    // the server can't map back to this account.
+    mutationFn: async () => {
+      if (!identityReady && !(await ensureIdentity())) {
+        throw new Error("We're still linking your account to the store. Please wait a moment and try again.");
+      }
+      return Purchases.restorePurchases();
+    },
     onSuccess: () => {
       customerInfoQuery.refetch();
       return syncServerSubscription();
@@ -179,6 +233,12 @@ function useSubscriptionContext() {
   return {
     customerInfo: customerInfoQuery.data,
     offerings: offeringsQuery.data,
+    /** Plans couldn't be loaded (network / store hiccup) — distinct from purchases being unavailable on this build. */
+    offeringsError: enabled && offeringsQuery.isError && !offeringsQuery.data,
+    refetchOfferings: offeringsQuery.refetch,
+    isOfferingsFetching: offeringsQuery.isFetching,
+    /** Ask the server to reconcile from RevenueCat, then refetch the server subscription. */
+    syncServerSubscription,
     isSubscribed,
     isReady: enabled,
     identityReady,

@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { router } from "expo-router";
-import { useForgotPassword } from "@workspace/api-client-react";
+import { useForgotPassword, getUserFacingMessage } from "@workspace/api-client-react";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -29,8 +29,8 @@ export default function ForgotPasswordScreen() {
       await forgotMutation.mutateAsync({ data: { email: email.trim().toLowerCase() } });
       // Always show success to avoid email enumeration
       setSent(true);
-    } catch {
-      setError("Something went wrong. Please try again.");
+    } catch (e) {
+      setError(getUserFacingMessage(e, "Something went wrong. Please try again."));
     } finally {
       setLoading(false);
     }
@@ -38,7 +38,7 @@ export default function ForgotPasswordScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button">
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.canGoBack() ? router.back() : router.replace("/auth/login")} accessibilityRole="button">
         <Ionicons name="chevron-back" size={18} color={PRIMARY} accessible={false} />
         <Text style={styles.backBtnText}>Back to Sign In</Text>
       </TouchableOpacity>

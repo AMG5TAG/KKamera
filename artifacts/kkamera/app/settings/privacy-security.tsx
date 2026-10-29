@@ -133,19 +133,21 @@ export default function PrivacySecurityScreen() {
   const handlePanic = () => {
     const message =
       "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign you out\n• Reset all settings\n\nThis cannot be undone.";
-    const wipe = async () => {
-      try {
-        // Use the in-memory auth token from context. Reading it from
-        // AsyncStorage broke on native, where the token lives in SecureStore
-        // — so the server-side wipe silently no-op'd on the exact platforms
-        // we ship.
-        if (token) {
-          await Promise.allSettled([
-            fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
-            fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
-          ]);
-        }
-      } catch { /* best effort */ }
+    // Server-side wipe. True only when both deletes succeeded (or there is no
+    // session to wipe); a network error or non-2xx response counts as failure.
+    const wipeServer = async (): Promise<boolean> => {
+      // Use the in-memory auth token from context. Reading it from
+      // AsyncStorage broke on native, where the token lives in SecureStore
+      // — so the server-side wipe silently no-op'd on the exact platforms
+      // we ship.
+      if (!token) return true;
+      const results = await Promise.allSettled([
+        fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      return results.every(r => r.status === "fulfilled" && r.value.ok);
+    };
+    const wipeLocalAndSignOut = async () => {
       // Reset all local settings (clears the app-lock PIN too), as the
       // confirmation dialog promises, then sign out.
       await resetSettings();
@@ -153,6 +155,25 @@ export default function PrivacySecurityScreen() {
       setPinStored(false);
       await discardQueue();
       await logout();
+    };
+    const wipe = async () => {
+      if (await wipeServer()) {
+        await wipeLocalAndSignOut();
+        return;
+      }
+      // Don't sign out silently: the cloud accounts / history may still be on
+      // the server, and once signed out the user can't retry from here.
+      const failMsg =
+        "Your cloud connections and upload history could not be deleted from the server. Check your connection and try again, or sign out anyway (the server data will remain).";
+      if (Platform.OS === "web") {
+        if (window.confirm(`Server wipe didn't complete\n\n${failMsg}\n\nOK = Retry, Cancel = Sign out anyway`)) void wipe();
+        else void wipeLocalAndSignOut();
+        return;
+      }
+      Alert.alert("Server wipe didn't complete", failMsg, [
+        { text: "Sign out anyway", style: "destructive", onPress: () => { void wipeLocalAndSignOut(); } },
+        { text: "Retry", onPress: () => { void wipe(); } },
+      ], { cancelable: false });
     };
     // Alert.alert is a no-op on react-native-web, so use the browser dialog there.
     if (Platform.OS === "web") {
