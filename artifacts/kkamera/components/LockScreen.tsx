@@ -7,15 +7,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSettings } from "@/contexts/SettingsContext";
 import {
   authenticateWithDevice, getPinFailures, hasPin, isDeviceAuthAvailable,
-  recordPinFailure, resetPinFailures, verifyPin, PIN_FAIL_THRESHOLD,
+  recordPinFailure, resetPinFailures, verifyPin, attemptsBeforeSignOut, PIN_FAIL_THRESHOLD,
 } from "@/lib/appLock";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
 
-/** "forgot-pin": signed out from the PIN keypad — the next password sign-in resets the lock. */
-export type LockSignOutReason = "user" | "forgot-pin" | "no-credential";
+/**
+ * "forgot-pin": signed out from the PIN keypad — the next password sign-in resets the lock.
+ * "too-many-attempts": PIN_MAX_FAILURES wrong PINs — the PIN is already erased; password required.
+ */
+export type LockSignOutReason = "user" | "forgot-pin" | "no-credential" | "too-many-attempts";
 
 interface LockScreenProps {
   onUnlock: () => void;
@@ -54,6 +57,8 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
       setDeviceAuth(d);
       setFailures(f.failures);
       setLockedUntil(f.lockedUntil);
+      // The cap was hit earlier but the sign-out didn't complete (app killed).
+      if (f.exhausted) onSignOut("too-many-attempts");
     })();
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -109,6 +114,11 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
       try {
         // Re-read the persisted lockout so a remount can't bypass it.
         const current = await getPinFailures();
+        if (current.exhausted) {
+          setPin("");
+          onSignOut("too-many-attempts");
+          return;
+        }
         if (current.lockedUntil > Date.now()) {
           setFailures(current.failures);
           setLockedUntil(current.lockedUntil);
@@ -127,10 +137,18 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
         setFailures(state.failures);
         setLockedUntil(state.lockedUntil);
         setPin("");
+        if (state.exhausted) {
+          // The PIN has been erased; only the account password gets back in.
+          const msg = "Too many incorrect PINs. You've been signed out — sign in with your password.";
+          if (Platform.OS === "web") window.alert(msg);
+          else Alert.alert("Signed out", msg);
+          onSignOut("too-many-attempts");
+          return;
+        }
         if (state.lockedUntil > Date.now()) {
           setError("");
         } else {
-          setError(`Incorrect PIN (${Math.max(0, PIN_FAIL_THRESHOLD - state.failures)} left)`);
+          setError(`Incorrect PIN (${Math.max(0, PIN_FAIL_THRESHOLD - state.failures)} left before a pause)`);
         }
       } finally {
         checkingRef.current = false;
@@ -206,6 +224,12 @@ export default function LockScreen({ onUnlock, onSignOut }: LockScreenProps) {
                 </Text>
               )}
 
+              {failures >= PIN_FAIL_THRESHOLD && (
+                <Text style={styles.warnText} accessibilityLiveRegion="polite">
+                  {attemptsBeforeSignOut(failures)} {attemptsBeforeSignOut(failures) === 1 ? "attempt" : "attempts"} left before you're signed out and need your password
+                </Text>
+              )}
+
               <View style={styles.numpad}>
                 {["1","2","3","4","5","6","7","8","9","","0","⌫"].map((key, i) => {
                   if (key === "") return <View key={i} style={styles.numKey} />;
@@ -263,6 +287,7 @@ const styles = StyleSheet.create({
   hint: { fontSize: 13, color: "#666", fontFamily: "Inter_400Regular", marginBottom: 32 },
   centerText: { textAlign: "center", lineHeight: 19, color: "#999" },
   errorText: { fontSize: 13, color: "#ef4444", fontFamily: "Inter_500Medium", marginBottom: 32, textAlign: "center" },
+  warnText: { fontSize: 12, color: "#d6a64a", fontFamily: "Inter_400Regular", marginTop: -20, marginBottom: 24, textAlign: "center" },
   numpad: {
     flexDirection: "row", flexWrap: "wrap", width: 264, gap: 12, marginBottom: 32,
   },

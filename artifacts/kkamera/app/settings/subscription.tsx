@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  Platform, Modal, ActivityIndicator, Alert,
+  Platform, Modal, ActivityIndicator, Alert, Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -15,6 +15,15 @@ import { subscriptionAllows } from "@/lib/offlineCache";
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
 const CARD = "#1a1710";
+
+// Public copies of the legal pages (required to be reachable outside the app
+// for App Store / Play subscription listings).
+const TERMS_WEB_URL = "https://app.kkamera.app/terms";
+const PRIVACY_WEB_URL = "https://app.kkamera.app/privacy";
+
+function openWeb(url: string) {
+  Linking.openURL(url).catch(() => Alert.alert("Couldn't open link", url));
+}
 
 // Only claims the app can actually back up — no unverifiable marketing copy.
 const FEATURES = [
@@ -406,6 +415,22 @@ export default function SubscriptionScreen() {
         <Text style={styles.legalSep}>·</Text>
         <Text style={styles.legalLink} onPress={() => router.push("/settings/privacy")} accessibilityRole="link">Privacy Policy</Text>
       </View>
+      <View style={[styles.legalRow, { marginTop: 0 }]}>
+        <Text style={styles.legalWebLabel}>View on web:</Text>
+        <Text
+          style={styles.legalLink}
+          onPress={() => openWeb(TERMS_WEB_URL)}
+          accessibilityRole="link"
+          accessibilityLabel="Terms of Use on the web"
+        >Terms</Text>
+        <Text style={styles.legalSep}>·</Text>
+        <Text
+          style={styles.legalLink}
+          onPress={() => openWeb(PRIVACY_WEB_URL)}
+          accessibilityRole="link"
+          accessibilityLabel="Privacy Policy on the web"
+        >Privacy</Text>
+      </View>
 
       <TouchableOpacity style={styles.referRow} onPress={() => router.push("/settings/affiliate")} accessibilityRole="button">
         <Ionicons name="people-outline" size={18} color={PRIMARY} accessible={false} />
@@ -454,7 +479,8 @@ const styles = StyleSheet.create({
   unavailableText: { fontSize: 13, color: "#888", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19 },
   legalRow: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 8, marginTop: 12 },
   legalLink: { fontSize: 13, color: PRIMARY, fontFamily: "Inter_500Medium", textDecorationLine: "underline", paddingVertical: 6 },
-  legalSep: { fontSize: 13, color: "#555" },
+  legalSep: { fontSize: 13, color: "#8a847c" },
+  legalWebLabel: { fontSize: 13, color: "#8a847c", fontFamily: "Inter_400Regular" },
   referRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: CARD, borderRadius: 14, padding: 14, marginTop: 20, borderWidth: 1, borderColor: "rgba(177,152,112,0.15)" },
   referTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   referSub: { fontSize: 12, color: "#888", fontFamily: "Inter_400Regular", marginTop: 2 },
@@ -482,5 +508,5 @@ const styles = StyleSheet.create({
   modalConfirmText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   modalCancel: { alignItems: "center", paddingVertical: 10 },
   modalCancelText: { fontSize: 14, color: "#666", fontFamily: "Inter_400Regular" },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
 });

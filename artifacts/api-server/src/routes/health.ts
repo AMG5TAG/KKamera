@@ -19,6 +19,18 @@ export function getMigrationState(): MigrationState {
   return migrationState;
 }
 
+// Set once a SIGTERM/SIGINT starts graceful shutdown (index.ts): /readyz then
+// reports 503 so the platform stops routing new traffic to this instance.
+let shuttingDown = false;
+
+export function setShuttingDown(): void {
+  shuttingDown = true;
+}
+
+export function isShuttingDown(): boolean {
+  return shuttingDown;
+}
+
 const UNGATED_PATHS = new Set(["/healthz", "/readyz"]);
 
 /**
@@ -40,8 +52,12 @@ router.get("/healthz", (_req, res) => {
   res.json(data);
 });
 
-// Readiness — database migrations have been applied.
+// Readiness — database migrations have been applied and we're not draining.
 router.get("/readyz", (_req, res) => {
+  if (shuttingDown) {
+    res.status(503).json({ status: "shutting_down" });
+    return;
+  }
   const state = migrationState;
   res.status(state === "ok" ? 200 : 503).json({ status: state === "ok" ? "ok" : state });
 });

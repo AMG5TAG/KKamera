@@ -9,6 +9,7 @@ import {
   useTestCloudConnection, getListCloudConnectionsQueryKey, getGetUploadTargetQueryKey,
   getUserFacingMessage,
 } from "@workspace/api-client-react";
+import { palette } from "@/components/ui/palette";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -34,11 +35,12 @@ const PROVIDER_LABELS: Record<string, string> = {
 export default function CloudScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
-  const { data: connections, isLoading } = useListCloudConnections();
+  const { data: connections, isLoading, isError, error, refetch, isRefetching } = useListCloudConnections();
   const deleteMutation = useDeleteCloudConnection();
   const updateMutation = useUpdateCloudConnection();
   const testMutation = useTestCloudConnection();
   const [testing, setTesting] = useState<number | null>(null);
+  const [toggling, setToggling] = useState<number | null>(null);
 
   const handleDelete = (id: number, name: string) => {
     Alert.alert("Remove Connection", `Remove "${name}"? This will stop uploads to this storage.`, [
@@ -61,11 +63,15 @@ export default function CloudScreen() {
   };
 
   const handleToggleActive = async (id: number, active: boolean) => {
+    if (toggling !== null) return;
+    setToggling(id);
     try {
       await updateMutation.mutateAsync({ id, data: { active: !active } });
     } catch (e) {
       Alert.alert("Error", getUserFacingMessage(e, "Could not update connection"));
       return;
+    } finally {
+      setToggling(null);
     }
     queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
   };
@@ -84,14 +90,49 @@ export default function CloudScreen() {
   };
 
   if (isLoading) {
-    return <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>;
+    return <View style={styles.center}><ActivityIndicator color={PRIMARY} accessibilityLabel="Loading connections" /></View>;
+  }
+
+  const backButton = (
+    <TouchableOpacity
+      style={styles.backBtn}
+      onPress={() => router.canGoBack() ? router.back() : router.replace("/")}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+    >
+      <Ionicons name="chevron-back" size={24} color={PRIMARY} />
+    </TouchableOpacity>
+  );
+
+  if (isError && !connections) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        {backButton}
+        <View style={styles.errorWrap}>
+          <Ionicons name="cloud-offline-outline" size={48} color={palette.textSubtle} accessible={false} />
+          <Text style={styles.emptyTitle} accessibilityRole="header">Couldn't load connections</Text>
+          <Text style={styles.emptyText}>{getUserFacingMessage(error, "Something went wrong. Please try again.")}</Text>
+          <TouchableOpacity
+            style={styles.retryBtn}
+            onPress={() => { void refetch(); }}
+            disabled={isRefetching}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading connections"
+            accessibilityState={{ disabled: isRefetching, busy: isRefetching }}
+          >
+            {isRefetching
+              ? <ActivityIndicator size="small" color="white" />
+              : <Text style={styles.addText}>Retry</Text>}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
   }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.canGoBack() ? router.back() : router.replace("/")}>
-        <Ionicons name="chevron-back" size={24} color={PRIMARY} />
-      </TouchableOpacity>
+      {backButton}
       <FlatList
         data={connections ?? []}
         keyExtractor={item => String(item.id)}
@@ -99,19 +140,22 @@ export default function CloudScreen() {
         ListHeaderComponent={(
           <View style={{ gap: 10 }}>
             <View style={styles.addRow}>
-              <TouchableOpacity style={[styles.addBtn, { flex: 1 }]} onPress={() => router.push("/settings/add-cloud")}>
-                <Ionicons name="add-circle-outline" size={20} color="white" />
+              <TouchableOpacity style={[styles.addBtn, { flex: 1 }]} onPress={() => router.push("/settings/add-cloud")} accessibilityRole="button">
+                <Ionicons name="add-circle-outline" size={20} color="white" accessible={false} />
                 <Text style={styles.addText}>Add New Connection</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.infoBtn}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="About multiple accounts"
                 onPress={() => Alert.alert("Multiple Accounts", "Connect as many accounts as you like — even two of the same provider (e.g. a personal and a business OneDrive). Use “Upload destinations” to choose which ones each capture uploads to.")}
               >
                 <Ionicons name="information-circle-outline" size={26} color={PRIMARY} />
               </TouchableOpacity>
             </View>
             {(connections?.length ?? 0) > 0 && (
-              <TouchableOpacity style={styles.destBtn} onPress={() => router.push("/settings/upload-destinations")}>
+              <TouchableOpacity style={styles.destBtn} onPress={() => router.push("/settings/upload-destinations")} accessibilityRole="button">
                 <Ionicons name="git-branch-outline" size={18} color={PRIMARY} />
                 <Text style={styles.destText}>Upload Destination</Text>
                 <Ionicons name="chevron-forward" size={15} color="#555" style={{ marginLeft: "auto" }} />
@@ -121,7 +165,7 @@ export default function CloudScreen() {
         )}
         ListEmptyComponent={(
           <View style={styles.emptyWrap}>
-            <Ionicons name="cloud-outline" size={48} color="#333" />
+            <Ionicons name="cloud-outline" size={48} color={palette.textSubtle} accessible={false} />
             <Text style={styles.emptyTitle}>No connections yet</Text>
             <Text style={styles.emptyText}>Tap "Add New Connection" to connect your cloud storage or FTP server.</Text>
           </View>
@@ -146,8 +190,18 @@ export default function CloudScreen() {
                   ) : null}
                   <Text style={styles.cardType}>{typeLabel} · {item.uploadPath || "/"}</Text>
                 </View>
-                <TouchableOpacity onPress={() => handleToggleActive(item.id, item.active)} style={styles.toggleBtn}>
-                  <Ionicons name={item.active ? "toggle" : "toggle-outline"} size={32} color={item.active ? PRIMARY : "#555"} />
+                <TouchableOpacity
+                  onPress={() => handleToggleActive(item.id, item.active)}
+                  style={[styles.toggleBtn, toggling === item.id && { opacity: 0.5 }]}
+                  disabled={toggling !== null}
+                  hitSlop={6}
+                  accessibilityRole="switch"
+                  accessibilityLabel={`Use ${item.name} for uploads`}
+                  accessibilityState={{ checked: item.active, disabled: toggling !== null, busy: toggling === item.id }}
+                >
+                  {toggling === item.id
+                    ? <ActivityIndicator size="small" color={PRIMARY} />
+                    : <Ionicons name={item.active ? "toggle" : "toggle-outline"} size={32} color={item.active ? PRIMARY : "#8a847c"} />}
                 </TouchableOpacity>
               </View>
               <View style={styles.cardActions}>
@@ -155,6 +209,9 @@ export default function CloudScreen() {
                   style={styles.actionBtn}
                   onPress={() => handleTest(item.id)}
                   disabled={testing === item.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Test ${item.name}`}
+                  accessibilityState={{ disabled: testing === item.id, busy: testing === item.id }}
                 >
                   {testing === item.id
                     ? <ActivityIndicator size="small" color={PRIMARY} />
@@ -165,11 +222,18 @@ export default function CloudScreen() {
                 <TouchableOpacity
                   style={styles.actionBtn}
                   onPress={() => router.push({ pathname: "/settings/add-cloud", params: { edit: String(item.id) } })}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Edit ${item.name}`}
                 >
                   <Ionicons name="create-outline" size={16} color={PRIMARY} />
                   <Text style={styles.actionText}>Edit</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.actionBtn, styles.actionDelete]} onPress={() => handleDelete(item.id, item.name)}>
+                <TouchableOpacity
+                  style={[styles.actionBtn, styles.actionDelete]}
+                  onPress={() => handleDelete(item.id, item.name)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove ${item.name}`}
+                >
                   <Ionicons name="trash-outline" size={16} color="#ef4444" />
                   <Text style={[styles.actionText, { color: "#ef4444" }]}>Remove</Text>
                 </TouchableOpacity>
@@ -188,7 +252,7 @@ const styles = StyleSheet.create({
   addRow: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 4 },
   addBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 14 },
   addText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
-  infoBtn: { padding: 6 },
+  infoBtn: { padding: 9 },
   destBtn: {
     flexDirection: "row", alignItems: "center", gap: 10,
     backgroundColor: CARD, borderRadius: 14, paddingVertical: 13, paddingHorizontal: 14,
@@ -196,8 +260,10 @@ const styles = StyleSheet.create({
   },
   destText: { fontSize: 14, fontFamily: "Inter_500Medium", color: "white" },
   emptyWrap: { alignItems: "center", paddingVertical: 48 },
-  emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", color: "#666", marginTop: 12, marginBottom: 8 },
-  emptyText: { fontSize: 14, color: "#444", fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 20 },
+  errorWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32 },
+  retryBtn: { marginTop: 20, minWidth: 140, minHeight: 44, alignItems: "center", justifyContent: "center", backgroundColor: PRIMARY, borderRadius: 14, paddingHorizontal: 24 },
+  emptyTitle: { fontSize: 18, fontFamily: "Inter_600SemiBold", color: palette.textMuted, marginTop: 12, marginBottom: 8 },
+  emptyText: { fontSize: 14, color: palette.textSubtle, fontFamily: "Inter_400Regular", textAlign: "center", paddingHorizontal: 20 },
   card: { backgroundColor: CARD, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: "rgba(177,152,112,0.15)" },
   cardTop: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 12 },
   cardTopInactive: { opacity: 0.45 },
@@ -206,10 +272,10 @@ const styles = StyleSheet.create({
   cardName: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
   cardAccount: { fontSize: 12, color: PRIMARY, fontFamily: "Inter_500Medium", marginBottom: 2 },
   cardType: { fontSize: 11, color: "#888", fontFamily: "Inter_500Medium", letterSpacing: 0.5 },
-  toggleBtn: { padding: 4 },
+  toggleBtn: { padding: 6, minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   cardActions: { flexDirection: "row", gap: 10, borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.06)", paddingTop: 12 },
-  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8, borderRadius: 10, backgroundColor: "rgba(177,152,112,0.1)" },
+  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minHeight: 44, paddingVertical: 8, borderRadius: 10, backgroundColor: "rgba(177,152,112,0.1)" },
   actionDelete: { backgroundColor: "rgba(239,68,68,0.08)" },
   actionText: { fontSize: 13, fontFamily: "Inter_500Medium", color: PRIMARY },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
 });

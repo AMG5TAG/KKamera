@@ -68,6 +68,8 @@ export interface IssueVerificationInput {
   /** Credentials of the registration that asked for this code (applied on verify); null for sign-in. */
   passwordHash?: string | null;
   name?: string | null;
+  /** Referrer named by that registration (applied on verify, see applyReferralAttribution). */
+  referrerId?: number | null;
 }
 
 /**
@@ -94,15 +96,18 @@ export async function issueVerificationCode(input: IssueVerificationInput): Prom
       ));
     const canSend = canSendVerificationCode(recent.map(r => r.createdAt), now);
     const newCode = canSend ? generateVerificationCode() : null;
-    // Only the newest emailed code works. A throttled (unsent) row leaves the
-    // outstanding code alone so the person already holding it isn't stranded.
-    if (newCode) await invalidateUnusedVerifications(tx, user.id, now);
+    // Earlier codes stay valid until they expire or one is redeemed (which
+    // voids the rest). Each is bound to the nonce of the client that asked for
+    // it, so this is safe — and invalidating them let anyone who re-registered
+    // an unverified address void the owner's outstanding code. The send
+    // throttle bounds how many can be live at once.
     await tx.insert(emailVerificationsTable).values({
       userId: user.id,
       nonceHash,
       codeHash: newCode ? hashVerificationCode(nonceHash, newCode) : UNSENT_CODE_MARKER,
       passwordHash: input.passwordHash ?? null,
       name: input.name ?? null,
+      referrerId: input.referrerId ?? null,
       expiresAt: new Date(now.getTime() + VERIFICATION_CODE_TTL_MS),
       createdAt: now,
     });
@@ -117,6 +122,31 @@ export async function issueVerificationCode(input: IssueVerificationInput): Prom
     logger.warn({ userId: user.id }, "Verification email suppressed (per-account limit)");
   }
   return { nonce, sent: code !== null };
+}
+
+/**
+ * On verification of a REGISTRATION's code, make that registration's referral
+ * the account's attribution: any pending referral left by an earlier
+ * registration of the same (then unverified) address is dropped, and the
+ * verified one's referrer — if any — is recorded. So whoever registered an
+ * address first can't keep their referral code attached to the person who
+ * actually owns (and verified) it. Runs in the verify transaction.
+ */
+export async function applyReferralAttribution(
+  tx: DbTx,
+  user: { id: number },
+  referrerId: number | null,
+  referredName: string,
+): Promise<void> {
+  const validReferrer = referrerId && referrerId !== user.id ? referrerId : null;
+  await tx.delete(referralsTable)
+    .where(and(eq(referralsTable.referredId, user.id), eq(referralsTable.status, "pending")));
+  await tx.update(usersTable).set({ referrerId: validReferrer }).where(eq(usersTable.id, user.id));
+  if (validReferrer) {
+    await tx.insert(referralsTable).values({
+      referrerId: validReferrer, referredId: user.id, referredName, status: "pending",
+    });
+  }
 }
 
 /**

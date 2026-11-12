@@ -9,7 +9,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, router, useRootNavigationState, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, BackHandler, Keyboard, StyleSheet, View } from "react-native";
+import { AppState, BackHandler, Keyboard, Platform, StyleSheet, View } from "react-native";
+import * as ScreenCapture from "expo-screen-capture";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -21,7 +22,7 @@ import { SettingsProvider, useSettings } from "@/contexts/SettingsContext";
 import { SubscriptionProvider, initializeRevenueCat } from "@/lib/revenuecat";
 import { API_BASE_URL } from "@/lib/config";
 import LockScreen, { type LockSignOutReason } from "@/components/LockScreen";
-import { clearPin, isAuthPromptActive, RELOCK_GRACE_MS } from "@/lib/appLock";
+import { clearPin, isAuthPromptActive, legacyPinStartupAction, RELOCK_GRACE_MS } from "@/lib/appLock";
 import { initErrorReporting } from "@/lib/errorReporting";
 
 if (API_BASE_URL) {
@@ -86,10 +87,20 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
   // Re-lock only after a real trip to the background longer than the grace
   // period. `inactive` alone never re-locks, and a background transition caused
   // by our own device-auth prompt (Android's credential screen) is ignored.
+  //
+  // Privacy cover: with the lock enabled, leaving the app (inactive/background)
+  // immediately paints an opaque cover over everything, so the app-switcher
+  // snapshot shows nothing and returning never flashes content before the lock
+  // decision. The cover is lifted in the same state update that applies that
+  // decision. Our own Face ID / credential prompt doesn't raise it.
   const lockEnabledRef = useRef(lockEnabled);
   useEffect(() => { lockEnabledRef.current = lockEnabled; }, [lockEnabled]);
+  const [obscured, setObscured] = useState(false);
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
+      if (next === "inactive" || next === "background") {
+        if (lockEnabledRef.current && !isAuthPromptActive()) setObscured(true);
+      }
       if (next === "background") {
         if (backgroundedAt.current === null && !isAuthPromptActive()) {
           backgroundedAt.current = Date.now();
@@ -101,10 +112,37 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
           Keyboard.dismiss();
           setLockedState(true);
         }
+        // Batched with the lock decision above: the cover goes only once the
+        // lock screen (if any) is in place.
+        setObscured(false);
       }
     });
     return () => sub.remove();
   }, []);
+
+  // Android: FLAG_SECURE while the lock is enabled — blanks the recents
+  // thumbnail (which the JS cover can be too late for) and blocks screenshots /
+  // screen recording. Released as soon as the lock is turned off or the user
+  // signs out. (iOS relies on the cover above.)
+  useEffect(() => {
+    if (Platform.OS !== "android" || !lockEnabled) return;
+    const key = "kkamera-app-lock";
+    ScreenCapture.preventScreenCaptureAsync(key).catch(() => {});
+    return () => { ScreenCapture.allowScreenCaptureAsync(key).catch(() => {}); };
+  }, [lockEnabled]);
+
+  // Legacy `settings.appPin` (AsyncStorage, fixed salt) is cleared at startup
+  // once a v2 SecureStore PIN exists (or a cleartext one was just re-hashed),
+  // instead of lingering until the next PIN unlock. A legacy hash that is the
+  // only credential stays until that unlock migrates it (needs the PIN).
+  useEffect(() => {
+    if (settingsLoading || !settings.appPin) return;
+    let cancelled = false;
+    void legacyPinStartupAction(settings.appPin).then((clear) => {
+      if (clear && !cancelled) updateSetting("appPin", "");
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [settingsLoading, settings.appPin, updateSetting]);
 
   // Android hardware back must not navigate the stack hidden under the lock.
   useEffect(() => {
@@ -154,7 +192,7 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
       router.replace("/wizard");
     } else if (
       isAuthenticated && !signInNavigating.current &&
-      top === "auth" && AUTH_ONLY_SIGNED_OUT.has(segments[1] as string)
+      top === "auth" && AUTH_ONLY_SIGNED_OUT.has((segments as readonly string[])[1] ?? "")
     ) {
       router.replace("/");
     }
@@ -164,10 +202,16 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
 
   const handleSignOut = useCallback(async (reason: LockSignOutReason) => {
     if (reason !== "user") disableLockOnNextLogin.current = true;
+    // PIN attempts exhausted: the PIN is already erased by recordPinFailure —
+    // make sure, and drop any legacy copy, before signing out.
+    if (reason === "too-many-attempts") {
+      await clearPin().catch(() => {});
+      updateSetting("appPin", "");
+    }
     await logout();
     // The routing guard above sends the user to the login screen.
     setLockedState(false);
-  }, [logout]);
+  }, [logout, updateSetting]);
 
   return (
     <View style={styles.gateRoot}>
@@ -184,13 +228,14 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
           <LockScreen onUnlock={handleUnlock} onSignOut={handleSignOut} />
         </View>
       )}
+      {obscured && locked !== true && <View style={styles.cover} accessible={false} importantForAccessibility="no-hide-descendants" />}
     </View>
   );
 }
 
 // Main-app routes that require a finished onboarding wizard. Settings, auth,
 // legal and OAuth routes stay reachable (the wizard itself opens Add Cloud).
-const ONBOARDING_GATED = new Set(["camera", "(tabs)", "history", "markup", "invite"]);
+const ONBOARDING_GATED = new Set(["camera", "history", "markup", "invite"]);
 
 // Auth screens that make no sense once signed in (see the routing guard).
 const AUTH_ONLY_SIGNED_OUT = new Set(["login", "register"]);
@@ -251,7 +296,6 @@ function RootLayoutNav() {
       <Stack.Screen name="markup" options={{ headerShown: false }} />
       <Stack.Screen name="oauth-success" options={{ headerShown: false }} />
       <Stack.Screen name="oauth-error" options={{ headerShown: false }} />
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
     </Stack>
   );
 }

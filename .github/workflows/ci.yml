@@ -32,3 +32,15 @@
 
         - name: Build API server
           run: pnpm --filter @workspace/api-server run build
+
+        - name: Expo config check
+          working-directory: artifacts/kkamera
+          # Patch-version drift is checked locally with `npx expo install --check`;
+          # failing CI on every new Expo patch release would just be noise.
+          env:
+            EXPO_DOCTOR_SKIP_DEPENDENCY_VERSION_CHECK: "1"
+          run: npx expo-doctor@1.21.8
+
+        - name: Bundle app (iOS + Android)
+          working-directory: artifacts/kkamera
+          run: npx expo export --platform ios --platform android --output-dir /tmp/expo-export

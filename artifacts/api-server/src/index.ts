@@ -1,7 +1,11 @@
+// Must stay the first import: validates production env before anything else
+// (notably @workspace/db) is evaluated. See lib/bootEnv.ts.
+import "./lib/bootEnv.js";
 import path from "path";
+import { pool } from "@workspace/db";
 import { runMigrations as runDbMigrations } from "@workspace/db/migrate";
 import app from "./app.js";
-import { setMigrationState } from "./routes/health.js";
+import { setMigrationState, setShuttingDown } from "./routes/health.js";
 import { logger } from "./lib/logger.js";
 
 // A rejected promise with no handler is logged rather than crashing the whole
@@ -99,6 +103,56 @@ const server = app.listen(port, (err?: Error) => {
 const MAX_CLIENT_UPLOAD_MS = 60 * 60_000;
 server.requestTimeout = MAX_CLIENT_UPLOAD_MS + 5 * 60_000;
 server.headersTimeout = 60_000;
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+// Autoscale sends SIGTERM before stopping an instance. Stop accepting new
+// connections, report not-ready, give in-flight requests (uploads can be long)
+// up to SHUTDOWN_GRACE_MS to finish — best effort, the platform may SIGKILL
+// sooner — then force-close what's left, close the DB pool and exit.
+const DEFAULT_SHUTDOWN_GRACE_MS = 25_000;
+const rawGrace = Number(process.env["SHUTDOWN_GRACE_MS"]);
+const SHUTDOWN_GRACE_MS = Number.isFinite(rawGrace) && rawGrace >= 0 ? rawGrace : DEFAULT_SHUTDOWN_GRACE_MS;
+
+let shutdownStarted = false;
+
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shutdownStarted) {
+    logger.warn({ signal }, "Shutdown already in progress — ignoring signal");
+    return;
+  }
+  shutdownStarted = true;
+  setShuttingDown();
+  logger.info({ signal, graceMs: SHUTDOWN_GRACE_MS }, "Shutting down — draining in-flight requests");
+
+  const drained = new Promise<void>((resolve) => {
+    // Stops listening; resolves once every connection has ended. Idle
+    // keep-alive sockets are closed immediately (Node >= 19).
+    server.close(() => resolve());
+    server.closeIdleConnections();
+  });
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), SHUTDOWN_GRACE_MS);
+  });
+  const outcome = await Promise.race([drained.then(() => "drained" as const), deadline]);
+  clearTimeout(timer);
+  if (outcome === "timeout") {
+    logger.warn({ graceMs: SHUTDOWN_GRACE_MS }, "Shutdown grace period elapsed — closing remaining connections");
+    server.closeAllConnections();
+  }
+
+  try {
+    await Promise.race([pool.end(), new Promise((r) => setTimeout(r, 5_000))]);
+  } catch (err) {
+    logger.error({ err }, "Error closing database pool");
+  }
+  logger.info("Shutdown complete");
+  process.exit(0);
+}
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(signal, () => { void shutdown(signal); });
+}
 
 // Run migrations in the background after the port is open. /api/readyz
 // reports progress; a definitive failure turns API routes into 503s.

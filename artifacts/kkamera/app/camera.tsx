@@ -8,6 +8,9 @@ import * as Speech from "expo-speech";
 import * as Location from "expo-location";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { scheduleOnRN } from "react-native-worklets";
+import { useSharedValue } from "react-native-reanimated";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
@@ -26,7 +29,8 @@ import { captureRef } from "react-native-view-shot";
 import { TrialBanner } from "@/components/TrialBanner";
 import { resolveUploadTarget } from "@/lib/uploadTarget";
 import { MAX_RECORDING_BYTES } from "@/lib/config";
-import { File } from "expo-file-system";
+import { File, Paths } from "expo-file-system";
+import { copyAsync } from "expo-file-system/legacy";
 import { useUploadTargetResolver } from "@/lib/useUploadTargetResolver";
 import {
   readCachedSubscription, writeCachedSubscription, subscriptionAllows, type SubscriptionSnapshot,
@@ -43,6 +47,13 @@ import {
   ZOOM_LEVELS, DEFAULT_ZOOM, FRONT_CAMERA_ZOOM, ULTRA_WIDE_LENS_PATTERN, zoomLabel,
 } from "@/lib/zoomLevels";
 import { cloudAppTarget, pickCloudConnection } from "@/lib/cloudApps";
+import { getDeviceMotion, useHeldOrientation } from "@/components/camera/motion";
+import { LevelGuide } from "@/components/camera/LevelGuide";
+import {
+  RecordingBadge, HeadingBadge, headingDegrees, useIconRotation, OVERLAY_MAX_FONT_SCALE,
+  type HeadingReading,
+} from "@/components/camera/CameraBadges";
+import { LastCaptureThumb, type LastCapture } from "@/components/camera/LastCaptureThumb";
 
 function GridOverlay({ type }: { type: GridType }) {
   const stroke = "rgba(255,255,255,0.45)";
@@ -89,15 +100,6 @@ function GridOverlay({ type }: { type: GridType }) {
 
 const PRIMARY = "#b19870";
 
-// Lazy import so expo-sensors is never loaded on web (import-time crash).
-// DeviceMotion drives both the level guide (gravity) and the panorama sweep
-// (gyro rate projected onto gravity, falling back to rotation.alpha).
-async function getDeviceMotion() {
-  if (Platform.OS === "web") return null;
-  const { DeviceMotion } = await import("expo-sensors");
-  return DeviceMotion;
-}
-
 // Native-only document scanner (iOS VisionKit / Android ML Kit). The module
 // registers a TurboModule at import time and throws on web, so it must only be
 // imported lazily on native — never at the top level.
@@ -106,33 +108,10 @@ async function getDocumentScanner() {
   return await import("react-native-document-scanner-plugin");
 }
 
-// Tilt within this many degrees of horizontal counts as "level" → green guide.
-const LEVEL_TOLERANCE_DEG = 2;
-
-/**
- * Spirit-level reading from an "up" vector in screen coordinates (x → right
- * edge, y → top edge; any unit). `roll` is how far the device is rotated
- * counter-clockwise from upright (degrees, -180..180). `base` snaps that to the
- * nearest held orientation — 0 portrait, ±90 landscape, 180 upside-down — and
- * `deviation` is the tilt away from it, which is what "level" is judged on.
- * Returns null when the phone is lying flat (gravity is ~perpendicular to the
- * screen), where a horizon angle is meaningless.
- */
-function levelFromUp(ux: number, uy: number, uz: number) {
-  const planar = Math.hypot(ux, uy);
-  if (planar < 0.35 * Math.hypot(ux, uy, uz)) return null;
-  const roll = Math.atan2(ux, uy) * (180 / Math.PI);
-  let base = Math.round(roll / 90) * 90;
-  if (base === -180) base = 180;
-  let deviation = roll - base;
-  if (deviation > 180) deviation -= 360;
-  if (deviation < -180) deviation += 360;
-  return { roll, base, deviation };
-}
-
 type FlashMode = "off" | "on" | "auto";
 // "timelapse" is shown to the user as INTERVAL: it takes a photo every
-// INTERVAL_SECONDS and uploads the series of stills — it does not render a video.
+// settings.intervalSeconds and uploads each still as it's taken — it does not
+// render a video.
 type ExtMode = "photo" | "video" | "timelapse" | "pano" | "scan";
 
 interface ModeConfig { mode: ExtMode; label: string; cameraMode: CameraMode; isVideo: boolean }
@@ -145,8 +124,13 @@ const EXT_MODES: ModeConfig[] = [
   { mode: "scan",      label: "SCAN",     cameraMode: "picture", isVideo: false },
 ];
 
-/** Seconds between shots in INTERVAL (time-lapse) mode. */
-const INTERVAL_SECONDS = 2;
+/** Pinch-zoom state commits at most once per this much normalised zoom (1%). */
+const ZOOM_COMMIT_STEP = 0.01;
+
+/** Tag for the screen wake-lock held during long captures. */
+const KEEP_AWAKE_TAG = "kkamera-capture";
+/** Set once the "Photos access is off" alert has been shown. */
+const PHOTOS_DENIED_ALERT_KEY = "kkamera_photosDeniedAlertShown";
 
 const VIDEO_QUALITY: Record<"720p" | "1080p" | "4k", VideoQuality> = {
   "720p": "720p", "1080p": "1080p", "4k": "2160p",
@@ -224,7 +208,8 @@ const GRID_LABEL: Record<string, string> = {
 const ICON_HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
 const ZOOM_HIT_SLOP = { top: 4, bottom: 4, left: 10, right: 10 };
 const DEFAULT_STRIP_IDX = STRIP_MODES.findIndex(m => m.mode === "photo"); // 2
-const ITEM_W = 88;
+/** Mode-strip item width at the default text size; grows with Dynamic Type (capped). */
+const ITEM_W_BASE = 88;
 
 // Offscreen composition passed to react-native-view-shot for native photo
 // baking (stamp burn-in + filter tint). Sizes are pre-computed (capped) so the
@@ -276,9 +261,10 @@ export default function CameraScreen() {
 
 // Upload status badge + subscription-blocked (HTTP 402) banner. Reads the
 // upload context itself so per-progress updates stay local to this overlay.
-function UploadIndicators() {
+// Memoised (no props) so camera-body re-renders don't reach it either.
+const UploadIndicators = React.memo(function UploadIndicators() {
   const insets = useSafeAreaInsets();
-  const { lastUpload, subscriptionBlocked } = useUpload();
+  const { lastUpload, subscriptionBlocked, isUploading, activeUploadCount, uploadProgress } = useUpload();
   const { settings } = useSettings();
 
   // Auto-hide the "Uploaded" success badge after the configured duration.
@@ -329,8 +315,23 @@ function UploadIndicators() {
           accessibilityHint="Opens upload history"
         >
           <Ionicons name={uploadStatusIcon as any} size={16} color={uploadStatusColor} accessible={false} />
-          <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]}>{uploadStatusLabel}</Text>
+          <Text style={[styles.uploadStatusText, { color: uploadStatusColor }]} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>{uploadStatusLabel}</Text>
         </TouchableOpacity>
+      )}
+
+      {/* Uploads only progress while the app is open — say so while they run. */}
+      {isUploading && (
+        <View
+          style={[styles.uploadingHint, { top: insets.top + (Platform.OS === "web" ? 140 : 100) }]}
+          pointerEvents="none"
+          accessible
+          accessibilityLiveRegion="polite"
+          accessibilityLabel={`Uploading ${activeUploadCount}, ${uploadProgress} percent. Keep KKamera open.`}
+        >
+          <Text style={styles.uploadingHintText} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>
+            Uploading {activeUploadCount} · {uploadProgress}% — keep KKamera open
+          </Text>
+        </View>
       )}
 
       {/* ── Subscription-blocked banner (uploads parked on HTTP 402) ───── */}
@@ -342,17 +343,20 @@ function UploadIndicators() {
           accessibilityLabel="Uploads paused, subscription required. Open subscription settings."
         >
           <Ionicons name="pause-circle-outline" size={16} color="#f59e0b" accessible={false} />
-          <Text style={styles.subBannerText} numberOfLines={1}>Uploads paused — subscription required</Text>
+          <Text style={styles.subBannerText} numberOfLines={1} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>Uploads paused — subscription required</Text>
           <Ionicons name="chevron-forward" size={14} color="#f59e0b" accessible={false} />
         </TouchableOpacity>
       )}
     </>
   );
-}
+});
 
 const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }: { executeUpload: ExecuteUpload }) {
   const insets = useSafeAreaInsets();
-  const { width: screenW } = useWindowDimensions();
+  const { width: screenW, fontScale } = useWindowDimensions();
+  // Wider mode-strip items at larger text sizes so labels like "INTERVAL"
+  // still fit (text itself is capped at OVERLAY_MAX_FONT_SCALE).
+  const itemW = Math.round(ITEM_W_BASE * Math.min(OVERLAY_MAX_FONT_SCALE, Math.max(1, fontScale || 1)));
   const { token, user } = useAuth();
   const userId = user?.id ?? null;
   const { settings, updateSetting, isLoading: settingsLoading } = useSettings();
@@ -409,6 +413,25 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       setSyncingStore(false);
     }
   }, [rcSub.syncServerSubscription]);
+  // Same restore + result messages as the subscription screen.
+  const restoreStorePurchases = useCallback(async () => {
+    try {
+      const info = await rcSub.restore();
+      const hasActive = info?.entitlements?.active
+        ? Object.keys(info.entitlements.active).length > 0
+        : false;
+      if (hasActive) {
+        Alert.alert("Purchases Restored", "Your subscription is active again.");
+      } else {
+        Alert.alert("No Purchases Found", "We couldn't find an active subscription linked to your store account.");
+      }
+    } catch (err: any) {
+      const detail = typeof err?.message === "string" && err.message.startsWith("We're still linking")
+        ? err.message
+        : "We couldn't restore your purchases. Please check your connection and try again.";
+      Alert.alert("Restore Failed", detail);
+    }
+  }, [rcSub.restore]);
 
   const trialDaysLeft = sub?.status === "trial" && sub?.trialEnd
     ? Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000))
@@ -448,13 +471,15 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const [isTimelapsing, setIsTimelapsing] = useState(false);
   const [tlCount, setTlCount] = useState(0);
   const tlTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const tlPhotos = useRef<string[]>([]);
+  // Frames are queued for upload as they're taken; only the count and the
+  // series' file-name stamp are kept here.
+  const tlShots = useRef(0);
+  const tlStamp = useRef(0);
   const tlGrabbing = useRef(false);
   const intervalRunning = useRef(false);
-
-  // Recording timer
-  const [recordSeconds, setRecordSeconds] = useState(0);
-  const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The series' limit, fixed when it starts.
+  const [tlMax, setTlMax] = useState(0);
+  const tlMaxRef = useRef(0);
 
   // Scan result
   const [scanUri, setScanUri] = useState<string | null>(null);
@@ -466,7 +491,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const modeScrollRef = useRef<ScrollView>(null);
   // Stable initial offset — a fresh object here would make web re-apply it on
   // every render, snapping the strip back to default whenever the mode changes.
-  const stripContentOffset = useRef({ x: DEFAULT_STRIP_IDX * ITEM_W, y: 0 }).current;
+  const stripContentOffset = useRef({ x: DEFAULT_STRIP_IDX * itemW, y: 0 }).current;
   // Guards mode-strip scrolls we trigger ourselves (taps / sync) so the
   // scroll-end handler doesn't echo them back into another setExtMode.
   const programmaticScroll = useRef(false);
@@ -479,7 +504,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // Pro-camera state
   const [countdown, setCountdown] = useState<number | null>(null);
   const [screenFlashing, setScreenFlashing] = useState(false);
-  const [heading, setHeading] = useState<number | null>(null);
   const [stampToast, setStampToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToast = useCallback((msg: string, ms = 1800) => {
@@ -491,7 +515,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const cameraRef = useRef<CameraView>(null);
   const captureScale = useRef(new Animated.Value(1)).current;
   const screenFlashOpacity = useRef(new Animated.Value(0)).current;
-  const baseZoom = useRef<number>(DEFAULT_ZOOM);
 
   // Native photo-baking (stamp burn-in + filter tint) via react-native-view-shot.
   const [bakeConfig, setBakeConfig] = useState<BakeConfig | null>(null);
@@ -577,7 +600,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     if (settingsLoading || facing !== "back") return;
     setUltraWideSelected(false);
     setZoom(settings.defaultZoom);
-    baseZoom.current = settings.defaultZoom;
   }, [settingsLoading, settings.defaultZoom, facing]);
 
   // Location permission + a low-power position watch while GPS tagging is on.
@@ -613,125 +635,17 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     return () => { cancelled = true; watch?.remove(); };
   }, [settingsLoading, settings.saveLocation, screenActive]);
 
-  // Compass bearing (badge, stamp and GPSImgDirection). Location's heading
-  // API fuses magnetometer + gyro and gives a true-north heading when a fix
-  // is available — unlike a raw magnetometer atan2, which ignores tilt and
-  // declination.
-  const headingRef = useRef<{ deg: number; ref: "T" | "M" } | null>(null);
-  useEffect(() => {
-    if (!settings.compassMeta || Platform.OS === "web") { setHeading(null); headingRef.current = null; return; }
-    if (!screenActive) return;
-    let sub: { remove: () => void } | null = null;
-    let cancelled = false;
-    (async () => {
-      try {
-        const created = await Location.watchHeadingAsync(h => {
-          const isTrue = h.trueHeading != null && h.trueHeading >= 0;
-          const deg = isTrue ? h.trueHeading : h.magHeading;
-          if (deg == null || deg < 0) return;
-          headingRef.current = { deg, ref: isTrue ? "T" : "M" };
-          const rounded = Math.round(deg) % 360;
-          setHeading(prev => (prev === rounded ? prev : rounded));
-        });
-        if (cancelled) created.remove();
-        else sub = created;
-      } catch { /* no compass on this device */ }
-    })();
-    return () => { cancelled = true; sub?.remove(); };
-  }, [settings.compassMeta, locationGranted, screenActive]);
+  // Compass bearing (badge, stamp and GPSImgDirection). The subscription
+  // lives in <HeadingBadge>, which writes the latest reading here so heading
+  // ticks never re-render this screen.
+  const headingRef = useRef<HeadingReading | null>(null);
 
-  // Spirit-level — drives the on-screen level guide. `levelBase` is the held
-  // orientation (0 portrait, ±90 landscape, 180 upside-down; the UI itself is
-  // locked to portrait on native) and `levelRoll` the tilt away from it, so
-  // the guide reads correctly whichever way the phone is held.
-  const [levelRoll, setLevelRoll] = useState(0);
-  const [levelBase, setLevelBase] = useState(0);
-  const [levelFlat, setLevelFlat] = useState(false);
-  const lastLevel = useRef({ roll: 0, base: 0, flat: false });
-  useEffect(() => {
-    const reset = () => {
-      lastLevel.current = { roll: 0, base: 0, flat: false };
-      setLevelRoll(0); setLevelBase(0); setLevelFlat(false);
-    };
-    if (!settings.showLevelGuide) { reset(); return; }
-    if (!screenActive) return;
-
-    // Low-pass the up vector so hand shake doesn't make the guide jitter.
-    const up = { x: 0, y: 1, z: 0, seeded: false };
-    const pushUp = (ux: number, uy: number, uz: number, screenAngle = 0) => {
-      if (!up.seeded) { up.x = ux; up.y = uy; up.z = uz; up.seeded = true; }
-      else {
-        const k = 0.3;
-        up.x += (ux - up.x) * k; up.y += (uy - up.y) * k; up.z += (uz - up.z) * k;
-      }
-      // Rotate into screen coordinates when the page itself has rotated (web).
-      const a = (screenAngle * Math.PI) / 180;
-      const sx = up.x * Math.cos(a) - up.y * Math.sin(a);
-      const sy = up.x * Math.sin(a) + up.y * Math.cos(a);
-      const lv = levelFromUp(sx, sy, up.z);
-      const next = lv
-        ? { roll: Math.round(lv.deviation), base: lv.base, flat: false }
-        : { roll: 0, base: lastLevel.current.base, flat: true };
-      // Only re-render on a real change — not on every sensor tick.
-      const prev = lastLevel.current;
-      if (next.roll === prev.roll && next.base === prev.base && next.flat === prev.flat) return;
-      lastLevel.current = next;
-      setLevelRoll(next.roll); setLevelBase(next.base); setLevelFlat(next.flat);
-    };
-
-    if (Platform.OS === "web") {
-      // deviceorientation's beta/gamma (Z-X'-Y'' Euler angles) give the "up"
-      // vector in device coordinates; unlike raw devicemotion, its signs are
-      // consistent across browsers. The page rotates with the device on web,
-      // so compensate for the current screen angle.
-      const handler = (e: any) => {
-        if (e?.beta == null || e?.gamma == null) return;
-        const b = (e.beta * Math.PI) / 180;
-        const g = (e.gamma * Math.PI) / 180;
-        const w: any = typeof window !== "undefined" ? window : null;
-        const screenAngle = Number(w?.screen?.orientation?.angle ?? w?.orientation ?? 0) || 0;
-        pushUp(-Math.sin(g) * Math.cos(b), Math.sin(b), Math.cos(g) * Math.cos(b), screenAngle);
-      };
-      window.addEventListener("deviceorientation", handler);
-      return () => window.removeEventListener("deviceorientation", handler);
-    }
-
-    let sub: { remove: () => void } | null = null;
-    let cancelled = false;
-    (async () => {
-      try {
-        const DeviceMotion = await getDeviceMotion();
-        if (!DeviceMotion || cancelled) return;
-        const available = await DeviceMotion.isAvailableAsync().catch(() => false);
-        if (!available || cancelled) return;
-        // No requestPermissionsAsync here: on iOS it runs a CMPedometer query
-        // and raises a "Motion & Fitness" prompt, yet CMMotionManager device
-        // motion needs no authorisation (Android has no permission either).
-        DeviceMotion.setUpdateInterval(60);
-        const created = DeviceMotion.addListener(({ accelerationIncludingGravity: g }) => {
-          // expo-sensors reports gravity pointing DOWN on both platforms (iOS
-          // natively; Android as accel − 2·gravity), in device axes (x → right
-          // edge, y → top edge). "Up" is its negation.
-          if (!g) return;
-          pushUp(-g.x, -g.y, -g.z);
-        });
-        if (cancelled) created.remove();
-        else sub = created;
-      } catch { /* sensor unavailable */ }
-    })();
-    return () => { cancelled = true; sub?.remove(); };
-  }, [settings.showLevelGuide, screenActive]);
-
-  // Give a light haptic tick the moment the guide snaps to level.
-  const wasLevel = useRef(false);
-  useEffect(() => {
-    if (!settings.showLevelGuide) { wasLevel.current = false; return; }
-    const level = !levelFlat && Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG;
-    if (level && !wasLevel.current && Platform.OS !== "web") {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    }
-    wasLevel.current = level;
-  }, [levelRoll, levelFlat, settings.showLevelGuide]);
+  // The way the phone is held (0 portrait, ±90 landscape, 180 upside-down) —
+  // turns the top-bar and shutter-row icons, as the UI is portrait-locked.
+  // The level guide itself runs in <LevelGuide>.
+  const heldOrientation = useHeldOrientation(screenActive);
+  const iconRotate = useIconRotation(heldOrientation);
+  const iconRotateStyle = { transform: [{ rotate: iconRotate }] };
 
   // Toggle the level guide. On iOS web, motion/orientation access must be
   // requested from inside a user gesture (this tap) before events will fire.
@@ -778,25 +692,49 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     if (idx >= 0) {
       const t = setTimeout(() => {
         markProgrammaticScroll();
-        modeScrollRef.current?.scrollTo({ x: idx * ITEM_W, animated: true });
+        modeScrollRef.current?.scrollTo({ x: idx * itemW, animated: true });
       }, 60);
       return () => clearTimeout(t);
     }
-  }, [extMode, markProgrammaticScroll]);
+  }, [extMode, markProgrammaticScroll, itemW]);
 
   const currentModeConfig = EXT_MODES.find(m => m.mode === extMode) ?? EXT_MODES[0]!;
   const cameraViewMode: CameraMode = currentModeConfig.cameraMode;
 
-  // Pinch to zoom
-  const saveBaseZoom = useCallback(() => { baseZoom.current = zoom; }, [zoom]);
-  const applyZoom = useCallback((scale: number) => {
-    setZoom(() => Math.min(1, Math.max(0, baseZoom.current + (scale - 1) * 0.4)));
-  }, []);
+  // Pinch to zoom. The gesture is computed on the UI thread against shared
+  // values; React state (which re-renders this whole screen and pushes the
+  // CameraView zoom prop) is only committed when the zoom has moved by at
+  // least ZOOM_COMMIT_STEP, at the clamps, and once more at gesture end.
+  // expo-camera's `zoom` is a plain native prop (no Reanimated animated-props
+  // support), so it can't be driven from the UI thread directly.
+  const zoomSV = useSharedValue<number>(DEFAULT_ZOOM);      // mirror of `zoom`
+  const pinchBase = useSharedValue<number>(DEFAULT_ZOOM);   // zoom at pinch start
+  const pinchLive = useSharedValue<number>(DEFAULT_ZOOM);   // latest pinch value
+  const pinchCommitted = useSharedValue<number>(DEFAULT_ZOOM);
+  useEffect(() => { zoomSV.value = zoom; }, [zoom, zoomSV]);
 
   const pinchGesture = Gesture.Pinch()
-    .onStart(() => { scheduleOnRN(saveBaseZoom); })
-    .onUpdate((e) => { scheduleOnRN(applyZoom, e.scale); })
-    .onEnd(() => { scheduleOnRN(saveBaseZoom); });
+    .onStart(() => {
+      pinchBase.value = zoomSV.value;
+      pinchLive.value = zoomSV.value;
+      pinchCommitted.value = zoomSV.value;
+    })
+    .onUpdate((e) => {
+      const z = Math.min(1, Math.max(0, pinchBase.value + (e.scale - 1) * 0.4));
+      pinchLive.value = z;
+      if (Math.abs(z - pinchCommitted.value) >= ZOOM_COMMIT_STEP
+        || ((z === 0 || z === 1) && z !== pinchCommitted.value)) {
+        pinchCommitted.value = z;
+        scheduleOnRN(setZoom, z);
+      }
+    })
+    .onEnd(() => {
+      zoomSV.value = pinchLive.value;
+      if (pinchLive.value !== pinchCommitted.value) {
+        pinchCommitted.value = pinchLive.value;
+        scheduleOnRN(setZoom, pinchLive.value);
+      }
+    });
 
   const confirmUpload = useCallback((): Promise<boolean> => {
     if (!settings.promptBeforeUpload) return Promise.resolve(true);
@@ -810,14 +748,65 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
 
   // Witness mode fires only once a capture has REALLY been uploaded — it is
   // passed to executeUpload as its onUploaded callback, never on queueing.
+  // Returned so the upload queue can record a failed notice on the entry.
   const notifyWitness = useCallback((fileName: string) => {
-    sendWitnessNotice({
+    return sendWitnessNotice({
       enabled: settings.witnessOnSuccess,
       witnessEmail: settings.witnessEmail,
       token,
       fileName,
     });
   }, [settings.witnessOnSuccess, settings.witnessEmail, token]);
+
+  // Photos access refused: say so once with a way to fix it (system Settings),
+  // then fall back to the short toast for later captures.
+  const photosDeniedAlertShown = useRef<boolean | null>(null);
+  const notifyPhotosDenied = useCallback(async (toast: string, ms: number, alertBody: string) => {
+    if (photosDeniedAlertShown.current == null) {
+      const v = await AsyncStorage.getItem(PHOTOS_DENIED_ALERT_KEY).catch(() => null);
+      photosDeniedAlertShown.current = v === "1";
+    }
+    if (photosDeniedAlertShown.current || Platform.OS === "web") { showToast(toast, ms); return; }
+    photosDeniedAlertShown.current = true;
+    AsyncStorage.setItem(PHOTOS_DENIED_ALERT_KEY, "1").catch(() => {});
+    Alert.alert("Photos Access Off", alertBody, [
+      { text: "Not now", style: "cancel" },
+      { text: "Open Settings", onPress: () => { Linking.openSettings().catch(() => {}); } },
+    ]);
+  }, [showToast]);
+
+  // Last-capture thumbnail. Photos get a private preview copy in the cache —
+  // the capture itself is moved into (and later deleted by) the upload queue,
+  // so its own uri can't back a thumbnail.
+  const [lastCapture, setLastCapture] = useState<LastCapture | null>(null);
+  const lastPreviewUri = useRef<string | null>(null);
+  const rememberLastCapture = useCallback(async (uri: string, fileName: string, type: "image" | "video") => {
+    let preview: string | null = null;
+    if (type === "image") {
+      if (Platform.OS === "web") preview = uri;
+      else {
+        try {
+          const dest = new File(Paths.cache, `kkamera-last-${Date.now()}.${extensionOf(uri, "jpg")}`);
+          await copyAsync({ from: uri, to: dest.uri });
+          preview = dest.uri;
+        } catch { preview = null; }
+      }
+    }
+    const prev = lastPreviewUri.current;
+    lastPreviewUri.current = preview != null && preview !== uri ? preview : null;
+    if (prev && prev !== preview) deleteTempFile(prev);
+    setLastCapture({ uri: preview, type, fileName });
+  }, []);
+  useEffect(() => () => { deleteTempFile(lastPreviewUri.current); }, []);
+
+  const openLastCapture = useCallback(() => {
+    if (!lastCapture || lastCapture.type !== "image" || !lastCapture.uri) return;
+    // Already handed to the upload queue — markup only adds a marked copy.
+    router.push({
+      pathname: "/markup",
+      params: { uri: lastCapture.uri, fileName: lastCapture.fileName, markedOnly: "1" },
+    });
+  }, [lastCapture]);
 
   /**
    * Hand a finished capture off: a copy to the photo library (when enabled, or
@@ -833,6 +822,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     opts?: { skipMarkup?: boolean },
   ) => {
     try {
+      await rememberLastCapture(uri, fileName, type);
       const target = await getUploadTarget();
       const wantRoll = Platform.OS !== "web" && (settings.saveToCameraRoll || target.skip);
       const roll = wantRoll ? await saveToCameraRoll(uri) : null;
@@ -843,7 +833,10 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
           deleteTempFile(uri);
           showToast("Saved to Photos — cloud upload off");
         } else if (roll === "denied") {
-          showToast("Not saved — allow Photos access for KKamera", 2800);
+          void notifyPhotosDenied(
+            "Not saved — allow Photos access for KKamera", 2800,
+            "Cloud upload is off, so captures are only kept in your photo library — but KKamera isn't allowed to add to it, so this one wasn't saved. Allow Photos access for KKamera in Settings.",
+          );
         } else {
           showToast(Platform.OS === "web"
             ? "Cloud upload off — capture not kept"
@@ -851,7 +844,12 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
         }
         return;
       }
-      if (roll === "denied") showToast("Photos access off — uploading only", 2200);
+      if (roll === "denied") {
+        void notifyPhotosDenied(
+          "Photos access off — uploading only", 2200,
+          "KKamera isn't allowed to add to your photo library, so captures are being uploaded without a copy on this device. Allow Photos access in Settings, or turn off \"Save to Camera Roll\".",
+        );
+      }
 
       // Finished after the user left the camera (e.g. a sweep stitched on blur):
       // don't push the markup screen over whatever screen they're on now. The
@@ -883,7 +881,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     } catch (err: any) {
       Alert.alert("Save Failed", err?.message ?? "Could not hand this capture to the upload queue.");
     }
-  }, [getUploadTarget, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, settings.saveToCameraRoll, executeUpload, token, notifyWitness, showToast]);
+  }, [getUploadTarget, confirmUpload, settings.photoMarkup, settings.deleteLocalAfterUpload, settings.saveToCameraRoll, executeUpload, token, notifyWitness, showToast, notifyPhotosDenied, rememberLastCapture]);
 
   const pulseCaptureBtn = () => {
     Animated.sequence([
@@ -1416,6 +1414,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     // actually burned in (matches the old web stamp: date/time, GPS, bearing).
     const stampLines: string[] = [];
     let stampedLocation = false;
+    let stampedBearing = false;
     if (wantStamp) {
       stampLines.push(new Date().toLocaleString());
       const fix = lastFix.current;
@@ -1423,7 +1422,8 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
         stampLines.push(`${fix.coords.latitude.toFixed(5)}, ${fix.coords.longitude.toFixed(5)}`);
         stampedLocation = true;
       }
-      if (heading != null) stampLines.push(`Bearing ${heading}°`);
+      const heading = headingDegrees(headingRef);
+      if (heading != null) { stampLines.push(`Bearing ${heading}°`); stampedBearing = true; }
     }
 
     let uri = photo.uri;
@@ -1443,8 +1443,8 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
         baked = true;
       }
     }
-    return { uri, baked, wantStamp, stampedLocation };
-  }, [settings.stampPhotos, settings.saveLocation, selectedFilter, heading, bakeImageNative]);
+    return { uri, baked, wantStamp, stampedLocation, stampedBearing };
+  }, [settings.stampPhotos, settings.saveLocation, selectedFilter, bakeImageNative]);
 
   // Single capture cycle (screen flash → snap → stamp/strip), then a
   // background hand-off to the photo library / upload queue. Resolves as soon
@@ -1472,12 +1472,12 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     }
     if (!photo?.uri) return;
 
-    const { uri, baked, wantStamp, stampedLocation } = await bakeCapture(photo);
+    const { uri, baked, wantStamp, stampedLocation, stampedBearing } = await bakeCapture(photo);
 
     // Only claim the stamp was applied when the bake actually succeeded.
     if (wantStamp) {
       showToast(baked
-        ? "Stamped: date · time" + (stampedLocation ? " · location" : "") + (heading != null ? " · bearing" : "")
+        ? "Stamped: date · time" + (stampedLocation ? " · location" : "") + (stampedBearing ? " · bearing" : "")
         : "Stamp failed — saved original");
     }
     // Photos are always JPEG (takePictureAsync and the bake both write JPEG).
@@ -1485,7 +1485,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     const suffix = indexLabel ? `_${indexLabel}` : "";
     const fileName = `IMG_${Date.now()}${suffix}.${ext}`;
     void doUpload(uri, fileName, "image", opts);
-  }, [settings.stripExif, screenFlashOn, screenFlashOff, buildGpsExif, bakeCapture, doUpload, heading, showToast]);
+  }, [settings.stripExif, screenFlashOn, screenFlashOff, buildGpsExif, bakeCapture, doUpload, showToast]);
 
   // Mirrors screenActive for async loops (burst) that outlive a render.
   const screenActiveRef = useRef(screenActive);
@@ -1538,8 +1538,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     recordingRef.current = false;
     recordStopping.current = false;
     setIsRecording(false);
-    if (recordTimer.current) { clearInterval(recordTimer.current); recordTimer.current = null; }
-    setRecordSeconds(0);
   }, []);
 
   const handleVideoToggle = useCallback(async () => {
@@ -1556,8 +1554,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     recordStopping.current = false;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     setIsRecording(true);
-    setRecordSeconds(0);
-    recordTimer.current = setInterval(() => setRecordSeconds(s => s + 1), 1000);
     const maxDuration = settings.maxVideoDurationSeconds > 0 ? settings.maxVideoDurationSeconds : 600;
     const codec = await pickVideoCodec();
     if (!recordingRef.current || recordStopping.current) { endRecordingUi(); return; }
@@ -1604,7 +1600,6 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   useEffect(() => {
     return () => {
       if (tlTimer.current) clearInterval(tlTimer.current);
-      if (recordTimer.current) clearInterval(recordTimer.current);
       if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
       if (programmaticClearTimer.current) clearTimeout(programmaticClearTimer.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -1631,8 +1626,8 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // background) must not silently cut a capture short or leave it running
   // blind: a recording is stopped — its promise then resolves with the file,
   // which is saved/queued as usual — a pano sweep is finished and stitched, a
-  // self-timer is cancelled. The INTERVAL series is stopped and offered for
-  // upload by an effect next to stopInterval.
+  // self-timer is cancelled. The INTERVAL series is stopped by an effect next
+  // to stopInterval (its frames are already queued).
   useEffect(() => {
     if (screenActive) return;
     countdownCancel.current?.();
@@ -1728,24 +1723,129 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
     retakeTimer.current = setTimeout(() => { retakeTimer.current = null; void handleScan(); }, 450);
   }, [discardScan, handleScan]);
 
-  // INTERVAL (time-lapse) mode: a photo every INTERVAL_SECONDS until stopped,
-  // then the series is uploaded as individual photos (no video is made). Each
-  // frame gets the same stamp / filter bake as a normal photo.
+  // INTERVAL (time-lapse) mode: a photo every settings.intervalSeconds until
+  // stopped or settings.intervalMaxShots is reached (no video is made). Each
+  // frame gets the same stamp / filter bake as a normal photo and is handed to
+  // the upload queue — or the photo library, for "Don't upload" — the moment
+  // it's taken, so a series survives the app being killed mid-run.
   const bakeCaptureRef = useRef(bakeCapture);
   useEffect(() => { bakeCaptureRef.current = bakeCapture; }, [bakeCapture]);
   const buildGpsExifRef = useRef(buildGpsExif);
   useEffect(() => { buildGpsExifRef.current = buildGpsExif; }, [buildGpsExif]);
 
-  const startInterval = useCallback(() => {
-    if (intervalRunning.current) return;
+  // Upload target for the running series (resolved once at its start).
+  const tlTarget = useRef<Awaited<ReturnType<typeof getUploadTarget>> | null>(null);
+  const tlSavedToRoll = useRef(0);
+  const tlPending = useRef(new Set<Promise<void>>());
+  // "Keep on device only" chosen at the prompt-before-upload question: the
+  // series goes to the photo library like the "Don't upload" target.
+  const tlLocalOnly = useRef(false);
+  // One witness notice per series (the server caps witness emails per day).
+  // "sent" also covers a notice in flight or one that failed for a reason a
+  // retry wouldn't fix (rate limit, subscription, invalid address, auth).
+  type SeriesWitness = { current: "idle" | "sent" };
+  const tlWitness = useRef<SeriesWitness>({ current: "idle" });
+  const tlStarting = useRef(false);
+
+  // Called from each frame's onUploaded: the first frame that really uploads
+  // sends the series' single witness notice; later frames send nothing. A
+  // transient failure (network / server) lets the next uploaded frame retry.
+  const notifySeriesWitness = useCallback((name: string, witness: SeriesWitness) => {
+    if (witness.current === "sent") return Promise.resolve(null);
+    witness.current = "sent";
+    return notifyWitness(`${name} (first uploaded frame of an interval series — further frames are not notified separately)`)
+      .then(r => {
+        if (r && !r.ok && (r.reason === "network" || r.reason === "server")) witness.current = "idle";
+        return r;
+      });
+  }, [notifyWitness]);
+
+  const queueIntervalFrame = useCallback(async (frameUri: string, index: number) => {
+    const name = `INT_${tlStamp.current}_${String(index).padStart(3, "0")}.${extensionOf(frameUri, "jpg")}`;
+    try {
+      await rememberLastCapture(frameUri, name, "image");
+      const target = tlTarget.current ?? await getUploadTarget();
+      if (target.skip || tlLocalOnly.current) {
+        // "Don't upload": the photo library is the only destination.
+        if (Platform.OS !== "web" && (await saveToCameraRoll(frameUri)) === "saved") {
+          tlSavedToRoll.current += 1;
+          deleteTempFile(frameUri);
+        }
+        return;
+      }
+      // Library copy BEFORE queueing: the queue may move the file.
+      if (settings.saveToCameraRoll && Platform.OS !== "web") await saveToCameraRoll(frameUri);
+      const onDeleteLocal = settings.deleteLocalAfterUpload ? undefined : async () => {};
+      // Queued per frame so the series survives an app kill; the witness is
+      // told once per series, not once per frame.
+      const witness = tlWitness.current;
+      void executeUpload(frameUri, name, "image", token, target.ids, onDeleteLocal, () => notifySeriesWitness(name, witness))
+        .catch(() => {});
+    } catch { /* the frame stays on disk; nothing else to do mid-series */ }
+  }, [rememberLastCapture, getUploadTarget, settings.saveToCameraRoll, settings.deleteLocalAfterUpload,
+    executeUpload, token, notifySeriesWitness]);
+  const queueIntervalFrameRef = useRef(queueIntervalFrame);
+  useEffect(() => { queueIntervalFrameRef.current = queueIntervalFrame; }, [queueIntervalFrame]);
+  const stopIntervalRef = useRef<() => Promise<void>>(async () => {});
+
+  // Prompt-before-upload users are asked ONCE per series (never skipped):
+  // upload every frame as it's taken, keep the series on the device, or cancel.
+  const askSeriesUpload = useCallback((): Promise<"upload" | "local" | "cancel"> => {
+    const title = "Upload Interval Photos?";
+    const body = "Upload each frame automatically as it's taken?";
+    if (Platform.OS === "web") {
+      // Alert.alert is a no-op on react-native-web.
+      return Promise.resolve(window.confirm(`${title}\n\n${body}\n\nOK = Upload, Cancel = Keep on device only`) ? "upload" : "local");
+    }
+    return new Promise(resolve => {
+      Alert.alert(title, body, [
+        { text: "Upload", onPress: () => resolve("upload") },
+        { text: "Keep on device only", onPress: () => resolve("local") },
+        { text: "Cancel", style: "cancel", onPress: () => resolve("cancel") },
+      ], { cancelable: true, onDismiss: () => resolve("cancel") });
+    });
+  }, []);
+
+  const startInterval = useCallback(async () => {
+    if (intervalRunning.current || tlStarting.current) return;
+    let presetTarget: Awaited<ReturnType<typeof getUploadTarget>> | null = null;
+    let localOnly = false;
+    if (settings.promptBeforeUpload) {
+      tlStarting.current = true;
+      try {
+        presetTarget = await getUploadTarget().catch(() => null);
+        if (!presetTarget?.skip) {
+          const choice = await askSeriesUpload();
+          if (choice === "cancel") return;
+          localOnly = choice === "local";
+        }
+      } finally {
+        tlStarting.current = false;
+      }
+      // Left the camera (or another capture started) while the question was up.
+      if (!isFocusedRef.current || intervalRunning.current) return;
+    }
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     intervalRunning.current = true;
+    const max = settings.intervalMaxShots;
     setIsTimelapsing(true);
     setTlCount(0);
-    tlPhotos.current = [];
+    setTlMax(max);
+    tlMaxRef.current = max;
+    tlShots.current = 0;
+    tlStamp.current = Date.now();
+    tlSavedToRoll.current = 0;
+    tlLocalOnly.current = localOnly;
+    // A fresh object per series, so a late upload from the previous series
+    // can't consume (or reset) this series' witness notice.
+    tlWitness.current = { current: "idle" };
+    tlTarget.current = presetTarget;
+    if (!presetTarget) getUploadTarget().then(t => { tlTarget.current = t; }).catch(() => {});
     tlTimer.current = setInterval(async () => {
-      if (tlGrabbing.current || !intervalRunning.current) return; // previous shot still in flight
+      // Previous shot still in flight, or the series is over.
+      if (tlGrabbing.current || !intervalRunning.current || tlShots.current >= max) return;
       tlGrabbing.current = true;
+      let reachedMax = false;
       try {
         const additionalExif = buildGpsExifRef.current();
         const photo = await cameraRef.current?.takePictureAsync({
@@ -1756,73 +1856,69 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
         });
         if (photo?.uri) {
           const { uri } = await bakeCaptureRef.current(photo);
-          tlPhotos.current.push(uri);
-          setTlCount(c => c + 1);
+          tlShots.current += 1;
+          const n = tlShots.current;
+          setTlCount(n);
+          const job = queueIntervalFrameRef.current(uri, n);
+          tlPending.current.add(job);
+          void job.finally(() => { tlPending.current.delete(job); });
+          reachedMax = n >= max;
         }
       } catch { /* skip this shot and keep going */ }
       finally { tlGrabbing.current = false; }
-    }, INTERVAL_SECONDS * 1000);
-  }, [settings.stripExif]);
+      if (reachedMax && intervalRunning.current) void stopIntervalRef.current();
+    }, settings.intervalSeconds * 1000);
+  }, [settings.stripExif, settings.intervalSeconds, settings.intervalMaxShots, settings.promptBeforeUpload,
+    getUploadTarget, askSeriesUpload]);
 
   const stopInterval = useCallback(async () => {
     if (!intervalRunning.current) return;
     intervalRunning.current = false;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
     if (tlTimer.current) { clearInterval(tlTimer.current); tlTimer.current = null; }
-    // Let a frame that's mid-capture/bake land in the series.
+    // Let a frame that's mid-capture/bake land (it queues itself).
     for (let i = 0; i < 40 && tlGrabbing.current; i++) await new Promise(r => setTimeout(r, 100));
     setIsTimelapsing(false);
-    const photos = [...tlPhotos.current];
-    tlPhotos.current = [];
+    const shots = tlShots.current;
+    const hitLimit = shots >= tlMaxRef.current && shots > 0;
+    tlShots.current = 0;
     setTlCount(0);
-    if (photos.length === 0) return;
-    const stamp = Date.now();
-    const target = await getUploadTarget();
-
-    if (target.skip) {
-      // "Don't upload": the photo library is the only destination.
-      let saved = 0;
-      for (const uri of photos) {
-        if ((await saveToCameraRoll(uri)) === "saved") { saved++; deleteTempFile(uri); }
-      }
+    if (shots === 0) return;
+    await Promise.all([...tlPending.current]).catch(() => {});
+    const plural = shots === 1 ? "" : "s";
+    const limitNote = hitLimit ? ` — reached the ${shots}-photo limit` : "";
+    if (tlTarget.current?.skip || tlLocalOnly.current) {
+      const saved = tlSavedToRoll.current;
+      const why = tlLocalOnly.current && !tlTarget.current?.skip ? "not uploaded" : "cloud upload off";
       showToast(saved > 0
-        ? `${saved} interval photo${saved === 1 ? "" : "s"} saved to Photos — cloud upload off`
-        : "Cloud upload off — couldn't save to Photos", 2400);
+        ? `${saved} interval photo${saved === 1 ? "" : "s"} saved to Photos — ${why}${limitNote}`
+        : Platform.OS === "web" ? `Interval photos ${why} — not kept` : `Interval photos ${why} — couldn't save to Photos`, 2600);
       return;
     }
-
-    const uploadAll = async () => {
-      const onDeleteLocal = settings.deleteLocalAfterUpload ? undefined : async () => {};
-      for (let i = 0; i < photos.length; i++) {
-        const frameUri = photos[i]!;
-        // Library copy BEFORE queueing: the queue may move the file.
-        if (settings.saveToCameraRoll && Platform.OS !== "web") await saveToCameraRoll(frameUri);
-        const name = `INT_${stamp}_${String(i + 1).padStart(3, "0")}.${extensionOf(frameUri, "jpg")}`;
-        void executeUpload(frameUri, name, "image", token, target.ids, onDeleteLocal, () => notifyWitness(name));
-      }
-    };
-    Alert.alert(
-      "Interval Photos",
-      `Upload the ${photos.length} photo${photos.length === 1 ? "" : "s"} taken every ${INTERVAL_SECONDS} s? They're uploaded as separate photos.`,
-      [
-        { text: "Discard", style: "destructive", onPress: () => { for (const uri of photos) deleteTempFile(uri); } },
-        { text: `Upload ${photos.length}`, onPress: () => { void uploadAll(); } },
-      ],
-      // Dismissing the dialog (Android back / tap outside) must not lose the series.
-      { cancelable: false },
-    );
-  }, [settings.deleteLocalAfterUpload, settings.saveToCameraRoll, getUploadTarget, executeUpload, token, notifyWitness, showToast]);
+    showToast(`${shots} interval photo${plural} queued for upload${limitNote}`, 2600);
+  }, [showToast]);
+  useEffect(() => { stopIntervalRef.current = stopInterval; }, [stopInterval]);
 
   const handleTimelapse = useCallback(() => {
     if (intervalRunning.current) void stopInterval();
-    else startInterval();
+    else void startInterval();
   }, [startInterval, stopInterval]);
 
   // An INTERVAL series can't keep shooting with the camera paused, so leaving
-  // the screen ends it and offers the frames for upload.
+  // the screen ends it (every frame taken so far is already queued).
   useEffect(() => {
     if (!screenActive && intervalRunning.current) void stopInterval();
   }, [screenActive, stopInterval]);
+
+  // Keep the screen on through long captures — a recording, an INTERVAL
+  // series, or a panorama sweep + stitch — so auto-lock can't cut them short.
+  // Released when the capture ends and on unmount (effect cleanup).
+  const keepAwake = isRecording || isTimelapsing || isPanoCapturing || panoComposing;
+  useEffect(() => {
+    if (!keepAwake) return;
+    activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+    return () => { deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {}); };
+  }, [keepAwake]);
 
   // Open the cloud account captures are being uploaded to — its app when
   // installed, otherwise its web UI. See lib/cloudApps.ts for why this attempts
@@ -1874,9 +1970,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const scrollToMode = useCallback((idx: number) => {
     try {
       markProgrammaticScroll();
-      modeScrollRef.current?.scrollTo({ x: idx * ITEM_W, animated: true });
+      modeScrollRef.current?.scrollTo({ x: idx * itemW, animated: true });
     } catch { /* ignore */ }
-  }, [markProgrammaticScroll]);
+  }, [markProgrammaticScroll, itemW]);
 
   const cycleFlash = () => {
     const cycle: FlashMode[] = ["auto", "on", "off"];
@@ -1887,9 +1983,15 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // own stop ahead of the normalised-zoom stops.
   const ultraWideAvailable = Platform.OS === "ios" && facing === "back" && ultraWideLens != null;
   const onUltraWide = ultraWideAvailable && ultraWideSelected;
+  // expo-camera doesn't report the device's zoom range to JS yet, so this is
+  // null and the labels fall back to the relative stops ("+", "++", "Max").
+  // Once a range is available, labels become real factors ("2×", "5×").
+  const zoomRange: { minFactor?: number; maxFactor: number } | null = null;
+  const stopLabel = (value: number, fallback: string) =>
+    zoomRange ? zoomLabel(value, zoomRange, Platform.OS) : fallback;
   const currentZoomLabel = onUltraWide
-    ? (zoom <= 0.02 ? "0.5×" : `UW ${zoomLabel(zoom)}`)
-    : zoomLabel(zoom);
+    ? (zoom <= 0.02 ? "0.5×" : `UW ${zoomLabel(zoom, zoomRange, Platform.OS)}`)
+    : zoomLabel(zoom, zoomRange, Platform.OS);
 
   const handleAvailableLenses = useCallback(({ lenses }: { lenses: string[] }) => {
     setUltraWideLens(lenses.find(l => ULTRA_WIDE_LENS_PATTERN.test(l)) ?? null);
@@ -1908,13 +2010,11 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   const selectZoom = useCallback((value: number, ultraWide = false) => {
     setUltraWideSelected(ultraWide);
     setZoom(value);
-    baseZoom.current = value;
     if (zoomCollapseTimer.current) clearTimeout(zoomCollapseTimer.current);
     zoomCollapseTimer.current = setTimeout(() => setZoomExpanded(false), 2000);
   }, []);
 
   const flashIcon = flash === "on" ? "flash" : flash === "off" ? "flash-off" : "flash-outline";
-  const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
   const activeFilter = FILTERS[selectedFilter];
   const filterOverlay = Platform.OS !== "web" ? (activeFilter?.overlay ?? null) : null;
@@ -1954,8 +2054,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
           onPress={() => router.push("/settings")}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
+          accessibilityHint="Opens KKamera's own settings"
         >
-          <Text style={styles.permSkipText}>Go to Settings instead</Text>
+          <Text style={styles.permSkipText}>App settings</Text>
         </TouchableOpacity>
       </View>
     );
@@ -2010,9 +2111,23 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             {paywallPrice ? `View Subscription — ${paywallPrice}/year` : "View Subscription"}
           </Text>
         </TouchableOpacity>
+        {Platform.OS !== "web" && (
+          <TouchableOpacity
+            style={[styles.permSkip, { marginTop: 12 }]}
+            onPress={() => { void restoreStorePurchases(); }}
+            disabled={rcSub.isRestoring}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: rcSub.isRestoring, busy: rcSub.isRestoring }}
+          >
+            {rcSub.isRestoring
+              ? <ActivityIndicator color={PRIMARY} size="small" />
+              : <Text style={[styles.permSkipText, { color: PRIMARY }]}>Restore Purchases</Text>}
+          </TouchableOpacity>
+        )}
         {/* Never a dead end: account, sign-out, clouds and queued captures stay reachable. */}
         <TouchableOpacity
-          style={[styles.permSkip, { marginTop: 16 }]}
+          style={[styles.permSkip, { marginTop: 4 }]}
           onPress={() => router.push("/history")}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityRole="button"
@@ -2053,7 +2168,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
   // rests between items or on a mode that isn't the one in use.
   const settleModeStrip = (x: number) => {
     if (programmaticScroll.current) return; // ignore scrolls we triggered ourselves
-    const idx = Math.round(x / ITEM_W);
+    const idx = Math.round(x / itemW);
     const clamped = Math.max(0, Math.min(idx, STRIP_MODES.length - 1));
     const target = STRIP_MODES[clamped]!.mode;
     if (!captureIsActive && target !== extMode) {
@@ -2061,7 +2176,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
       return;
     }
     const activeIdx = STRIP_MODES.findIndex(m => m.mode === extMode);
-    if (activeIdx >= 0 && Math.abs(x - activeIdx * ITEM_W) > 0.5) scrollToMode(activeIdx);
+    if (activeIdx >= 0 && Math.abs(x - activeIdx * itemW) > 0.5) scrollToMode(activeIdx);
   };
 
   // A drag that ends without momentum (slow Android drags, web) never fires
@@ -2133,46 +2248,21 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             />
           )}
 
-          {/* Level guide — the whole guide turns with the way the phone is
-              held (the UI is portrait-locked), the tilt line follows the true
-              horizon, and it snaps green within LEVEL_TOLERANCE_DEG. */}
-          {settings.showLevelGuide && (
-            <View style={[StyleSheet.absoluteFill, styles.levelContainer]} pointerEvents="none">
-              {!levelFlat && (
-                <>
-                  {/* Reference line — the held orientation's horizontal */}
-                  <View style={[
-                    styles.levelRefLine,
-                    { transform: [{ rotate: `${levelBase}deg` }] },
-                    Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelRefLineActive,
-                  ]} />
-                  {/* Horizon line — rotates against the device's tilt */}
-                  <View style={[
-                    styles.levelLine,
-                    { transform: [{ rotate: `${levelBase + levelRoll}deg` }] },
-                    Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelLineActive,
-                  ]} />
-                </>
-              )}
-              <View style={[
-                styles.levelDot,
-                !levelFlat && Math.abs(levelRoll) <= LEVEL_TOLERANCE_DEG && styles.levelDotActive,
-              ]} />
-            </View>
-          )}
+          {/* Level guide (owns its motion subscription — see LevelGuide) */}
+          <LevelGuide enabled={settings.showLevelGuide} active={screenActive} />
 
           {/* Composition grid overlay */}
           {settings.gridType !== "off" && (
             <GridOverlay type={settings.gridType} />
           )}
 
-          {/* Compass bearing badge */}
-          {heading != null && (
-            <View style={styles.compassBadge} pointerEvents="none">
-              <Ionicons name="compass-outline" size={13} color={PRIMARY} />
-              <Text style={styles.compassText}>{heading}°</Text>
-            </View>
-          )}
+          {/* Compass bearing badge (owns the heading subscription) */}
+          <HeadingBadge
+            enabled={settings.compassMeta}
+            active={screenActive}
+            locationGranted={locationGranted}
+            headingRef={headingRef}
+          />
 
           {/* Scan overlay */}
           {extMode === "scan" && (
@@ -2183,7 +2273,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
                 <View style={[styles.scanCorner, styles.scanBL]} />
                 <View style={[styles.scanCorner, styles.scanBR]} />
               </View>
-              <Text style={styles.scanHint}>Align document within frame</Text>
+              <Text style={styles.scanHint} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>Align document within frame</Text>
             </View>
           )}
 
@@ -2201,17 +2291,17 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
                       ]}
                     />
                   </View>
-                  <Text style={styles.panoProgress}>
+                  <Text style={styles.panoProgress} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>
                     {panoSweep}° · {panoFrameCount} frame{panoFrameCount === 1 ? "" : "s"}
                   </Text>
-                  <Text style={styles.modeHint}>
+                  <Text style={styles.modeHint} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>
                     Keep panning — tap the shutter to finish
                   </Text>
                 </>
               ) : panoComposing ? (
-                <Text style={styles.panoProgress}>Stitching panorama…</Text>
+                <Text style={styles.panoProgress} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>Stitching panorama…</Text>
               ) : (
-                <Text style={styles.modeHint}>
+                <Text style={styles.modeHint} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>
                   Tap the shutter, then pan slowly left or right
                 </Text>
               )}
@@ -2222,7 +2312,13 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
           {isTimelapsing && (
             <View style={[styles.tlCounter]} pointerEvents="none">
               <Ionicons name="timer-outline" size={16} color={PRIMARY} />
-              <Text style={styles.tlCountText}>{tlCount} photo{tlCount === 1 ? "" : "s"} · every {INTERVAL_SECONDS} s</Text>
+              <Text
+                style={styles.tlCountText}
+                maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}
+                accessibilityLabel={`${tlCount} of ${tlMax} photos, one every ${settings.intervalSeconds} seconds`}
+              >
+                {tlCount} / {tlMax} · every {settings.intervalSeconds < 60 ? `${settings.intervalSeconds} s` : "1 min"}
+              </Text>
             </View>
           )}
         </View>
@@ -2237,7 +2333,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             accessibilityLabel={`Flash: ${flash}`}
             accessibilityHint="Cycles flash between auto, on and off"
           >
-            <Ionicons name={flashIcon as any} size={21} color={flash === "on" ? "#FFD700" : "white"} />
+            <Animated.View style={iconRotateStyle}>
+              <Ionicons name={flashIcon as any} size={21} color={flash === "on" ? "#FFD700" : "white"} />
+            </Animated.View>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconBtn}
@@ -2247,7 +2345,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             accessibilityLabel="Level guide"
             accessibilityState={{ checked: settings.showLevelGuide }}
           >
-            <MaterialCommunityIcons name="spirit-level" size={19} color={settings.showLevelGuide ? PRIMARY : "white"} />
+            <Animated.View style={iconRotateStyle}>
+              <MaterialCommunityIcons name="spirit-level" size={19} color={settings.showLevelGuide ? PRIMARY : "white"} />
+            </Animated.View>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconBtn}
@@ -2260,7 +2360,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             const next = settings.gridType === "off" ? "thirds" : settings.gridType === "thirds" ? "golden" : settings.gridType === "golden" ? "square" : settings.gridType === "square" ? "diagonal" : "off";
             updateSetting("gridType", next);
           }}>
-            <Ionicons name="grid-outline" size={18} color={settings.gridType !== "off" ? PRIMARY : "white"} />
+            <Animated.View style={iconRotateStyle}>
+              <Ionicons name="grid-outline" size={18} color={settings.gridType !== "off" ? PRIMARY : "white"} />
+            </Animated.View>
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.iconBtn}
@@ -2273,9 +2375,11 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             const next = settings.timerSeconds === 0 ? 3 : settings.timerSeconds === 3 ? 10 : 0;
             updateSetting("timerSeconds", next);
           }}>
-            <Ionicons name="timer-outline" size={19} color={settings.timerSeconds > 0 ? PRIMARY : "white"} />
+            <Animated.View style={iconRotateStyle}>
+              <Ionicons name="timer-outline" size={19} color={settings.timerSeconds > 0 ? PRIMARY : "white"} />
+            </Animated.View>
             {settings.timerSeconds > 0 && (
-              <Text style={styles.timerBadge}>{settings.timerSeconds}s</Text>
+              <Text style={styles.timerBadge} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>{settings.timerSeconds}s</Text>
             )}
           </TouchableOpacity>
           <TouchableOpacity
@@ -2286,18 +2390,11 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             accessibilityLabel="Filters"
             accessibilityState={{ expanded: showFilters }}
           >
-            <Feather name="sliders" size={18} color={showFilters ? PRIMARY : "white"} />
+            <Animated.View style={iconRotateStyle}>
+              <Feather name="sliders" size={18} color={showFilters ? PRIMARY : "white"} />
+            </Animated.View>
           </TouchableOpacity>
-          {(isRecording) && (
-            <View
-              style={styles.recordingBadge}
-              accessible
-              accessibilityLabel={`Recording, ${formatTime(recordSeconds)}`}
-            >
-              <View style={styles.recordingDot} />
-              <Text style={styles.recordingTime}>{formatTime(recordSeconds)}</Text>
-            </View>
-          )}
+          <RecordingBadge active={isRecording} />
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => router.push("/settings")}
@@ -2305,7 +2402,9 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             accessibilityRole="button"
             accessibilityLabel="Settings"
           >
-            <Ionicons name="settings-outline" size={21} color="white" />
+            <Animated.View style={iconRotateStyle}>
+              <Ionicons name="settings-outline" size={21} color="white" />
+            </Animated.View>
           </TouchableOpacity>
         </View>
 
@@ -2331,7 +2430,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
                   }]}>
                     {f.isBeauty && <Text style={styles.filterBeautyIcon}>✨</Text>}
                   </View>
-                  <Text style={[styles.filterLabel, selectedFilter === i && { color: PRIMARY }]}>{f.name}</Text>
+                  <Text style={[styles.filterLabel, selectedFilter === i && { color: PRIMARY }]} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>{f.name}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -2349,26 +2448,29 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
               accessibilityLabel="Zoom 0.5 times, ultra-wide"
               accessibilityState={{ selected: onUltraWide && zoom <= 0.02 }}
             >
-              <Text style={[styles.zoomSideLabel, onUltraWide && zoom <= 0.02 && styles.zoomSideLabelActive]}>
+              <Text style={[styles.zoomSideLabel, onUltraWide && zoom <= 0.02 && styles.zoomSideLabelActive]} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>
                 0.5×
               </Text>
             </TouchableOpacity>
           )}
-          {zoomExpanded && ZOOM_LEVELS.map(({ value, label }) => (
+          {zoomExpanded && ZOOM_LEVELS.map(({ value, label: relLabel }) => {
+            const label = stopLabel(value, relLabel);
+            return (
             <TouchableOpacity
               key={value}
               style={styles.zoomSideBtn}
               onPress={() => selectZoom(value)}
               hitSlop={ZOOM_HIT_SLOP}
               accessibilityRole="button"
-              accessibilityLabel={`Zoom ${label.replace("×", " times")}`}
+              accessibilityLabel={label.includes("×") ? `Zoom ${label.replace("×", " times")}` : `Zoom ${ZOOM_LEVELS.find(z => z.value === value)?.name ?? label}`}
               accessibilityState={{ selected: !onUltraWide && Math.abs(zoom - value) < 0.03 }}
             >
-              <Text style={[styles.zoomSideLabel, !onUltraWide && Math.abs(zoom - value) < 0.03 && styles.zoomSideLabelActive]}>
+              <Text style={[styles.zoomSideLabel, !onUltraWide && Math.abs(zoom - value) < 0.03 && styles.zoomSideLabelActive]} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>
                 {label}
               </Text>
             </TouchableOpacity>
-          ))}
+            );
+          })}
           <TouchableOpacity
             style={[styles.zoomSideBtn, styles.zoomBadgeBtn]}
             onPress={toggleZoom}
@@ -2378,7 +2480,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
             accessibilityHint={zoomExpanded ? "Hides zoom levels" : "Shows zoom levels"}
             accessibilityState={{ expanded: zoomExpanded }}
           >
-            <Text style={styles.zoomBadgeText}>{currentZoomLabel}</Text>
+            <Text style={styles.zoomBadgeText} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>{currentZoomLabel}</Text>
           </TouchableOpacity>
         </View>
 
@@ -2395,19 +2497,19 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
               } as any)]}
             />
             {/* Fixed center highlight pill */}
-            <View style={[styles.modeCenterPill, { left: (screenW - ITEM_W + 10) / 2, width: ITEM_W - 10 }]} pointerEvents="none" />
+            <View style={[styles.modeCenterPill, { left: (screenW - itemW + 10) / 2, width: itemW - 10 }]} pointerEvents="none" />
             {/* Scrollable mode labels */}
             <ScrollView
               ref={modeScrollRef}
               horizontal
               showsHorizontalScrollIndicator={false}
-              snapToInterval={ITEM_W}
+              snapToInterval={itemW}
               decelerationRate="fast"
               snapToAlignment="start"
               onScrollEndDrag={handleModeScrollEndDrag}
               onMomentumScrollBegin={clearSettleTimer}
               onMomentumScrollEnd={handleModeMomentumEnd}
-              contentContainerStyle={{ paddingHorizontal: (screenW - ITEM_W) / 2 }}
+              contentContainerStyle={{ paddingHorizontal: (screenW - itemW) / 2 }}
               style={{ flex: 1 }}
               contentOffset={stripContentOffset}
             >
@@ -2417,7 +2519,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
                 return (
                   <TouchableOpacity
                     key={m.mode}
-                    style={{ width: ITEM_W, alignItems: "center", justifyContent: "center", paddingVertical: 10 }}
+                    style={{ width: itemW, alignItems: "center", justifyContent: "center", paddingVertical: 10 }}
                     onPress={() => { if (!captureIsActive) { setExtMode(m.mode); scrollToMode(i); } }}
                     activeOpacity={0.7}
                     accessibilityRole="button"
@@ -2425,10 +2527,13 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
                     accessibilityState={{ selected: isActive, disabled: captureIsActive && !isActive }}
                   >
                     <Text
-                      style={[styles.stripLabel, isActive && styles.stripLabelActive]}
+                      // Keep the label inside the center pill (width itemW - 10)
+                      // so long labels like "INTERVAL" never spill past the oval.
+                      style={[styles.stripLabel, { maxWidth: itemW - 16 }, isActive && styles.stripLabelActive]}
                       numberOfLines={1}
                       adjustsFontSizeToFit
-                      minimumFontScale={0.8}
+                      minimumFontScale={0.7}
+                      maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}
                     >{lbl}</Text>
                   </TouchableOpacity>
                 );
@@ -2438,16 +2543,27 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
 
           {/* Capture row */}
           <View style={styles.captureRow}>
-            {/* Gallery import */}
-            <TouchableOpacity
-              style={styles.sideBtn}
-              onPress={handleOpenCloudApp}
-              disabled={captureIsActive}
-              accessibilityRole="button"
-              accessibilityLabel="Open your cloud storage"
-            >
-              <Ionicons name="cloud-outline" size={26} color={captureIsActive ? "#333" : "white"} accessible={false} />
-            </TouchableOpacity>
+            <View style={styles.captureSideGroup}>
+              {/* Last capture — tap a photo to mark it up */}
+              <LastCaptureThumb
+                capture={lastCapture}
+                onPress={openLastCapture}
+                disabled={captureIsActive}
+                rotate={iconRotate}
+              />
+              {/* Open the cloud app */}
+              <TouchableOpacity
+                style={styles.sideBtn}
+                onPress={handleOpenCloudApp}
+                disabled={captureIsActive}
+                accessibilityRole="button"
+                accessibilityLabel="Open your cloud storage"
+              >
+                <Animated.View style={iconRotateStyle}>
+                  <Ionicons name="cloud-outline" size={26} color={captureIsActive ? "#333" : "white"} accessible={false} />
+                </Animated.View>
+              </TouchableOpacity>
+            </View>
 
             {/* Capture button */}
             <Animated.View style={{ transform: [{ scale: captureScale }] }}>
@@ -2495,32 +2611,36 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
               </TouchableOpacity>
             </Animated.View>
 
-            {/* Flip camera */}
-            <TouchableOpacity
-              style={styles.sideBtn}
-              onPress={() => {
-                const next = facing === "back" ? "front" : "back";
-                // Front camera has no useful zoom range; rear resumes at the default.
-                const z = next === "front" ? FRONT_CAMERA_ZOOM : settings.defaultZoom;
-                setUltraWideSelected(false);
-                setFacing(next);
-                setZoom(z);
-                baseZoom.current = z;
-              }}
-              disabled={captureIsActive}
-              accessibilityRole="button"
-              accessibilityLabel={facing === "back" ? "Switch to front camera" : "Switch to rear camera"}
-              accessibilityState={{ disabled: captureIsActive }}
-            >
-              <Ionicons name="camera-reverse-outline" size={26} color={captureIsActive ? "#333" : "white"} />
-            </TouchableOpacity>
+            {/* Same width as the left group so the shutter stays centred. */}
+            <View style={[styles.captureSideGroup, { justifyContent: "flex-end" }]}>
+              {/* Flip camera */}
+              <TouchableOpacity
+                style={styles.sideBtn}
+                onPress={() => {
+                  const next = facing === "back" ? "front" : "back";
+                  // Front camera has no useful zoom range; rear resumes at the default.
+                  const z = next === "front" ? FRONT_CAMERA_ZOOM : settings.defaultZoom;
+                  setUltraWideSelected(false);
+                  setFacing(next);
+                  setZoom(z);
+                }}
+                disabled={captureIsActive}
+                accessibilityRole="button"
+                accessibilityLabel={facing === "back" ? "Switch to front camera" : "Switch to rear camera"}
+                accessibilityState={{ disabled: captureIsActive }}
+              >
+                <Animated.View style={iconRotateStyle}>
+                  <Ionicons name="camera-reverse-outline" size={26} color={captureIsActive ? "#333" : "white"} />
+                </Animated.View>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
         {/* ── Countdown overlay ───────────────────────────────────────────── */}
         {countdown != null && (
           <View style={styles.countdownOverlay} pointerEvents="box-none">
-            <Text style={styles.countdownText} pointerEvents="none">{countdown}</Text>
+            <Text style={styles.countdownText} pointerEvents="none" maxFontSizeMultiplier={1}>{countdown}</Text>
             {/* The shutter also cancels; this makes it obvious. */}
             <TouchableOpacity
               style={styles.countdownCancel}
@@ -2529,7 +2649,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
               accessibilityLabel="Cancel self-timer"
             >
               <Ionicons name="close" size={18} color="white" accessible={false} />
-              <Text style={styles.countdownCancelText}>Cancel</Text>
+              <Text style={styles.countdownCancelText} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>Cancel</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -2546,7 +2666,7 @@ const CameraScreenBody = React.memo(function CameraScreenBody({ executeUpload }:
         {stampToast && (
           <View style={[styles.stampToast, { bottom: insets.bottom + 180 }]} pointerEvents="none">
             <Ionicons name="pricetag-outline" size={13} color={PRIMARY} />
-            <Text style={styles.stampToastText}>{stampToast}</Text>
+            <Text style={styles.stampToastText} maxFontSizeMultiplier={OVERLAY_MAX_FONT_SCALE}>{stampToast}</Text>
           </View>
         )}
 
@@ -2687,12 +2807,6 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.32)",
   },
   iconBtn: { padding: 5, borderRadius: 18 },
-  recordingBadge: {
-    flexDirection: "row", alignItems: "center", gap: 6,
-    backgroundColor: "rgba(0,0,0,0.55)", paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
-  },
-  recordingDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#ef4444" },
-  recordingTime: { color: "white", fontSize: 13, fontFamily: "Inter_500Medium" },
   uploadStatus: {
     position: "absolute", right: 14,
     flexDirection: "row", alignItems: "center", gap: 5,
@@ -2700,21 +2814,12 @@ const styles = StyleSheet.create({
     borderRadius: 14, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",
   },
   uploadStatusText: { fontSize: 11, fontFamily: "Inter_500Medium" },
-  overlayCenter: { alignItems: "center", justifyContent: "center" },
-  levelContainer: { alignItems: "center", justifyContent: "center" },
-  levelRefLine: { width: "30%", height: 1, backgroundColor: "rgba(255,255,255,0.25)", position: "absolute" },
-  levelRefLineActive: { backgroundColor: "rgba(34,197,94,0.6)" },
-  levelLine: { width: "60%", height: 2, backgroundColor: "rgba(177,152,112,0.85)", position: "absolute" },
-  levelLineActive: { backgroundColor: "#22c55e" },
-  levelDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: PRIMARY },
-  levelDotActive: { backgroundColor: "#22c55e" },
-  compassBadge: {
-    position: "absolute", top: 12, alignSelf: "center",
-    flexDirection: "row", alignItems: "center", gap: 4,
-    paddingHorizontal: 9, paddingVertical: 3, borderRadius: 11,
-    backgroundColor: "rgba(0,0,0,0.55)", borderWidth: 1, borderColor: "rgba(177,152,112,0.35)",
+  uploadingHint: {
+    position: "absolute", right: 14,
+    backgroundColor: "rgba(0,0,0,0.65)", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10,
   },
-  compassText: { color: PRIMARY, fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  uploadingHintText: { color: PRIMARY, fontSize: 10, fontFamily: "Inter_500Medium" },
+  overlayCenter: { alignItems: "center", justifyContent: "center" },
   timerBadge: {
     position: "absolute", top: 1, right: -2,
     color: PRIMARY, fontSize: 9, fontFamily: "Inter_700Bold",
@@ -2830,9 +2935,6 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     color: "rgba(255,255,255,0.4)",
     letterSpacing: 1.1,
-    // Keep the label inside the center pill (width ITEM_W - 10) so long labels
-    // like "INTERVAL" never spill past the oval.
-    maxWidth: ITEM_W - 16,
     textAlign: "center",
   },
   stripLabelActive: {
@@ -2843,9 +2945,10 @@ const styles = StyleSheet.create({
   },
   captureRow: {
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    paddingHorizontal: 48, paddingTop: 14, paddingBottom: 10,
+    paddingHorizontal: 20, paddingTop: 14, paddingBottom: 10,
   },
   sideBtn: { width: 50, height: 50, alignItems: "center", justifyContent: "center" },
+  captureSideGroup: { flexDirection: "row", alignItems: "center", gap: 6, width: 100 },
   captureBtn: {
     width: 76, height: 76, borderRadius: 38,
     borderWidth: 4, borderColor: "white",

@@ -4,9 +4,11 @@ import { eq, lt } from "drizzle-orm";
 import { logger } from "./logger.js";
 import type { DbTx } from "./referrals.js";
 import {
+  isForeignTransaction,
   isStaleDecision,
   mapSubscriberEntitlement,
   mergeDecision,
+  nextRecordedTransactionId,
   sandboxIapOptions,
   type MergeOptions,
   type MirrorDecision,
@@ -25,6 +27,22 @@ export class RevenueCatNotConfiguredError extends Error {
   }
 }
 
+/**
+ * DELETE /v1/subscribers/{app_user_id} — removes RevenueCat's record of a
+ * deleted account. Throws RevenueCatNotConfiguredError when the key is unset.
+ * A 404 (never purchased / already deleted) counts as success.
+ */
+export async function deleteRevenueCatSubscriber(appUserId: string): Promise<void> {
+  const key = process.env["REVENUECAT_SECRET_API_KEY"];
+  if (!key) throw new RevenueCatNotConfiguredError();
+  const res = await fetch(`${RC_API}/subscribers/${encodeURIComponent(appUserId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok && res.status !== 404) throw new Error(`RevenueCat subscriber delete failed: HTTP ${res.status}`);
+}
+
 /** GET /v1/subscribers/{app_user_id} with the secret API key. */
 export async function fetchSubscriber(appUserId: string): Promise<unknown> {
   const key = process.env["REVENUECAT_SECRET_API_KEY"];
@@ -40,8 +58,10 @@ export async function fetchSubscriber(appUserId: string): Promise<unknown> {
 /**
  * "stale": the event is older than the newest one already applied (out-of-order
  * delivery) — status was left alone; at most a live period end was extended.
+ * "foreign": a refund/expiration for a different store purchase than the one
+ * recorded as granting access (see isForeignTransaction) — nothing changed.
  */
-export type MirrorResult = "written" | "no_user" | "no_op" | "stale";
+export type MirrorResult = "written" | "no_user" | "no_op" | "stale" | "foreign";
 
 /**
  * Apply a mirror decision to a user's subscriptions row inside `tx`. Takes a row
@@ -65,17 +85,30 @@ export async function applyMirrorDecisionInTx(
     .for("update")
     .limit(1);
 
+  if ((d.kind === "refund" || d.kind === "expire") && isForeignTransaction(row?.storeOriginalTransactionId, d.transactionId)) {
+    return "foreign";
+  }
+
   const now = new Date();
   const stale = isStaleDecision(row ?? null, d, now, opts);
   const next = mergeDecision(row ?? null, d, now, opts);
-  if (!next) return stale ? "stale" : "no_op";
+  // Keep the recorded granting purchase current (see nextRecordedTransactionId):
+  // grants record it (stale ones only when none is recorded), snapshots forget it.
+  const txId = nextRecordedTransactionId(row?.storeOriginalTransactionId, d, { stale, snapshot: !!opts.snapshot });
+  const txWrite = txId !== undefined ? { storeOriginalTransactionId: txId } : {};
+  if (!next) {
+    if (row && txId !== undefined) {
+      await tx.update(subscriptionsTable).set(txWrite).where(eq(subscriptionsTable.userId, userId));
+    }
+    return stale ? "stale" : "no_op";
+  }
 
   if (row) {
-    await tx.update(subscriptionsTable).set(next).where(eq(subscriptionsTable.userId, userId));
+    await tx.update(subscriptionsTable).set({ ...next, ...txWrite }).where(eq(subscriptionsTable.userId, userId));
   } else {
     // Concurrent first insert for the same user is harmless: the loser's
     // conflict is a no-op and the next event/sync converges the row.
-    await tx.insert(subscriptionsTable).values({ userId, ...next }).onConflictDoNothing();
+    await tx.insert(subscriptionsTable).values({ userId, ...next, ...txWrite }).onConflictDoNothing();
   }
   return stale ? "stale" : "written";
 }

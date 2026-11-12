@@ -13,6 +13,11 @@ export const emailVerificationsTable = pgTable("email_verifications", {
   codeHash: text("code_hash").notNull(),
   passwordHash: text("password_hash"),
   name: text("name"),
+  // Referrer named by the registration that created this row (null = none, or
+  // a sign-in code). Applied — replacing any earlier pending attribution — only
+  // when this row's code is verified, so whoever registers an unverified
+  // address first can't fix the referral of the person who actually owns it.
+  referrerId: integer("referrer_id"),
   attempts: integer("attempts").notNull().default(0),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),

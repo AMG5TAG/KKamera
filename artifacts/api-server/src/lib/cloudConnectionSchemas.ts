@@ -67,6 +67,13 @@ export function hostHasUserinfo(host: string): boolean {
 
 const USERINFO_MESSAGE = "Put the username and password in their own fields";
 
+/**
+ * Password: ≤500 chars, no control characters. FTP is a line protocol — a CR/LF
+ * in the password would end the PASS command early (the rest is sent as
+ * another command, and servers echo it back in errors that end up in logs).
+ */
+const passwordField = z.string().max(500).refine((v) => !CONTROL_CHARS.test(v), noControlChars);
+
 /** Server URL / hostname: trimmed, non-blank, ≤500 chars, no control chars, no userinfo. */
 const hostField = z.string().trim().min(1, "must not be empty").max(500)
   .refine((v) => !CONTROL_CHARS.test(v), noControlChars)
@@ -81,8 +88,11 @@ export const createConnectionSchema = z.object({
   host: hostField.nullish(),
   port: z.number().int().min(1).max(65535).nullish(),
   username: usernameField.nullish(),
-  password: z.string().max(500).nullish(),
+  password: passwordField.nullish(),
   uploadPath: uploadPathField.nullish(),
+  // Accept a self-signed TLS certificate (FTPS / WebDAV / Nextcloud), pinned on
+  // first use. Absent/null = off (fail closed on an untrusted certificate).
+  trustSelfSigned: z.boolean().nullish(),
   // Legacy field: older app builds send an explicit null. A token is never
   // accepted here — OAuth connections come only from the OAuth flow.
   oauthCode: z.unknown().optional(),
@@ -131,7 +141,8 @@ export const updateConnectionSchema = z.object({
   host: hostField.optional(),
   port: z.number().int().min(1).max(65535).nullable().optional(),
   username: usernameField.nullable().optional(),
-  password: z.string().max(500).nullable().optional(),
+  password: passwordField.nullable().optional(),
+  trustSelfSigned: z.boolean().optional(),
 }).strict();
 
 export type CreateConnectionInput = z.infer<typeof createConnectionSchema>;
@@ -147,6 +158,7 @@ export interface ConnectionUpdatePlan {
   username?: string | null;
   /** New plaintext password to encrypt, or null to clear the saved one. */
   password?: string | null;
+  trustSelfSigned?: boolean;
 }
 
 /**
@@ -163,7 +175,25 @@ export function connectionUpdatePlan(input: UpdateConnectionInput): ConnectionUp
   if (input.port !== undefined) plan.port = input.port;
   if (input.username !== undefined) plan.username = input.username?.trim() ? input.username : null;
   if (input.password !== undefined) plan.password = input.password ? input.password : null;
+  if (input.trustSelfSigned !== undefined) plan.trustSelfSigned = input.trustSelfSigned;
   return plan;
+}
+
+/**
+ * Whether a PATCH must drop the stored TLS certificate pin: the server it
+ * points at changed (host or port), or the self-signed opt-in was toggled —
+ * so a different server's certificate is never checked against (or trusted
+ * because of) an old pin, and turning the option off and on re-trusts a
+ * replaced certificate.
+ */
+export function shouldClearTlsPin(
+  plan: ConnectionUpdatePlan,
+  stored: { host: string | null; port: number | null; trustSelfSigned: boolean },
+): boolean {
+  if (plan.host !== undefined && plan.host !== (stored.host ?? "")) return true;
+  if (plan.port !== undefined && plan.port !== stored.port) return true;
+  if (plan.trustSelfSigned !== undefined && plan.trustSelfSigned !== stored.trustSelfSigned) return true;
+  return false;
 }
 
 /**

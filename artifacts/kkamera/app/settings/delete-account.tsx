@@ -42,24 +42,33 @@ export default function DeleteAccountScreen() {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<{ confirm?: string; password?: string; code?: string; form?: string }>({});
 
   const needs2FA = user?.twoFAEnabled ?? false;
   const confirmed = confirm.toLowerCase() === "delete my account";
 
-  const handleDelete = async () => {
-    if (!confirmed) {
-      Alert.alert("Confirmation required", "Type 'delete my account' exactly to confirm.");
-      return;
-    }
-    if (!password) {
-      Alert.alert("Password required", "Enter your current password to delete your account.");
-      return;
-    }
+  /** Inline validation, then one explicit final confirmation before deleting. */
+  const handleDelete = () => {
+    if (loading) return;
+    const next: typeof errors = {};
+    if (!confirmed) next.confirm = "Type “delete my account” exactly to confirm.";
+    if (!password) next.password = "Enter your current password.";
     const totp = normaliseCode(code);
-    if (needs2FA && !isValidCode(totp)) {
-      Alert.alert("Code required", "Enter the 6-digit code from your authenticator app, or a backup code.");
-      return;
-    }
+    if (needs2FA && !isValidCode(totp)) next.code = "Enter the 6-digit code from your authenticator app, or a backup code.";
+    setErrors(next);
+    if (Object.keys(next).length) return;
+    Alert.alert(
+      "Delete your account?",
+      "Your account, upload history and cloud connections will be permanently deleted. This can't be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete Permanently", style: "destructive", onPress: () => { void performDelete(totp); } },
+      ],
+    );
+  };
+
+  const performDelete = async (totp: string) => {
+    if (loading) return;
     setLoading(true);
     let deleted = false;
     try {
@@ -68,10 +77,7 @@ export default function DeleteAccountScreen() {
       await deleteMe({ password, totpCode: needs2FA ? totp : null });
       deleted = true;
     } catch (e) {
-      Alert.alert(
-        "Couldn't delete account",
-        getUserFacingMessage(e, "Could not delete account. Please contact development@koastal.com.au."),
-      );
+      setErrors({ form: getUserFacingMessage(e, "Could not delete account. Please contact development@koastal.com.au.") });
     }
     if (!deleted) { setLoading(false); return; }
     try {
@@ -90,9 +96,13 @@ export default function DeleteAccountScreen() {
     }
   };
 
+  const clearError = (key: keyof typeof errors) => {
+    if (errors[key] || errors.form) setErrors(prev => ({ ...prev, [key]: undefined, form: undefined }));
+  };
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
 
@@ -105,7 +115,7 @@ export default function DeleteAccountScreen() {
           <Ionicons name="warning-outline" size={48} color={DANGER} />
         </View>
 
-        <Text style={styles.title}>Delete Account</Text>
+        <Text style={styles.title} accessibilityRole="header">Delete Account</Text>
         <Text style={styles.body}>
           This will permanently delete your account and all associated data including:
         </Text>
@@ -146,27 +156,32 @@ export default function DeleteAccountScreen() {
 
         <Text style={styles.confirmLabel}>Type "delete my account" to confirm:</Text>
         <TextInput
-          style={styles.confirmInput}
+          style={[styles.confirmInput, !!errors.confirm && styles.inputError]}
           placeholder="delete my account"
-          placeholderTextColor="#444"
+          placeholderTextColor="#777"
           value={confirm}
-          onChangeText={setConfirm}
+          onChangeText={v => { setConfirm(v); clearError("confirm"); }}
           autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel="Type delete my account to confirm"
         />
+        <FieldError message={errors.confirm} />
 
         <Text style={styles.confirmLabel}>Current password:</Text>
         <TextInput
           style={styles.confirmInput}
           placeholder="Enter your password"
-          placeholderTextColor="#444"
+          placeholderTextColor="#777"
           value={password}
-          onChangeText={setPassword}
+          onChangeText={v => { setPassword(v); clearError("password"); }}
+          accessibilityLabel="Current password"
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
           autoComplete="current-password"
           textContentType="password"
         />
+        <FieldError message={errors.password} />
 
         {needs2FA && (
           <>
@@ -174,9 +189,10 @@ export default function DeleteAccountScreen() {
             <TextInput
               style={styles.confirmInput}
               placeholder="000000"
-              placeholderTextColor="#444"
+              placeholderTextColor="#777"
               value={code}
-              onChangeText={setCode}
+              onChangeText={v => { setCode(v); clearError("code"); }}
+              accessibilityLabel="Authenticator code or backup code"
               keyboardType="default"
               autoCapitalize="characters"
               autoCorrect={false}
@@ -184,15 +200,25 @@ export default function DeleteAccountScreen() {
               textContentType="oneTimeCode"
               maxLength={11}
             />
+            <FieldError message={errors.code} />
           </>
         )}
 
+        {!!errors.form && (
+          <View style={styles.formError} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Ionicons name="alert-circle-outline" size={18} color="#f87171" accessible={false} />
+            <Text style={styles.formErrorText}>{errors.form}</Text>
+          </View>
+        )}
+
         <TouchableOpacity
-          style={[styles.deleteBtn, (loading || !confirmed || !password) && styles.deleteBtnDisabled]}
+          style={[styles.deleteBtn, loading && styles.deleteBtnDisabled]}
           onPress={handleDelete}
-          disabled={loading || !confirmed || !password}
+          disabled={loading}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: loading, busy: loading }}
         >
-          <Ionicons name="trash-outline" size={18} color="white" />
+          <Ionicons name="trash-outline" size={18} color="white" accessible={false} />
           <Text style={styles.deleteBtnText}>{loading ? "Deleting..." : "Delete My Account"}</Text>
         </TouchableOpacity>
       </KeyboardAwareScrollViewCompat>
@@ -200,9 +226,16 @@ export default function DeleteAccountScreen() {
   );
 }
 
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return (
+    <Text style={styles.fieldError} accessibilityRole="alert" accessibilityLiveRegion="polite">{message}</Text>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
   content: { padding: 24, alignItems: "center" },
   iconWrap: { width: 96, height: 96, borderRadius: 48, backgroundColor: "rgba(239,68,68,0.1)", alignItems: "center", justifyContent: "center", marginBottom: 20, borderWidth: 1, borderColor: "rgba(239,68,68,0.25)" },
   title: { fontSize: 22, fontFamily: "Inter_700Bold", color: DANGER, marginBottom: 14, textAlign: "center" },
@@ -216,9 +249,13 @@ const styles = StyleSheet.create({
   billingText: { fontSize: 13, color: "#aaa", fontFamily: "Inter_400Regular", lineHeight: 20, marginBottom: 12 },
   manageBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: PRIMARY },
   manageBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold", color: PRIMARY },
-  confirmLabel: { fontSize: 13, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 8, alignSelf: "flex-start" },
+  confirmLabel: { fontSize: 13, color: "#a8a29e", fontFamily: "Inter_400Regular", marginBottom: 8, alignSelf: "flex-start" },
   confirmInput: { backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, color: "white", fontSize: 14, fontFamily: "Inter_400Regular", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", width: "100%", marginBottom: 20 },
   deleteBtn: { backgroundColor: DANGER, borderRadius: 14, paddingVertical: 16, alignItems: "center", flexDirection: "row", justifyContent: "center", gap: 8, width: "100%" },
-  deleteBtnDisabled: { opacity: 0.4 },
+  deleteBtnDisabled: { opacity: 0.5 },
+  inputError: { borderColor: "#f87171", marginBottom: 6 },
+  fieldError: { fontSize: 12, color: "#f87171", fontFamily: "Inter_500Medium", alignSelf: "flex-start", marginBottom: 16, lineHeight: 16 },
+  formError: { width: "100%", flexDirection: "row", alignItems: "flex-start", gap: 8, marginBottom: 14, backgroundColor: "rgba(239,68,68,0.08)", borderRadius: 10, padding: 12, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" },
+  formErrorText: { flex: 1, fontSize: 13, color: "#f87171", fontFamily: "Inter_400Regular", lineHeight: 18 },
   deleteBtnText: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
 });

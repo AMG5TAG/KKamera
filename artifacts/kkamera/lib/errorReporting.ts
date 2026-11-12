@@ -4,8 +4,10 @@
  * (the root ErrorBoundary and any manual reports) picks it up.
  *
  * Privacy: no PII is sent. sendDefaultPii is off, the only user field ever set
- * is the numeric account id, and request bodies / breadcrumb URLs carrying
- * query strings are scrubbed in beforeSend / beforeBreadcrumb.
+ * is the numeric account id, request bodies / breadcrumb URLs carrying
+ * query strings are scrubbed in beforeSend / beforeBreadcrumb, breadcrumb
+ * messages have emails / tokens / URL queries redacted, and console
+ * breadcrumbs (which can echo anything that was logged) are dropped.
  */
 import * as Sentry from "@sentry/react-native";
 
@@ -21,6 +23,19 @@ let enabled = false;
 
 function stripQuery(url: unknown): unknown {
   return typeof url === "string" ? url.split("?")[0] : url;
+}
+
+/**
+ * Redact what may identify a person or grant access: email addresses, bearer /
+ * JWT-shaped tokens, long opaque secrets, and URL query strings / fragments.
+ */
+export function scrubText(text: string): string {
+  return text
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [token]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g, "[jwt]")
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#"']*)[?#][^\s"']*/gi, "$1?[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[secret]");
 }
 
 /** Call once, as early as possible (root layout module scope). No-op without a DSN. */
@@ -44,7 +59,10 @@ export function initErrorReporting(): void {
         return event;
       },
       beforeBreadcrumb(crumb) {
+        // console.* breadcrumbs can carry anything that was logged — drop them.
+        if (crumb.category === "console") return null;
         if (crumb.data?.url) crumb.data.url = stripQuery(crumb.data.url);
+        if (typeof crumb.message === "string") crumb.message = scrubText(crumb.message);
         return crumb;
       },
     });

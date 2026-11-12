@@ -54,6 +54,48 @@ export async function forgetOAuthNonce(provider: string): Promise<void> {
   } catch { /* best-effort */ }
 }
 
+/**
+ * Drop the stored nonce only when the deep link proves it belongs to this flow
+ * (carries the same nonce). oauth-error links can be crafted by anyone, so an
+ * unproven one must not cancel a sign-in the user is still completing. (The
+ * server's error redirect doesn't carry the nonce today, so in practice the
+ * add-cloud screen — which owns the flow — forgets it on failure, and the next
+ * /initiate overwrites any leftover.)
+ */
+export async function forgetOAuthNonceIfMatches(provider: string, nonce: string | null | undefined): Promise<boolean> {
+  if (!nonce) return false;
+  const stored = await readOAuthNonce(provider);
+  if (!stored || stored !== nonce) return false;
+  await forgetOAuthNonce(provider);
+  return true;
+}
+
+// Fixed, user-facing messages for the error values the OAuth callback (and the
+// providers it forwards) send back. The deep-link `error` param is attacker-
+// controllable, so it is only ever used as a lookup key — never displayed.
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  access_denied: "You cancelled the sign-in, so the account was not connected.",
+  user_cancelled: "You cancelled the sign-in, so the account was not connected.",
+  consent_required: "Permission wasn't granted, so the account was not connected.",
+  "Missing code or state": "The storage provider didn't return a sign-in confirmation. Please try again.",
+  "Invalid or expired OAuth state — please try again": "The sign-in took too long or wasn't started from this app. Please try again.",
+  "Unknown provider": "That storage provider isn't supported.",
+  "Failed to save connection": "We couldn't save the connection. Please try again.",
+  "The storage provider rejected the sign-in. Please try again.": "The storage provider rejected the sign-in. Please try again.",
+  server_error: "The storage provider had a problem. Please try again later.",
+  temporarily_unavailable: "The storage provider is temporarily unavailable. Please try again later.",
+};
+
+export const OAUTH_GENERIC_ERROR = "The sign-in was cancelled or failed, so the account was not connected. Please try again.";
+
+/** Map an `error` deep-link param to a fixed message (unknown values → generic). */
+export function oauthErrorMessage(error: unknown): string {
+  if (typeof error !== "string") return OAUTH_GENERIC_ERROR;
+  return Object.prototype.hasOwnProperty.call(OAUTH_ERROR_MESSAGES, error)
+    ? OAUTH_ERROR_MESSAGES[error]!
+    : OAUTH_GENERIC_ERROR;
+}
+
 export type OAuthCompletion =
   | { ok: true; connectionId: number; name: string }
   | { ok: false; message: string };

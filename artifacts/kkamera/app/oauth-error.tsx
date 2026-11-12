@@ -2,24 +2,24 @@ import React, { useEffect, useRef } from "react";
 import { View, Text, StyleSheet, Animated, Easing } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { forgetOAuthNonce } from "@/lib/oauthPending";
+import { forgetOAuthNonceIfMatches, oauthErrorMessage } from "@/lib/oauthPending";
 
 const BG = "#0d0b08";
 
 export default function OAuthErrorScreen() {
   // expo-router has already percent-decoded these; decoding again threw
   // URIError on a literal "%" (kkamera://oauth-error?error=%25) and crashed.
-  const { error, provider } = useLocalSearchParams<{ error?: string; provider?: string }>();
-  const message = typeof error === "string" && error.trim()
-    ? error.slice(0, 300)
-    : "OAuth authorisation was cancelled or failed.";
+  const { error, provider, nonce } = useLocalSearchParams<{ error?: string; provider?: string; nonce?: string }>();
+  // Anyone can craft this link: the error is only a lookup key for a fixed message.
+  const message = oauthErrorMessage(error);
   const scale = useRef(new Animated.Value(0)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // The flow failed, so its one-time nonce (kept since /initiate) is spent.
-    if (typeof provider === "string" && /^(googledrive|onedrive|dropbox)$/.test(provider)) {
-      void forgetOAuthNonce(provider);
+    // Only a link proven to belong to this flow (same nonce) may spend the
+    // pending nonce — a crafted link must not cancel a sign-in in progress.
+    if (typeof provider === "string" && /^(googledrive|onedrive|dropbox)$/.test(provider) && typeof nonce === "string") {
+      void forgetOAuthNonceIfMatches(provider, nonce);
     }
     Animated.sequence([
       Animated.delay(150),

@@ -6,16 +6,81 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import {
-  useListUploads, useDeleteUpload, useClearUploads, getListUploadsQueryKey,
+  useDeleteUpload, useClearUploads, getListUploadsQueryKey, getUserFacingMessage,
+  type UploadItem,
 } from "@workspace/api-client-react";
+import { useAuth } from "@/contexts/AuthContext";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useUpload, type QueuedUpload } from "@/contexts/UploadContext";
+import { API_BASE_URL } from "@/lib/config";
+import { palette } from "@/components/ui/palette";
 
-const PRIMARY = "#b19870";
-const BG = "#0d0b08";
-const CARD = "#1a1710";
+const PRIMARY = palette.primary;
+const BG = palette.bg;
+const CARD = palette.card;
+
+/** Rows per page; the server accepts limit 1–200 with an offset. */
+const PAGE_SIZE = 50;
+const REQUEST_TIMEOUT_MS = 45_000;
+
+// Under the generated list key, so every existing invalidation of
+// getListUploadsQueryKey() (here and in UploadContext) also refreshes this.
+const HISTORY_QUERY_KEY = [...getListUploadsQueryKey(), "infinite", PAGE_SIZE] as const;
+
+/**
+ * One page of upload history. The generated `listUploads` has no limit/offset
+ * parameters yet (the server supports them), so this calls the endpoint
+ * directly with the session token.
+ */
+async function fetchUploadsPage(
+  token: string,
+  offset: number,
+  signal: AbortSignal | undefined,
+  onUnauthorized: (tokenUsed: string) => void,
+): Promise<UploadItem[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener("abort", onAbort);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/uploads?limit=${PAGE_SIZE}&offset=${offset}`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      // Bypasses customFetch, so report 401s to the shared handler ourselves.
+      if (res.status === 401) onUnauthorized(token);
+      const body = await res.json().catch(() => null) as { message?: string } | null;
+      throw new Error(body?.message || `Couldn't load history (${res.status}).`);
+    }
+    return await res.json() as UploadItem[];
+  } catch (e) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error("The request timed out. Check your connection and try again.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+type Filter = "all" | "failed" | "queued" | "done";
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "failed", label: "Failed" },
+  { id: "queued", label: "Queued" },
+  { id: "done", label: "Done" },
+];
+
+function matchesFilter(status: string | null | undefined, filter: Filter): boolean {
+  if (filter === "all") return true;
+  if (filter === "failed") return status === "failed" || status === "partial";
+  if (filter === "queued") return status === "queued" || status === "pending" || status === "uploading" || !status;
+  return status === "done";
+}
 
 type UploadStatus = "pending" | "uploading" | "done" | "failed" | "queued" | "partial";
 
@@ -23,9 +88,9 @@ const STATUS_CONFIG: Record<UploadStatus, { color: string; icon: string; label: 
   done:      { color: "#22c55e", icon: "cloud-done-outline",       label: "Uploaded"   },
   uploading: { color: PRIMARY,   icon: "cloud-upload-outline",     label: "Uploading…" },
   partial:   { color: "#f59e0b", icon: "cloud-outline",            label: "Partial"    },
-  failed:    { color: "#ef4444", icon: "cloud-offline-outline",    label: "Failed"     },
-  queued:    { color: "#6b7280", icon: "time-outline",             label: "Queued"     },
-  pending:   { color: "#6b7280", icon: "ellipsis-horizontal-outline", label: "Pending" },
+  failed:    { color: palette.dangerText, icon: "cloud-offline-outline",    label: "Failed"     },
+  queued:    { color: "#9ca3af", icon: "time-outline",             label: "Queued"     },
+  pending:   { color: "#9ca3af", icon: "ellipsis-horizontal-outline", label: "Pending" },
 };
 
 function formatDate(iso: string) {
@@ -51,14 +116,47 @@ export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const { settings } = useSettings();
-  const { data: uploads, isLoading, refetch, isRefetching } = useListUploads();
+  const { token, reportUnauthorized } = useAuth();
+  const [filter, setFilter] = useState<Filter>("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const historyQuery = useInfiniteQuery({
+    queryKey: HISTORY_QUERY_KEY,
+    queryFn: ({ pageParam, signal }) => fetchUploadsPage(token!, pageParam, signal, reportUnauthorized),
+    initialPageParam: 0,
+    getNextPageParam: (last, all) => (last.length < PAGE_SIZE ? undefined : all.length * PAGE_SIZE),
+    enabled: !!token && settings.recordHistory,
+  });
+  const {
+    data, isLoading, isError, error, refetch,
+    fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError,
+  } = historyQuery;
+  // Offset paging can repeat a row when new uploads land between pages.
+  const uploads = useMemo(() => {
+    const seen = new Set<number>();
+    const out: UploadItem[] = [];
+    for (const page of data?.pages ?? []) {
+      for (const u of page) {
+        if (seen.has(u.id)) continue;
+        seen.add(u.id);
+        out.push(u);
+      }
+    }
+    return out;
+  }, [data]);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await refetch(); } finally { setRefreshing(false); }
+  }, [refetch]);
+  const loadMore = useCallback(() => {
+    if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage();
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
   const deleteMutation = useDeleteUpload();
   const clearMutation = useClearUploads();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [isClearing, setIsClearing] = useState(false);
   const { queuedItems, retryItem, discardItem } = useUpload();
 
-  const sorted = [...(uploads ?? [])].sort((a, b) =>
+  const sorted = [...uploads].sort((a, b) =>
     new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 
@@ -67,7 +165,9 @@ export default function HistoryScreen() {
   // the local queue. The server reuses one row per clientUploadId (the queue
   // item id), so after that there is exactly one server row for it.
   const localIds = useMemo(() => new Set(queuedItems.map(i => i.id)), [queuedItems]);
-  const visible = sorted.filter(u => !u.clientUploadId || !localIds.has(u.clientUploadId));
+  const unfiltered = sorted.filter(u => !u.clientUploadId || !localIds.has(u.clientUploadId));
+  const visible = unfiltered.filter(u => matchesFilter(u.status, filter));
+  const visibleQueued = queuedItems.filter(i => matchesFilter(i.status, filter));
 
   // When a capture leaves the local queue (uploaded, or discarded) refresh the
   // server list so its final row appears without a manual pull-to-refresh.
@@ -99,7 +199,9 @@ export default function HistoryScreen() {
     if (sorted.length === 0) return;
     Alert.alert(
       "Clear All History",
-      `This will permanently delete all ${sorted.length} upload records. This cannot be undone.`,
+      hasNextPage
+        ? "This will permanently delete all of your upload records. This cannot be undone."
+        : `This will permanently delete all ${sorted.length} upload records. This cannot be undone.`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -109,7 +211,9 @@ export default function HistoryScreen() {
             try {
               await clearMutation.mutateAsync();
               // Scrub the cached list immediately, then revalidate against the server
-              queryClient.setQueryData(getListUploadsQueryKey(), []);
+              queryClient.setQueryData<InfiniteData<UploadItem[], number>>(
+                HISTORY_QUERY_KEY, { pages: [[]], pageParams: [0] },
+              );
               queryClient.invalidateQueries({ queryKey: getListUploadsQueryKey() });
             } catch { Alert.alert("Error", "Could not clear history."); }
             finally { setIsClearing(false); }
@@ -117,7 +221,7 @@ export default function HistoryScreen() {
         },
       ]
     );
-  }, [sorted.length, queryClient, clearMutation]);
+  }, [sorted.length, hasNextPage, queryClient, clearMutation]);
 
   const handleDiscard = (item: QueuedUpload) => {
     Alert.alert(
@@ -175,7 +279,7 @@ export default function HistoryScreen() {
               accessibilityRole="button"
               accessibilityLabel={`Discard ${item.fileName}`}
             >
-              <Ionicons name="trash-outline" size={18} color="#ef4444" />
+              <Ionicons name="trash-outline" size={18} color={palette.dangerText} />
             </TouchableOpacity>
           </>
         )}
@@ -183,14 +287,35 @@ export default function HistoryScreen() {
     );
   };
 
-  const deviceSection = queuedItems.length > 0 ? (
+  const deviceSection = visibleQueued.length > 0 ? (
     <View style={styles.deviceSection}>
       <Text style={styles.countText}>
-        On this device · {queuedItems.length} not uploaded
+        On this device · {visibleQueued.length} not uploaded
       </Text>
-      {queuedItems.map(renderQueuedItem)}
+      {visibleQueued.map(renderQueuedItem)}
     </View>
   ) : null;
+
+  const filterChips = (
+    <View style={styles.chipRow} accessibilityRole="tablist">
+      {FILTERS.map(f => {
+        const selected = filter === f.id;
+        return (
+          <TouchableOpacity
+            key={f.id}
+            style={[styles.chip, selected && styles.chipSelected]}
+            onPress={() => setFilter(f.id)}
+            hitSlop={{ top: 6, bottom: 6 }}
+            accessibilityRole="tab"
+            accessibilityLabel={`Show ${f.label.toLowerCase()} uploads`}
+            accessibilityState={{ selected }}
+          >
+            <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{f.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
 
   if (!settings.recordHistory) {
     return (
@@ -200,7 +325,7 @@ export default function HistoryScreen() {
         </TouchableOpacity>
         {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
         <View style={styles.center}>
-          <Ionicons name="eye-off-outline" size={48} color="#333" accessible={false} />
+          <Ionicons name="eye-off-outline" size={48} color={palette.textSubtle} accessible={false} />
           <Text style={styles.emptyTitle}>History is hidden</Text>
           <Text style={styles.emptyText}>
             Turn on "Show Upload History" in Settings → Upload to see past uploads on this device.
@@ -213,7 +338,7 @@ export default function HistoryScreen() {
     );
   }
 
-  const renderItem = ({ item }: { item: NonNullable<typeof uploads>[0] }) => {
+  const renderItem = ({ item }: { item: UploadItem }) => {
     const status = (item.status ?? "pending") as UploadStatus;
     const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.pending;
     const isDeleting = deletingId === item.id;
@@ -231,7 +356,7 @@ export default function HistoryScreen() {
             <Text style={styles.dotSep}>·</Text>
             <Text style={styles.dateText}>{formatDate(item.createdAt)}</Text>
           </View>
-          {item.error && status === "failed" && (
+          {item.error && (status === "failed" || status === "partial") && (
             <Text style={styles.errorText} numberOfLines={2}>{item.error}</Text>
           )}
         </View>
@@ -245,8 +370,8 @@ export default function HistoryScreen() {
           accessibilityState={{ disabled: isDeleting, busy: isDeleting }}
         >
           {isDeleting
-            ? <ActivityIndicator size="small" color="#ef4444" />
-            : <Ionicons name="trash-outline" size={18} color="#ef4444" />
+            ? <ActivityIndicator size="small" color={palette.dangerText} />
+            : <Ionicons name="trash-outline" size={18} color={palette.dangerText} />
           }
         </TouchableOpacity>
       </View>
@@ -260,7 +385,7 @@ export default function HistoryScreen() {
           <Ionicons name="chevron-back" size={28} color={PRIMARY} />
         </TouchableOpacity>
         <Text style={styles.heading} accessibilityRole="header">Upload History</Text>
-        {visible.length > 0 && (
+        {unfiltered.length > 0 && (
           <TouchableOpacity
             onPress={handleClearAll}
             disabled={isClearing}
@@ -283,28 +408,89 @@ export default function HistoryScreen() {
         )}
       </View>
 
+      {filterChips}
+
       {isLoading ? (
         <>
           {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
-          <View style={styles.center}><ActivityIndicator color={PRIMARY} /></View>
+          <View style={styles.center}><ActivityIndicator color={PRIMARY} accessibilityLabel="Loading history" /></View>
+        </>
+      ) : isError && !data ? (
+        <>
+          {deviceSection && <View style={{ paddingHorizontal: 16 }}>{deviceSection}</View>}
+          <View style={styles.center}>
+            <Ionicons name="cloud-offline-outline" size={48} color={palette.textSubtle} accessible={false} />
+            <Text style={styles.emptyTitle} accessibilityRole="header">Couldn't load history</Text>
+            <Text style={styles.emptyText}>{getUserFacingMessage(error, "Something went wrong. Please try again.")}</Text>
+            <TouchableOpacity
+              style={styles.cameraBtn}
+              onPress={() => { void onRefresh(); }}
+              disabled={refreshing}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading history"
+              accessibilityState={{ disabled: refreshing, busy: refreshing }}
+            >
+              {refreshing
+                ? <ActivityIndicator size="small" color="white" />
+                : (
+                  <>
+                    <Ionicons name="refresh-outline" size={18} color="white" accessible={false} />
+                    <Text style={styles.cameraBtnText}>Retry</Text>
+                  </>
+                )}
+            </TouchableOpacity>
+          </View>
         </>
       ) : (
         <FlatList
           data={visible}
           keyExtractor={item => String(item.id)}
           contentContainerStyle={{ padding: 16, gap: 10, paddingBottom: 40 }}
-          refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} tintColor={PRIMARY} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={PRIMARY} />}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.5}
           ListHeaderComponent={(deviceSection || visible.length > 0) ? (
             <>
               {deviceSection}
               {visible.length > 0 && (
-                <Text style={styles.countText}>{visible.length} record{visible.length !== 1 ? "s" : ""}</Text>
+                <Text style={styles.countText}>
+                  {visible.length}{hasNextPage ? "+" : ""} record{visible.length !== 1 ? "s" : ""}
+                  {filter !== "all" ? " (loaded)" : ""}
+                </Text>
               )}
             </>
           ) : null}
-          ListEmptyComponent={(
+          ListFooterComponent={
+            isFetchingNextPage ? (
+              <ActivityIndicator color={PRIMARY} style={{ marginVertical: 16 }} accessibilityLabel="Loading more" />
+            ) : isFetchNextPageError ? (
+              <TouchableOpacity
+                style={styles.loadMoreBtn}
+                onPress={() => { void fetchNextPage(); }}
+                accessibilityRole="button"
+                accessibilityLabel="Couldn't load more. Retry"
+              >
+                <Ionicons name="refresh-outline" size={16} color={PRIMARY} accessible={false} />
+                <Text style={styles.loadMoreText}>Couldn't load more — Retry</Text>
+              </TouchableOpacity>
+            ) : hasNextPage && filter !== "all" && visible.length === 0 ? (
+              // Client-side filter over loaded pages: let the user reach older rows.
+              <TouchableOpacity style={styles.loadMoreBtn} onPress={loadMore} accessibilityRole="button">
+                <Text style={styles.loadMoreText}>Load older uploads</Text>
+              </TouchableOpacity>
+            ) : null
+          }
+          ListEmptyComponent={deviceSection ? null : filter !== "all" ? (
             <View style={styles.emptyWrap}>
-              <Ionicons name="cloud-upload-outline" size={52} color="#333" accessible={false} />
+              <Ionicons name="filter-outline" size={44} color={palette.textSubtle} accessible={false} />
+              <Text style={styles.emptyTitle}>No {FILTERS.find(f => f.id === filter)?.label.toLowerCase()} uploads</Text>
+              <TouchableOpacity style={styles.settingsBtn} onPress={() => setFilter("all")} accessibilityRole="button">
+                <Text style={styles.settingsBtnText}>Show all</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.emptyWrap}>
+              <Ionicons name="cloud-upload-outline" size={52} color={palette.textSubtle} accessible={false} />
               <Text style={styles.emptyTitle}>No uploads yet</Text>
               <Text style={styles.emptyText}>Photos, videos, and scans you upload will appear here.</Text>
               <TouchableOpacity style={styles.cameraBtn} onPress={() => router.replace("/camera" as any)} accessibilityRole="button">
@@ -325,16 +511,29 @@ const styles = StyleSheet.create({
   headerRow: {
     flexDirection: "row", alignItems: "center", paddingRight: 12, minHeight: 52,
   },
-  backBtn: { padding: 12 },
+  backBtn: { padding: 12, minWidth: 44, minHeight: 44 },
+  chipRow: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingTop: 4, paddingBottom: 4 },
+  chip: {
+    minHeight: 34, paddingHorizontal: 14, borderRadius: 17, justifyContent: "center",
+    borderWidth: 1, borderColor: "rgba(177,152,112,0.25)", backgroundColor: CARD,
+  },
+  chipSelected: { backgroundColor: PRIMARY, borderColor: PRIMARY },
+  chipText: { fontSize: 13, color: palette.textMuted, fontFamily: "Inter_500Medium" },
+  chipTextSelected: { color: "#0d0b08", fontFamily: "Inter_600SemiBold" },
+  loadMoreBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    minHeight: 44, marginTop: 8, borderRadius: 12, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)",
+  },
+  loadMoreText: { fontSize: 14, color: PRIMARY, fontFamily: "Inter_500Medium" },
   heading: { flex: 1, fontSize: 22, fontFamily: "Inter_700Bold", color: "white", paddingLeft: 4 },
   clearAllBtn: {
     flexDirection: "row", alignItems: "center", gap: 5,
-    paddingHorizontal: 10, paddingVertical: 6,
+    paddingHorizontal: 10, paddingVertical: 6, minHeight: 36,
     borderRadius: 10, borderWidth: 1, borderColor: "rgba(239,68,68,0.35)",
   },
-  clearAllText: { fontSize: 13, color: "#ef4444", fontFamily: "Inter_500Medium" },
+  clearAllText: { fontSize: 13, color: palette.dangerText, fontFamily: "Inter_500Medium" },
   countText: {
-    fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold",
+    fontSize: 11, color: palette.textSubtle, fontFamily: "Inter_600SemiBold",
     letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8,
   },
   center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 32 },
@@ -349,14 +548,15 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   statusText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   dotSep: { color: "#444", fontSize: 12 },
-  dateText: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
-  errorText: { fontSize: 11, color: "#ef444488", fontFamily: "Inter_400Regular", marginTop: 2 },
-  deleteBtn: { padding: 8 },
+  dateText: { fontSize: 12, color: palette.textSubtle, fontFamily: "Inter_400Regular" },
+  // AA: ~6:1 on CARD at 12pt (was #ef444488 at 11pt, ~2.6:1).
+  errorText: { fontSize: 12, color: palette.dangerText, fontFamily: "Inter_400Regular", marginTop: 2, lineHeight: 16 },
+  deleteBtn: { padding: 8, minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   deviceSection: { gap: 10, marginBottom: 20 },
-  queueNote: { fontSize: 11, color: "#888", fontFamily: "Inter_400Regular", marginTop: 2 },
+  queueNote: { fontSize: 12, color: palette.textMuted, fontFamily: "Inter_400Regular", marginTop: 2 },
   emptyWrap: { alignItems: "center", paddingVertical: 60, paddingHorizontal: 32 },
-  emptyTitle: { fontSize: 20, fontFamily: "Inter_600SemiBold", color: "#555", marginTop: 16, marginBottom: 8 },
-  emptyText: { fontSize: 14, color: "#444", fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20, marginBottom: 24 },
+  emptyTitle: { fontSize: 20, fontFamily: "Inter_600SemiBold", color: palette.textMuted, marginTop: 16, marginBottom: 8, textAlign: "center" },
+  emptyText: { fontSize: 14, color: palette.textSubtle, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20, marginBottom: 24 },
   cameraBtn: {
     flexDirection: "row", alignItems: "center", gap: 8,
     backgroundColor: PRIMARY, paddingHorizontal: 24, paddingVertical: 12, borderRadius: 14,

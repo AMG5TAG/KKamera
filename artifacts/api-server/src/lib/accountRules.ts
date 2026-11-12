@@ -16,7 +16,7 @@ export const PASSWORD_MAX_BYTES = 72;
  * character-count cap).
  */
 export const newPasswordSchema = z
-  .string({ required_error: "Password is required" })
+  .string({ error: "Password is required" })
   .min(PASSWORD_MIN_CHARS, `Password must be at least ${PASSWORD_MIN_CHARS} characters`)
   .refine(p => Buffer.byteLength(p, "utf8") <= PASSWORD_MAX_BYTES, {
     message: `Password is too long (maximum ${PASSWORD_MAX_BYTES} bytes)`,
@@ -206,18 +206,45 @@ export function isTokenVersionCurrent(claims: Pick<SessionClaims, "tv">, userTok
   return claims.tv === userTokenVersion;
 }
 
-// ─── Per-account login throttling ─────────────────────────────────────────────
+// ─── Login throttling ─────────────────────────────────────────────────────────
+// Two layers, so guessing is bounded without letting a stranger lock the owner
+// out:
+//  1. per (account, client IP): LOGIN_IP_FAILURE_LIMIT failures in
+//     LOGIN_IP_WINDOW_MS block further password checks for that account from
+//     that address only (an IPv6 client is bucketed by its /64). Counted in the
+//     shared rate_limit_hits table, so it holds across instances.
+//  2. a much higher per-account ceiling (users.failed_login_count) for an
+//     attacker rotating through many addresses: every LOGIN_LOCK_THRESHOLD
+//     consecutive failures lock the account for at most LOGIN_LOCK_MAX_MS.
+// Previously layer 2 alone locked after 5 failures from anywhere, for up to
+// 24 h — anyone who knew an email could keep its owner locked out.
+// On top of both, each address bucket gets LOGIN_ADDRESS_ATTEMPT_LIMIT
+// unsuccessful sign-ins (any accounts, unknown emails included) per
+// LOGIN_IP_WINDOW_MS, bounding credential stuffing from one address.
 
-/** Consecutive failed sign-ins that trigger a lockout (and every multiple after). */
-export const LOGIN_LOCK_THRESHOLD = 5;
-export const LOGIN_LOCK_BASE_MS = 15 * 60 * 1000;
-export const LOGIN_LOCK_MAX_MS = 24 * 60 * 60 * 1000;
+export const LOGIN_IP_FAILURE_LIMIT = 5;
+export const LOGIN_IP_WINDOW_MS = 15 * 60 * 1000;
+export const LOGIN_ADDRESS_ATTEMPT_LIMIT = 10;
+export const LOGIN_ADDRESS_LIMITED_MESSAGE = "Too many login attempts. Please try again in 15 minutes.";
+
+/**
+ * Whether an address is over its attempt limit. `hits` includes the attempt
+ * being made (it is counted up front and given back if it succeeds).
+ */
+export function isLoginAddressLimited(hits: number): boolean {
+  return Number.isFinite(hits) && hits > LOGIN_ADDRESS_ATTEMPT_LIMIT;
+}
+
+/** Consecutive failed sign-ins (from any address) that lock the account, and every multiple after. */
+export const LOGIN_LOCK_THRESHOLD = 50;
+export const LOGIN_LOCK_BASE_MS = 5 * 60 * 1000;
+export const LOGIN_LOCK_MAX_MS = 15 * 60 * 1000;
 export const LOGIN_LOCKED_MESSAGE = "Too many sign-in attempts. Try again later or reset your password.";
 
 /**
  * How long to lock the account after the failure that brought the consecutive
- * count to `failedCount` (0 = no lock). Every THRESHOLD-th failure locks: 15 min
- * the first time, doubling per further lockout, capped at 24 h.
+ * count to `failedCount` (0 = no lock). Every THRESHOLD-th failure locks: 5 min
+ * the first time, doubling per further lockout, capped at 15 min.
  */
 export function loginLockDurationMs(failedCount: number): number {
   if (!Number.isInteger(failedCount) || failedCount < LOGIN_LOCK_THRESHOLD) return 0;
@@ -228,9 +255,51 @@ export function loginLockDurationMs(failedCount: number): number {
   return Math.min(LOGIN_LOCK_BASE_MS * 2 ** step, LOGIN_LOCK_MAX_MS);
 }
 
-/** Whether the account is currently locked out of password sign-in. */
+/** Whether the account is currently locked out of password sign-in (from every address). */
 export function isLoginLocked(lockedUntil: Date | null | undefined, now: Date): boolean {
   return !!lockedUntil && lockedUntil.getTime() > now.getTime();
+}
+
+/** Whether `hits` failures in the current window block this (account, address) pair. */
+export function isLoginIpThrottled(hits: number): boolean {
+  return Number.isFinite(hits) && hits >= LOGIN_IP_FAILURE_LIMIT;
+}
+
+/** Expand an IPv6 literal to 8 lowercase hextets, or null. */
+function ipv6Hextets(ip: string): string[] | null {
+  const halves = ip.split("%")[0]!.toLowerCase().split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 ? (halves[1] ? halves[1].split(":") : []) : null;
+  const groups = tail === null ? head : [...head, ...Array(8 - head.length - tail.length).fill("0"), ...tail];
+  if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.map((g) => g.replace(/^0+(?=.)/, ""));
+}
+
+/**
+ * The address bucket a sign-in failure is counted against: the IPv4 address
+ * (also when IPv4-mapped), or the /64 of an IPv6 address (one subscriber
+ * typically gets a whole /64, so per-address counting would be trivial to
+ * dodge). Unknown / unparseable input shares one "unknown" bucket.
+ */
+export function loginIpBucket(ip: string | null | undefined): string {
+  const raw = (ip ?? "").trim();
+  const mapped = raw.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  const v4 = mapped ? mapped[1]! : raw;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v4) && v4.split(".").every((o) => Number(o) <= 255)) return v4;
+  const hextets = raw.includes(":") ? ipv6Hextets(raw) : null;
+  if (hextets) return `${hextets.slice(0, 4).join(":")}::/64`;
+  return "unknown";
+}
+
+/** Rate-limit key for unsuccessful sign-ins (to any account) from one address bucket. */
+export function loginAddressKey(ip: string | null | undefined): string {
+  return `login-addr:${loginIpBucket(ip)}`;
+}
+
+/** Rate-limit key for failed sign-ins to one account from one address bucket. */
+export function loginFailureKey(userId: number, ip: string | null | undefined): string {
+  return `login-fail:${userId}:${loginIpBucket(ip)}`;
 }
 
 // ─── Password-reset throttling ────────────────────────────────────────────────

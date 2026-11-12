@@ -4,7 +4,10 @@ import * as Location from "expo-location";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useSettings, type GridType } from "@/contexts/SettingsContext";
+import {
+  useSettings, type GridType, type IntervalSeconds, type IntervalMaxShots,
+  INTERVAL_SECONDS_OPTIONS, INTERVAL_MAX_SHOTS_OPTIONS,
+} from "@/contexts/SettingsContext";
 import { ZOOM_LEVELS, type ZoomValue } from "@/lib/zoomLevels";
 
 const PRIMARY = "#b19870";
@@ -275,6 +278,27 @@ export default function CameraScreen() {
           )}
         </View>
 
+        <SectionLabel title="Interval" />
+        <View style={styles.card}>
+          <SegmentRow<IntervalSeconds>
+            icon="time-outline"
+            label="Shot Interval"
+            hint="Time between photos in INTERVAL mode"
+            options={INTERVAL_SECONDS_OPTIONS.map(v => ({ label: v < 60 ? `${v} s` : "1 min", value: v }))}
+            value={settings.intervalSeconds}
+            onChange={v => updateSetting("intervalSeconds", v)}
+          />
+          <View style={styles.divider} />
+          <SegmentRow<IntervalMaxShots>
+            icon="layers-outline"
+            label="Stop After"
+            hint="The series stops by itself after this many photos; each uploads as it's taken"
+            options={INTERVAL_MAX_SHOTS_OPTIONS.map(v => ({ label: String(v), value: v }))}
+            value={settings.intervalMaxShots}
+            onChange={v => updateSetting("intervalMaxShots", v)}
+          />
+        </View>
+
         <SectionLabel title="Metadata & Stamps" />
         <View style={styles.card}>
           <ToggleRow
@@ -342,13 +366,14 @@ const styles = StyleSheet.create({
   },
   rowBody: { flex: 1 },
   rowLabel: { fontSize: 15, fontFamily: "Inter_500Medium", color: "white" },
-  rowHint: { fontSize: 11, color: "#555", fontFamily: "Inter_400Regular", marginTop: 2 },
+  rowHint: { fontSize: 11, color: "#8f8f8f", fontFamily: "Inter_400Regular", marginTop: 2 },
   segmentWrap: { flexDirection: "row", gap: 6, paddingLeft: 46, paddingBottom: 4, flexWrap: "wrap" },
   segmentBtn: {
     paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20,
     backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)",
   },
   segmentBtnActive: { backgroundColor: "rgba(177,152,112,0.2)", borderColor: PRIMARY },
-  segmentText: { fontSize: 13, fontFamily: "Inter_500Medium", color: "#666" },
+  // #a3a3a3 on CARD (#1a1710) ≈ 7.4:1 — the old #666 (≈3.2:1) failed WCAG AA.
+  segmentText: { fontSize: 13, fontFamily: "Inter_500Medium", color: "#a3a3a3" },
   segmentTextActive: { color: PRIMARY },
 });

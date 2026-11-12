@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import rateLimit from "express-rate-limit";
+import { sharedRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import { usersTable, referralsTable, subscriptionsTable } from "@workspace/db";
 import { eq, and, count } from "drizzle-orm";
@@ -9,7 +9,7 @@ import { sendEmail, coworkerInviteEmail } from "../lib/email.js";
 
 const router = Router();
 
-const inviteLimiter = rateLimit({
+const inviteLimiter = sharedRateLimit("affiliates.inviteLimiter", {
   windowMs: 60 * 60 * 1000,
   max: 5, // 5 invite batches/hour per IP — anti-spam
   standardHeaders: true,
@@ -67,7 +67,7 @@ router.post("/affiliates/invite", requireAuth, inviteLimiter, async (req, res) =
   try {
     const parsed = inviteSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);

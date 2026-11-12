@@ -2122,7 +2122,7 @@ export const createCloudConnection = async (
 };
 
 export const getCreateCloudConnectionMutationOptions = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -2163,10 +2163,10 @@ export type CreateCloudConnectionMutationResult = NonNullable<
   Awaited<ReturnType<typeof createCloudConnection>>
 >;
 export type CreateCloudConnectionMutationBody = BodyType<CloudConnectionInput>;
-export type CreateCloudConnectionMutationError = ErrorType<unknown>;
+export type CreateCloudConnectionMutationError = ErrorType<MessageResponse>;
 
 export const useCreateCloudConnection = <
-  TError = ErrorType<unknown>,
+  TError = ErrorType<MessageResponse>,
   TContext = unknown,
 >(options?: {
   mutation?: UseMutationOptions<
@@ -3505,6 +3505,7 @@ export const useExecuteUpload = <
 };
 
 /**
+ * Requires an active subscription. Limited per IP and to 30 emails per user per rolling 24 hours.
  * @summary Email a witness that a file was captured and uploaded
  */
 export const getNotifyWitnessUrl = () => {

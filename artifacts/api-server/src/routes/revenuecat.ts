@@ -131,18 +131,28 @@ router.post("/revenuecat/webhook", async (req, res) => {
       }
 
       const result = await applyMirrorDecisionInTx(tx, decision.userId, decision);
-      if (result === "no_user") {
-        // Deleted account (or a foreign id) — ack without creating an orphan row.
-        logger.info({ type: ev.type, eventId, userId: decision.userId }, "RevenueCat event for unknown user — ignored");
+      if (result === "foreign") {
+        // Refund/expiry of a purchase other than the one granting this user's
+        // access — neither access nor referrals change.
+        logger.info({ type: ev.type, eventId, userId: decision.userId, kind: decision.kind },
+          "RevenueCat event for a different store transaction than the recorded one — ignored");
         return null;
       }
-      logger.info(
+      if (result === "no_user") {
+        // Deleted account (or a foreign id): no subscriptions row is created.
+        // A refund/lapse still reverses the referral below — completed
+        // referral rows outlive the referred account (anonymised, same
+        // referred_id), so deleting the account before refunding can't keep
+        // the referrer's free year.
+        logger.info({ type: ev.type, eventId, userId: decision.userId }, "RevenueCat event for unknown user — mirror skipped");
+      } else logger.info(
         { type: ev.type, eventId, userId: decision.userId, kind: decision.kind, result, sandbox: !decision.referrals },
         result === "stale" ? "RevenueCat event older than applied state — status unchanged" : "RevenueCat event mirrored",
       );
       // Referrals move only on production events (sandbox never touches them).
       if (!decision.referrals) return null;
       if (decision.kind === "grant") {
+        if (result === "no_user") return null;
         // Complete a pending referral only when real money moved (price > 0) — a
         // store-side free trial (price 0) must not credit a referrer. Payment is
         // real even if the event arrived late, so a stale grant still counts.

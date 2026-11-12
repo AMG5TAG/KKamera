@@ -173,7 +173,7 @@ export default function UploadScreen() {
           <ToggleRow
             icon="wifi-outline"
             label="Wi-Fi Only"
-            hint="Off Wi-Fi, captures wait in the queue and upload once you're on Wi-Fi"
+            hint="Off Wi-Fi, captures wait in the queue and upload once you're on Wi-Fi. Uploads wait while a VPN is active, because KKamera can't tell whether it's using Wi-Fi."
             value={settings.uploadOnlyOnWifi}
             onToggle={v => updateSetting("uploadOnlyOnWifi", v)}
           />
@@ -250,7 +250,7 @@ export default function UploadScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
   sectionLabel: {
     fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold",
     letterSpacing: 1.5, textTransform: "uppercase",

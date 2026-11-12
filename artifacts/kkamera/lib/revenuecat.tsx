@@ -40,6 +40,17 @@ export function initializeRevenueCat() {
   }
 }
 
+/**
+ * Detach this device's RevenueCat identity (Panic Wipe). Best-effort; resolves
+ * even when RevenueCat isn't configured or is already anonymous.
+ */
+export async function logOutRevenueCat(): Promise<void> {
+  if (Platform.OS === "web" || !_revenueCatReady) return;
+  try {
+    await Purchases.logOut();
+  } catch { /* already anonymous — non-fatal */ }
+}
+
 const APP_STORE_SUBSCRIPTIONS_URL = "https://apps.apple.com/account/subscriptions";
 const PLAY_SUBSCRIPTIONS_URL = "https://play.google.com/store/account/subscriptions";
 
@@ -113,11 +124,14 @@ function useSubscriptionContext() {
     return ok;
   }, [queryClient, retryQueued]);
 
+  // Only once Purchases.logIn has completed for THIS user (native): before
+  // that, getCustomerInfo would return the previous/anonymous identity's
+  // entitlements and cache them under this user's key.
   const customerInfoQuery = useQuery({
     queryKey: ["revenuecat", "customer-info", user?.id ?? null],
     queryFn: () => Purchases.getCustomerInfo(),
     staleTime: 60_000,
-    enabled,
+    enabled: enabled && (Platform.OS === "web" || identityReady),
     retry: false,
   });
 

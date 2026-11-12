@@ -7,7 +7,7 @@
  */
 
 /**
- * Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default "/KKamera"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.
+ * Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default "/KKamera"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username. Changing host, port or trustSelfSigned drops the pinned TLS certificate (the next connection pins again).
  */
 export interface CloudConnectionUpdate {
   /**
@@ -44,4 +44,6 @@ export interface CloudConnectionUpdate {
    * @nullable
    */
   password?: string | null;
+  /** Accept a self-signed TLS certificate (pinned on first use). */
+  trustSelfSigned?: boolean;
 }

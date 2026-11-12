@@ -16,9 +16,12 @@ import { Platform } from "react-native";
 // below plus the OS keystore protecting the record at rest.
 //
 // Legacy: earlier builds stored the PIN (fixed-salt hash, or even cleartext) in
-// the AsyncStorage-backed `settings.appPin`. `verifyPin` still accepts that value
-// and transparently migrates it into SecureStore on the first successful unlock;
-// callers should then clear `settings.appPin`.
+// the AsyncStorage-backed `settings.appPin`. `legacyPinStartupAction` runs at
+// startup (app/_layout.tsx): once a v2 record exists the legacy value is simply
+// dropped, and a cleartext legacy PIN is re-hashed into SecureStore right away.
+// A fixed-salt legacy HASH can only be re-hashed with the PIN itself, so it stays
+// until the next successful unlock, where `verifyPin` migrates it; callers then
+// clear `settings.appPin`.
 // ---------------------------------------------------------------------------
 
 const PIN_KEY = "kkamera_app_pin_v2";
@@ -36,10 +39,22 @@ export const RELOCK_GRACE_MS = 30_000;
 
 /** Wrong PINs allowed before the keypad is locked out. */
 export const PIN_FAIL_THRESHOLD = 5;
+/**
+ * Total wrong PINs (since the last successful unlock) after which the PIN is
+ * erased and the user is signed out — only the account password gets back in.
+ * This hard cap is the real brute-force bound: a lockout can be shortened by
+ * changing the clock and killing the app, the cap can't.
+ */
+export const PIN_MAX_FAILURES = 10;
 /** Lockout after the threshold: 30s, doubling per further failure, capped at 5 min. */
 export function lockoutMsForFailures(failures: number): number {
   if (failures < PIN_FAIL_THRESHOLD) return 0;
   return Math.min(5 * 60_000, 30_000 * 2 ** (failures - PIN_FAIL_THRESHOLD));
+}
+
+/** Wrong PINs left before the sign-out at PIN_MAX_FAILURES. */
+export function attemptsBeforeSignOut(failures: number): number {
+  return Math.max(0, PIN_MAX_FAILURES - failures);
 }
 
 const SECURE_OPTS: SecureStore.SecureStoreOptions = {
@@ -118,8 +133,30 @@ export async function savePin(pin: string): Promise<void> {
 
 /** Remove the stored PIN and attempt counter (used by Panic Wipe). */
 export async function clearPin(): Promise<void> {
+  monoLock = null;
   await secureDelete(PIN_KEY);
   await secureDelete(ATTEMPTS_KEY);
+}
+
+/**
+ * Startup clean-up of the legacy `settings.appPin` value. Returns true when the
+ * caller should clear it: a v2 record already exists (the legacy copy is dead
+ * weight), or the legacy value was cleartext and has just been re-hashed into
+ * SecureStore. A legacy fixed-salt hash with no v2 record returns false — it is
+ * still the only credential and is migrated on the next successful unlock.
+ */
+export async function legacyPinStartupAction(legacyStored: string | undefined): Promise<boolean> {
+  if (!legacyStored) return false;
+  if (await readStoredPin()) return true;
+  if (/^\d{4}$/.test(legacyStored)) {
+    try {
+      await savePin(legacyStored);
+      return true;
+    } catch {
+      return false; // keystore unavailable — keep it, retry next launch
+    }
+  }
+  return false;
 }
 
 /**
@@ -162,35 +199,106 @@ export async function verifyPin(entered: string, legacyStored?: string): Promise
 // ---------------------------------------------------------------------------
 // Failed-attempt counter — persisted so killing/remounting the lock screen
 // doesn't reset the brute-force lockout.
+//
+// Clock changes: the record keeps the wall-clock time the lockout started. A
+// clock that has moved BACKWARDS since then (now < lockedAt) is treated as still
+// locked for the full period, measured from now. While the app stays alive the
+// lockout is also tracked on the monotonic clock (performance.now), so moving
+// the clock forward doesn't end it early either. A forward change plus an app
+// kill can still shorten a lockout — the PIN_MAX_FAILURES cap bounds that.
 // ---------------------------------------------------------------------------
 
 export interface PinFailureState {
   failures: number;
+  /** Wall-clock time the current lockout ends (0 = not locked out). */
   lockedUntil: number;
+  /** True once PIN_MAX_FAILURES is reached: the PIN has been erased and the caller must sign out. */
+  exhausted?: boolean;
 }
 
-export async function getPinFailures(): Promise<PinFailureState> {
-  const raw = await secureGet(ATTEMPTS_KEY);
-  if (!raw) return { failures: 0, lockedUntil: 0 };
+interface StoredAttempts {
+  failures: number;
+  /** Wall-clock start of the current lockout. */
+  lockedAt: number;
+  /** Length of the current lockout. */
+  lockMs: number;
+}
+
+/** In-process monotonic copy of the current lockout. */
+let monoLock: { start: number; ms: number } | null = null;
+
+function monoNow(): number {
   try {
-    const p = JSON.parse(raw) as Partial<PinFailureState>;
-    return { failures: Number(p.failures) || 0, lockedUntil: Number(p.lockedUntil) || 0 };
+    const p = (globalThis as { performance?: { now?: () => number } }).performance;
+    if (p?.now) return p.now();
+  } catch { /* fall through */ }
+  return Date.now();
+}
+
+async function readAttempts(): Promise<StoredAttempts> {
+  const raw = await secureGet(ATTEMPTS_KEY);
+  if (!raw) return { failures: 0, lockedAt: 0, lockMs: 0 };
+  try {
+    const p = JSON.parse(raw) as Partial<StoredAttempts> & { lockedUntil?: number };
+    const failures = Number(p.failures) || 0;
+    if (p.lockedAt != null) {
+      return { failures, lockedAt: Number(p.lockedAt) || 0, lockMs: Number(p.lockMs) || 0 };
+    }
+    // Older record ({failures, lockedUntil}): re-derive a full lockout from now.
+    const lockMs = lockoutMsForFailures(failures);
+    return { failures, lockedAt: lockMs && Number(p.lockedUntil) > Date.now() ? Date.now() : 0, lockMs };
   } catch {
-    return { failures: 0, lockedUntil: 0 };
+    return { failures: 0, lockedAt: 0, lockMs: 0 };
   }
 }
 
-/** Record a wrong PIN; returns the new state (with lockedUntil set once over the threshold). */
+async function writeAttempts(a: StoredAttempts): Promise<void> {
+  try { await secureSet(ATTEMPTS_KEY, JSON.stringify(a)); } catch { /* best effort */ }
+}
+
+export async function getPinFailures(): Promise<PinFailureState> {
+  const a = await readAttempts();
+  if (!a.lockMs || !a.lockedAt) {
+    return { failures: a.failures, lockedUntil: 0, exhausted: a.failures >= PIN_MAX_FAILURES };
+  }
+  const now = Date.now();
+  let lockedUntil = a.lockedAt + a.lockMs;
+  if (now < a.lockedAt) {
+    // The clock went backwards: restart the full lockout from now, and persist
+    // that so repeating the trick never helps.
+    lockedUntil = now + a.lockMs;
+    await writeAttempts({ ...a, lockedAt: now });
+  }
+  if (monoLock) {
+    const monoRemaining = monoLock.start + monoLock.ms - monoNow();
+    if (monoRemaining > 0) lockedUntil = Math.max(lockedUntil, now + monoRemaining);
+  }
+  return { failures: a.failures, lockedUntil: lockedUntil > now ? lockedUntil : 0, exhausted: a.failures >= PIN_MAX_FAILURES };
+}
+
+/**
+ * Record a wrong PIN; returns the new state (with lockedUntil set once over the
+ * threshold). At PIN_MAX_FAILURES the PIN is erased and `exhausted` is set —
+ * the caller must sign out.
+ */
 export async function recordPinFailure(): Promise<PinFailureState> {
-  const prev = await getPinFailures();
+  const prev = await readAttempts();
   const failures = prev.failures + 1;
+  if (failures >= PIN_MAX_FAILURES) {
+    monoLock = null;
+    await secureDelete(PIN_KEY);
+    await writeAttempts({ failures, lockedAt: 0, lockMs: 0 });
+    return { failures, lockedUntil: 0, exhausted: true };
+  }
   const lockMs = lockoutMsForFailures(failures);
-  const next = { failures, lockedUntil: lockMs ? Date.now() + lockMs : 0 };
-  try { await secureSet(ATTEMPTS_KEY, JSON.stringify(next)); } catch { /* best effort */ }
-  return next;
+  const now = Date.now();
+  monoLock = lockMs ? { start: monoNow(), ms: lockMs } : null;
+  await writeAttempts({ failures, lockedAt: lockMs ? now : 0, lockMs });
+  return { failures, lockedUntil: lockMs ? now + lockMs : 0, exhausted: false };
 }
 
 export async function resetPinFailures(): Promise<void> {
+  monoLock = null;
   await secureDelete(ATTEMPTS_KEY);
 }
 

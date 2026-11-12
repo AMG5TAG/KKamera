@@ -8,9 +8,10 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useFocusEffect } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useCameraPermissions, useMicrophonePermissions } from "expo-camera";
+import * as Location from "expo-location";
 import { useAuth } from "@/contexts/AuthContext";
 import type { AuthUser } from "@/contexts/AuthContext";
-import { useGetSubscription, useUpdateMe } from "@workspace/api-client-react";
+import { useGetSubscription, useUpdateMe, useListCloudConnections, getUserFacingMessage } from "@workspace/api-client-react";
 import { subscriptionAllows } from "@/lib/offlineCache";
 import { KeyboardAvoidingViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
@@ -27,6 +28,16 @@ const STEPS = [
   { id: 4, title: "Refer & Earn Free Years", icon: "people" },
   { id: 5, title: "You're All Set!", icon: "checkmark-circle" },
 ];
+
+type OptionalPerm = { granted: boolean; canAskAgain: boolean } | null;
+
+// expo-media-library's modern entry point stubs these out; use "/legacy", as
+// lib/captureStorage.ts does. Add-only ("write only") access — KKamera never
+// reads the library.
+async function getMediaLibrary() {
+  if (Platform.OS === "web") return null;
+  return await import("expo-media-library/legacy");
+}
 
 const CLOUD_OPTIONS = [
   { type: "googledrive", label: "Google Drive", icon: "google-drive", color: "#4285F4", desc: "Connect via OAuth" },
@@ -52,9 +63,49 @@ export default function WizardScreen() {
   const [step, setStep] = useState(0);
   const [profileName, setProfileName] = useState(user?.name ?? "");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState(false);
+  const [finishError, setFinishError] = useState<string | null>(null);
+  const finishingRef = useRef(false);
+  const { data: connections, refetch: refetchConnections } = useListCloudConnections();
 
   const [cameraPermission, requestCameraPermission, getCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission, getMicPermission] = useMicrophonePermissions();
+  // Optional: Photos (add-only, for "Save to Photos") and Location (geotagging).
+  const [photosPermission, setPhotosPermission] = useState<OptionalPerm>(null);
+  const [locationPermission, setLocationPermission] = useState<OptionalPerm>(null);
+
+  const refreshOptionalPermissions = useCallback(async () => {
+    try {
+      const MediaLibrary = await getMediaLibrary();
+      if (MediaLibrary) {
+        const p = await MediaLibrary.getPermissionsAsync(true, ["photo", "video"]);
+        setPhotosPermission({ granted: p.granted, canAskAgain: p.canAskAgain });
+      }
+    } catch { /* unavailable — leave unknown */ }
+    try {
+      const p = await Location.getForegroundPermissionsAsync();
+      setLocationPermission({ granted: p.granted, canAskAgain: p.canAskAgain });
+    } catch { /* unavailable — leave unknown */ }
+  }, []);
+
+  const requestPhotosPermission = useCallback(async () => {
+    try {
+      const MediaLibrary = await getMediaLibrary();
+      if (!MediaLibrary) return;
+      const p = await MediaLibrary.requestPermissionsAsync(true, ["photo", "video"]);
+      setPhotosPermission({ granted: p.granted, canAskAgain: p.canAskAgain });
+    } catch { /* ignore */ }
+  }, []);
+
+  const requestLocationPermission = useCallback(async () => {
+    try {
+      const p = await Location.requestForegroundPermissionsAsync();
+      setLocationPermission({ granted: p.granted, canAskAgain: p.canAskAgain });
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { void refreshOptionalPermissions(); }, [refreshOptionalPermissions]);
 
   // Coming back from the system Settings app: pick up any permission change.
   useEffect(() => {
@@ -62,28 +113,58 @@ export default function WizardScreen() {
       if (state !== "active") return;
       getCameraPermission().catch(() => {});
       getMicPermission().catch(() => {});
+      void refreshOptionalPermissions();
     });
     return () => sub.remove();
-  }, [getCameraPermission, getMicPermission]);
+  }, [getCameraPermission, getMicPermission, refreshOptionalPermissions]);
+
+  // Returning from Add Cloud: show the account that was just connected.
+  useFocusEffect(useCallback(() => {
+    void refetchConnections();
+  }, [refetchConnections]));
 
   const isLast = step === STEPS.length - 1;
 
-  const saveProfile = async () => {
+  /** Returns false (and shows an inline error) when the name couldn't be saved. */
+  const saveProfile = async (): Promise<boolean> => {
     const trimmed = profileName.trim();
-    if (!trimmed || trimmed === user?.name) return;
+    if (!trimmed || trimmed === user?.name) return true;
     setIsSavingProfile(true);
+    setProfileError(null);
     try {
       const updated = await updateMeMutation.mutateAsync({ data: { name: trimmed } });
       updateUser(updated as AuthUser);
-    } catch { /* ignore */ }
-    setIsSavingProfile(false);
+      return true;
+    } catch (e) {
+      setProfileError(getUserFacingMessage(e, "Couldn't save your name. Try again, or change it later in Settings."));
+      return false;
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  /** Finish onboarding once, even if tapped repeatedly. */
+  const finishWizard = async () => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    setFinishing(true);
+    setFinishError(null);
+    try {
+      await completeWizard();
+      router.replace("/camera");
+    } catch (e) {
+      setFinishError(getUserFacingMessage(e, "Couldn't finish setup. Please try again."));
+      finishingRef.current = false;
+      setFinishing(false);
+    }
   };
 
   const goNext = async () => {
+    if (isSavingProfile || finishing) return;
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (step === 0) await saveProfile();
+    if (step === 0 && !(await saveProfile())) return;
     if (isLast) {
-      completeWizard().then(() => router.replace("/camera"));
+      await finishWizard();
     } else {
       setStep(s => Math.min(s + 1, STEPS.length - 1));
     }
@@ -108,14 +189,13 @@ export default function WizardScreen() {
     return () => sub.remove();
   }, []));
 
-  const skipWizard = () => {
-    completeWizard().then(() => router.replace("/camera"));
-  };
+  const skipWizard = () => { void finishWizard(); };
 
   const permissionGranted = (perm: { granted: boolean } | null) => perm?.granted === true;
   const cameraGranted = permissionGranted(cameraPermission);
   const micGranted = permissionGranted(micPermission);
   const allPermsGranted = cameraGranted && micGranted;
+  const hasConnections = (connections?.length ?? 0) > 0;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -136,7 +216,14 @@ export default function WizardScreen() {
             <View key={i} style={[styles.dot, i === step && styles.dotActive, i < step && styles.dotDone]} />
           ))}
         </View>
-        <TouchableOpacity onPress={skipWizard} style={styles.headerBtn} accessibilityRole="button" accessibilityLabel="Skip setup">
+        <TouchableOpacity
+          onPress={skipWizard}
+          disabled={finishing}
+          style={styles.headerBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Skip setup"
+          accessibilityState={{ disabled: finishing }}
+        >
           <Text style={styles.skipText}>Skip</Text>
         </TouchableOpacity>
       </View>
@@ -159,18 +246,21 @@ export default function WizardScreen() {
               <TextInput
                 style={styles.input}
                 value={profileName}
-                onChangeText={setProfileName}
+                onChangeText={v => { setProfileName(v); if (profileError) setProfileError(null); }}
                 placeholder="Your name"
                 accessibilityLabel="Display name"
-                placeholderTextColor="#444"
+                placeholderTextColor="#777"
                 autoCapitalize="words"
                 autoCorrect={false}
                 returnKeyType="done"
                 onSubmitEditing={goNext}
               />
+              {!!profileError && (
+                <Text style={styles.errorText} accessibilityRole="alert" accessibilityLiveRegion="polite">{profileError}</Text>
+              )}
             </View>
-            <InfoCard icon="person-circle-outline" text="This is how you'll appear in KKamera and your referral code." />
-            <InfoCard icon="lock-closed-outline" text="Your name is only visible to you — never shared with third parties." />
+            <InfoCard icon="person-circle-outline" text="This is how you'll appear in KKamera." />
+            <InfoCard icon="mail-outline" text="People you invite, and anyone you send a witness email to, see this name so they know who it's from. It's never sold or shared with advertisers." />
           </View>
         )}
 
@@ -182,18 +272,40 @@ export default function WizardScreen() {
             </Text>
             {/* Informational list only — the provider is chosen on the Add Cloud
                 screen, which this button opens. */}
-            {CLOUD_OPTIONS.map(opt => (
-              <View key={opt.type} style={styles.storageOption}>
-                <MaterialCommunityIcons name={opt.icon as any} size={28} color="#fff" accessible={false} />
-                <View style={styles.storageText}>
-                  <Text style={styles.storageLabel}>{opt.label}</Text>
-                  <Text style={styles.storageDesc}>{opt.desc}</Text>
+            {hasConnections ? (
+              <>
+                <Text style={styles.inputLabel}>CONNECTED</Text>
+                {connections!.map(c => (
+                  <View
+                    key={c.id}
+                    style={[styles.storageOption, styles.storageConnected]}
+                    accessible
+                    accessibilityLabel={`${c.name} connected${c.accountLabel ? `, ${c.accountLabel}` : ""}`}
+                  >
+                    <Ionicons name="checkmark-circle" size={26} color="#22c55e" accessible={false} />
+                    <View style={styles.storageText}>
+                      <Text style={styles.storageLabel} numberOfLines={1}>{c.name}</Text>
+                      <Text style={styles.storageDesc} numberOfLines={1}>
+                        {c.accountLabel ?? CLOUD_OPTIONS.find(o => o.type === c.type)?.label ?? c.type}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </>
+            ) : (
+              CLOUD_OPTIONS.map(opt => (
+                <View key={opt.type} style={styles.storageOption}>
+                  <MaterialCommunityIcons name={opt.icon as any} size={28} color="#fff" accessible={false} />
+                  <View style={styles.storageText}>
+                    <Text style={styles.storageLabel}>{opt.label}</Text>
+                    <Text style={styles.storageDesc}>{opt.desc}</Text>
+                  </View>
                 </View>
-              </View>
-            ))}
+              ))
+            )}
             <TouchableOpacity style={styles.connectBtn} onPress={() => router.push("/settings/add-cloud")} accessibilityRole="button">
               <Ionicons name="add-circle-outline" size={20} color={PRIMARY} accessible={false} />
-              <Text style={styles.connectBtnText}>Connect storage now</Text>
+              <Text style={styles.connectBtnText}>{hasConnections ? "Add another" : "Connect storage now"}</Text>
             </TouchableOpacity>
             <InfoCard icon="information-circle-outline" text="You can add and manage multiple connections in Settings → Cloud Connections at any time." />
           </View>
@@ -223,6 +335,24 @@ export default function WizardScreen() {
               onGrant={requestMicPermission}
             />
 
+            <Text style={[styles.inputLabel, { marginTop: 10 }]}>OPTIONAL</Text>
+            <PermRow
+              icon="images-outline"
+              label="Photos"
+              desc="Add-only: save a copy of captures to your library. KKamera can't see your photos."
+              granted={permissionGranted(photosPermission)}
+              blocked={photosPermission?.canAskAgain === false}
+              onGrant={() => { void requestPhotosPermission(); }}
+            />
+            <PermRow
+              icon="location-outline"
+              label="Location"
+              desc="Tag captures with where they were taken (while using the app)."
+              granted={permissionGranted(locationPermission)}
+              blocked={locationPermission?.canAskAgain === false}
+              onGrant={() => { void requestLocationPermission(); }}
+            />
+
             {allPermsGranted && (
               <View style={[styles.infoCard, { borderColor: "#22c55e33", backgroundColor: "rgba(34,197,94,0.06)" }]}>
                 <Ionicons name="checkmark-circle" size={20} color="#22c55e" accessible={false} />
@@ -230,7 +360,7 @@ export default function WizardScreen() {
               </View>
             )}
             {!allPermsGranted && (
-              <InfoCard icon="information-circle-outline" text="You can grant these permissions later in your device Settings if you skip now." />
+              <InfoCard icon="information-circle-outline" text="Photos and Location are optional. You can grant any of these later in your device Settings if you skip now." />
             )}
           </View>
         )}
@@ -318,15 +448,20 @@ export default function WizardScreen() {
 
       {/* Footer */}
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
+        {!!finishError && (
+          <Text style={[styles.errorText, { textAlign: "center", marginBottom: 10 }]} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            {finishError}
+          </Text>
+        )}
         <TouchableOpacity
-          style={[styles.nextBtn, isSavingProfile && { opacity: 0.7 }]}
+          style={[styles.nextBtn, (isSavingProfile || finishing) && { opacity: 0.7 }]}
           onPress={goNext}
-          disabled={isSavingProfile}
+          disabled={isSavingProfile || finishing}
           accessibilityRole="button"
-          accessibilityLabel={isSavingProfile ? "Saving" : undefined}
-          accessibilityState={{ disabled: isSavingProfile, busy: isSavingProfile }}
+          accessibilityLabel={isSavingProfile ? "Saving" : finishing ? "Finishing setup" : undefined}
+          accessibilityState={{ disabled: isSavingProfile || finishing, busy: isSavingProfile || finishing }}
         >
-          {isSavingProfile ? (
+          {isSavingProfile || finishing ? (
             <ActivityIndicator color="white" />
           ) : (
             <>
@@ -409,7 +544,9 @@ const styles = StyleSheet.create({
   stepTitle: { fontSize: 26, fontFamily: "Inter_700Bold", color: "white", textAlign: "center", marginBottom: 16 },
   bodyText: { fontSize: 15, lineHeight: 22, color: "#ccc", fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 20 },
   inputGroup: { marginBottom: 16 },
-  inputLabel: { fontSize: 11, color: "#666", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, marginBottom: 8 },
+  errorText: { fontSize: 13, color: "#f87171", fontFamily: "Inter_500Medium", marginTop: 8, lineHeight: 18 },
+  storageConnected: { borderColor: "rgba(34,197,94,0.35)", backgroundColor: "rgba(34,197,94,0.06)" },
+  inputLabel: { fontSize: 11, color: "#8a847c", fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, marginBottom: 8 },
   input: {
     backgroundColor: CARD, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14,
     fontSize: 17, fontFamily: "Inter_400Regular", color: "white",
@@ -451,7 +588,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(34,197,94,0.12)", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20,
   },
   permGrantedText: { fontSize: 12, color: "#22c55e", fontFamily: "Inter_600SemiBold" },
-  permBtn: { backgroundColor: PRIMARY, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20 },
+  permBtn: { backgroundColor: PRIMARY, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, minHeight: 36, justifyContent: "center" },
   permBtnText: { fontSize: 13, fontFamily: "Inter_600SemiBold", color: "white" },
   trialBadge: {
     alignSelf: "center", alignItems: "center", marginBottom: 20,
@@ -471,7 +608,7 @@ const styles = StyleSheet.create({
   },
   referralTitle: { fontSize: 12, color: "#888", fontFamily: "Inter_500Medium", letterSpacing: 1, marginBottom: 8, textTransform: "uppercase" },
   referralCode: { fontSize: 32, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 3, marginBottom: 6 },
-  referralSub: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular" },
+  referralSub: { fontSize: 12, color: "#8a847c", fontFamily: "Inter_400Regular" },
   footer: { paddingHorizontal: 24, paddingTop: 12, backgroundColor: BG },
   nextBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,

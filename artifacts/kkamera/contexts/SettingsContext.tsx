@@ -31,6 +31,10 @@ export interface AppSettings {
   timerBeep: boolean;
   burstCount: number;
   burstDelay: number;
+  /** INTERVAL mode: seconds between shots. */
+  intervalSeconds: IntervalSeconds;
+  /** INTERVAL mode: the series stops by itself after this many shots. */
+  intervalMaxShots: IntervalMaxShots;
   screenFlashSelfie: boolean;
   flipPreview: boolean;
   stampPhotos: boolean;
@@ -51,16 +55,24 @@ export interface AppSettings {
   witnessOnSuccess: boolean;
 }
 
+export const INTERVAL_SECONDS_OPTIONS = [1, 2, 5, 10, 30, 60] as const;
+export type IntervalSeconds = (typeof INTERVAL_SECONDS_OPTIONS)[number];
+export const INTERVAL_MAX_SHOTS_OPTIONS = [10, 25, 50, 100, 250] as const;
+export type IntervalMaxShots = (typeof INTERVAL_MAX_SHOTS_OPTIONS)[number];
+
 const SCHEMA_VERSION = 2;
 
 const DEFAULT_SETTINGS: AppSettings = {
   schemaVersion: SCHEMA_VERSION,
   videoCodec: "h264",
   videoQuality: "1080p",
-  saveToCameraRoll: true,
+  // Privacy-first for new installs: nothing goes to the photo library and no
+  // GPS is embedded until the user opts in. Existing installs keep whatever
+  // they had (see LEGACY_DEFAULTS in migrateSettings).
+  saveToCameraRoll: false,
   uploadOnlyOnWifi: false,
   promptBeforeUpload: false,
-  saveLocation: true,
+  saveLocation: false,
   flashMode: "auto",
   showLevelGuide: false,
   mirrorFrontCamera: false,
@@ -73,6 +85,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   timerBeep: false,
   burstCount: 1,
   burstDelay: 1,
+  intervalSeconds: 2,
+  intervalMaxShots: 100,
   screenFlashSelfie: true,
   flipPreview: false,
   stampPhotos: false,
@@ -92,6 +106,17 @@ const DEFAULT_SETTINGS: AppSettings = {
 const SETTINGS_KEY = "kkamera_settings";
 
 /**
+ * Defaults that changed after release. A stored blob comes from an existing
+ * install, which ran with the OLD default, so a key missing from it is filled
+ * from here rather than DEFAULT_SETTINGS — a privacy default flipping for new
+ * installs must never silently change an existing user's behaviour.
+ */
+const LEGACY_DEFAULTS: Partial<AppSettings> = {
+  saveToCameraRoll: true,
+  saveLocation: true,
+};
+
+/**
  * Upgrade a stored settings blob to the current schema.
  * v1 → v2: the fake photo-format option (HEIC/PNG/WebP were only file-name
  * extensions on JPEG bytes) and the rename-only video-format option are gone;
@@ -101,10 +126,16 @@ const SETTINGS_KEY = "kkamera_settings";
 function migrateSettings(stored: Record<string, unknown>): AppSettings {
   const legacy = stored.schemaVersion !== SCHEMA_VERSION;
   const { imageFormat: _imageFormat, videoFormat, ...rest } = stored;
-  const next = { ...DEFAULT_SETTINGS, ...rest } as AppSettings;
+  const next = { ...DEFAULT_SETTINGS, ...LEGACY_DEFAULTS, ...rest } as AppSettings;
   if (legacy && videoFormat === "hevc" && stored.videoCodec == null) next.videoCodec = "hevc";
   if (next.videoCodec !== "h264" && next.videoCodec !== "hevc") next.videoCodec = "h264";
   next.defaultZoom = migrateStoredZoom(stored.defaultZoom ?? DEFAULT_ZOOM, legacy && "defaultZoom" in stored);
+  if (!(INTERVAL_SECONDS_OPTIONS as readonly number[]).includes(next.intervalSeconds)) {
+    next.intervalSeconds = DEFAULT_SETTINGS.intervalSeconds;
+  }
+  if (!(INTERVAL_MAX_SHOTS_OPTIONS as readonly number[]).includes(next.intervalMaxShots)) {
+    next.intervalMaxShots = DEFAULT_SETTINGS.intervalMaxShots;
+  }
   next.schemaVersion = SCHEMA_VERSION;
   return next;
 }

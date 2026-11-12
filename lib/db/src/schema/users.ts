@@ -37,6 +37,10 @@ export const usersTable = pgTable("users", {
   // in-memory / per-IP limiter can be bypassed by rotating IPs.
   inviteWindowStart: timestamp("invite_window_start", { withTimezone: true }),
   inviteCount: integer("invite_count").notNull().default(0),
+  // Same rolling per-user cap for witness-notification emails (another route
+  // that mails an arbitrary address from our sending domain).
+  witnessWindowStart: timestamp("witness_window_start", { withTimezone: true }),
+  witnessCount: integer("witness_count").notNull().default(0),
   // When the "trial ending soon" email was sent, so it goes out at most once.
   // Bumped to revoke every session at once ("sign out everywhere", 2FA changes).
   // JWTs carry the version they were issued with; older versions are rejected.

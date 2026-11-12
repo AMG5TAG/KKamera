@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import rateLimit from "express-rate-limit";
+import { sharedRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import { feedbackTable } from "@workspace/db";
 import { requireAuth } from "../middlewares/auth.js";
@@ -13,7 +13,7 @@ const feedbackSchema = z.object({
 });
 
 // Cap feedback writes so an authenticated client can't flood the table.
-const feedbackLimiter = rateLimit({
+const feedbackLimiter = sharedRateLimit("feedback.feedbackLimiter", {
   windowMs: 60 * 60 * 1000,
   max: 30,
   standardHeaders: true,
@@ -25,7 +25,7 @@ router.post("/feedback", requireAuth, feedbackLimiter, async (req, res) => {
   try {
     const parsed = feedbackSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Type and message are required" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Type and message are required" });
       return;
     }
     const { type, message } = parsed.data;

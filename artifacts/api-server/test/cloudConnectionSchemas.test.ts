@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   OAUTH_ONLY_PROVIDERS, connectionUpdatePlan, createConnectionSchema, hostHasUserinfo, retargetNeedsPassword,
-  updateConnectionSchema,
+  shouldClearTlsPin, updateConnectionSchema,
 } from "../src/lib/cloudConnectionSchemas.ts";
 import { hasParentSegment } from "../src/lib/cloudUploadPolicy.ts";
 import { CLOUD_PROVIDER } from "../src/lib/constants.ts";
@@ -16,7 +16,7 @@ test("inlined provider list still matches the canonical constants (drift guard)"
     const r = createConnectionSchema.safeParse({ type, name: "n", host: "h.example.com", username: "u" });
     if (OAUTH_ONLY_PROVIDERS.has(type)) {
       assert.equal(r.success, false, `${type} must be refused on manual create`);
-      if (!r.success) assert.match(r.error.errors[0]!.message, /signing in/);
+      if (!r.success) assert.match(r.error.issues[0]!.message, /signing in/);
     } else {
       assert.equal(r.success, true, `${type} should be accepted`);
     }
@@ -32,12 +32,12 @@ test("manual create never accepts an OAuth token", () => {
   assert.equal(createConnectionSchema.safeParse(appBody({ oauthCode: undefined })).success, true);
   const r = createConnectionSchema.safeParse(appBody({ oauthCode: "ya29.token" }));
   assert.equal(r.success, false);
-  if (!r.success) assert.equal(r.error.errors[0]!.path[0], "oauthCode");
+  if (!r.success) assert.equal(r.error.issues[0]!.path[0], "oauthCode");
   // OAuth types are refused even with a token, and with no host at all.
   for (const type of ["googledrive", "onedrive", "dropbox"]) {
     const bad = createConnectionSchema.safeParse({ type, name: "Drive", oauthCode: "code" });
     assert.equal(bad.success, false, type);
-    if (!bad.success) assert.equal(bad.error.errors[0]!.path[0], "type");
+    if (!bad.success) assert.equal(bad.error.issues[0]!.path[0], "type");
   }
   // And a PATCH can no longer swap in a token.
   assert.equal(updateConnectionSchema.safeParse({ oauthCode: "ya29.token" }).success, false);
@@ -51,10 +51,10 @@ test("hosts with embedded credentials are rejected on create and update", () => 
     assert.equal(hostHasUserinfo(bad), true, bad);
     const c = createConnectionSchema.safeParse(appBody({ host: bad }));
     assert.equal(c.success, false, bad);
-    if (!c.success) assert.equal(c.error.errors[0]!.message, "Put the username and password in their own fields");
+    if (!c.success) assert.equal(c.error.issues[0]!.message, "Put the username and password in their own fields");
     const u = updateConnectionSchema.safeParse({ host: bad });
     assert.equal(u.success, false, bad);
-    if (!u.success) assert.equal(u.error.errors[0]!.message, "Put the username and password in their own fields");
+    if (!u.success) assert.equal(u.error.issues[0]!.message, "Put the username and password in their own fields");
   }
   // An "@" after the authority (path / query) is not userinfo.
   for (const ok of [
@@ -108,13 +108,13 @@ function appBody(over: Record<string, unknown> = {}) {
 
 test("accepts the nulls the app sends for a Nextcloud connection", () => {
   const r = createConnectionSchema.safeParse(appBody());
-  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.errors));
+  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.issues));
 });
 
 test("accepts the same null-laden body for every manual provider", () => {
   for (const [type, host] of [["webdav", "https://dav.example.com"], ["ftp", "ftp.example.com"]] as const) {
     const r = createConnectionSchema.safeParse(appBody({ type, host }));
-    assert.equal(r.success, true, `${type}: ${r.success ? "" : JSON.stringify(r.error.errors)}`);
+    assert.equal(r.success, true, `${type}: ${r.success ? "" : JSON.stringify(r.error.issues)}`);
   }
 });
 
@@ -122,14 +122,14 @@ test("accepts a Synology sub-flavour (provider set, oauthCode null)", () => {
   const r = createConnectionSchema.safeParse(
     appBody({ type: "webdav", provider: "synology", port: 5006 }),
   );
-  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.errors));
+  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.issues));
 });
 
 test("omitted fields are still fine (undefined as well as null)", () => {
   const r = createConnectionSchema.safeParse({
     type: "ftp", name: "Box", host: "ftp.example.com",
   });
-  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.errors));
+  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.issues));
 });
 
 test("rejects an unknown provider type", () => {
@@ -150,24 +150,24 @@ test("Nextcloud requires a server URL and a username", () => {
   for (const bad of [{ host: null }]) {
     const r = createConnectionSchema.safeParse(appBody(bad));
     assert.equal(r.success, false);
-    if (!r.success) assert.match(r.error.errors[0]!.message, /server URL is required/);
+    if (!r.success) assert.match(r.error.issues[0]!.message, /server URL is required/);
   }
   for (const bad of [{ username: null }, { username: "  " }]) {
     const r = createConnectionSchema.safeParse(appBody(bad));
     assert.equal(r.success, false);
-    if (!r.success) assert.match(r.error.errors[0]!.message, /username is required/);
+    if (!r.success) assert.match(r.error.issues[0]!.message, /username is required/);
   }
   for (const bad of [{ host: "" }, { host: "   " }, { username: "" }] as const) {
     const r = createConnectionSchema.safeParse(appBody(bad));
     assert.equal(r.success, false);
-    if (!r.success) assert.equal(r.error.errors[0]!.path[0], Object.keys(bad)[0]);
+    if (!r.success) assert.equal(r.error.issues[0]!.path[0], Object.keys(bad)[0]);
   }
 });
 
 test("the Nextcloud requirement does not leak onto other providers", () => {
   // A WebDAV connection may legitimately have no username (anonymous share).
   const r = createConnectionSchema.safeParse(appBody({ type: "webdav", username: null }));
-  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.errors));
+  assert.equal(r.success, true, r.success ? "" : JSON.stringify(r.error.issues));
 });
 
 test("still enforces field bounds", () => {
@@ -250,4 +250,42 @@ test("update: moving a saved password to another host or port requires re-enteri
   assert.equal(retargetNeedsPassword(plan({ host: "other.example.com" }), { ...stored, hasPassword: false }), null);
   // A username change on the same server doesn't send the secret anywhere new.
   assert.equal(retargetNeedsPassword(plan({ username: "bob" }), stored), null);
+});
+
+// ─── Control characters in credentials / TLS opt-in ──────────────────────────
+
+test("create/update: control characters are rejected in password, username, host and path", () => {
+  const base = { type: "ftp", name: "NAS", host: "nas.example.com" };
+  for (const bad of ["pw\r\nDELE x", "pw\n", "pw\u0000", "pw\u007f"]) {
+    assert.equal(createConnectionSchema.safeParse({ ...base, password: bad }).success, false, JSON.stringify(bad));
+    assert.equal(updateConnectionSchema.safeParse({ password: bad }).success, false, JSON.stringify(bad));
+  }
+  assert.equal(createConnectionSchema.safeParse({ ...base, username: "a\r\nb" }).success, false);
+  assert.equal(createConnectionSchema.safeParse({ ...base, host: "nas\r\n.example.com" }).success, false);
+  assert.equal(createConnectionSchema.safeParse({ ...base, uploadPath: "/a\nb" }).success, false);
+  assert.equal(updateConnectionSchema.safeParse({ uploadPath: "/a\u0000b" }).success, false);
+  // Ordinary punctuation/unicode is fine.
+  assert.equal(createConnectionSchema.safeParse({ ...base, password: "p@ss w0rd!é😀" }).success, true);
+});
+
+test("create/update: trustSelfSigned is an optional boolean", () => {
+  const base = { type: "webdav", name: "NAS", host: "https://nas.example.com" };
+  assert.equal(createConnectionSchema.safeParse({ ...base, trustSelfSigned: true }).success, true);
+  assert.equal(createConnectionSchema.safeParse({ ...base, trustSelfSigned: null }).success, true);
+  assert.equal(createConnectionSchema.safeParse({ ...base, trustSelfSigned: "yes" }).success, false);
+  const upd = updateConnectionSchema.safeParse({ trustSelfSigned: false });
+  assert.equal(upd.success, true);
+  if (upd.success) assert.equal(connectionUpdatePlan(upd.data).trustSelfSigned, false);
+  assert.equal(updateConnectionSchema.safeParse({ trustSelfSigned: null }).success, false);
+});
+
+test("shouldClearTlsPin: host / port change or trustSelfSigned toggle clears the pin", () => {
+  const stored = { host: "nas.example.com", port: 990, trustSelfSigned: true };
+  assert.equal(shouldClearTlsPin({}, stored), false);
+  assert.equal(shouldClearTlsPin({ host: "nas.example.com", port: 990, trustSelfSigned: true, name: "x" }, stored), false);
+  assert.equal(shouldClearTlsPin({ host: "evil.example.com" }, stored), true);
+  assert.equal(shouldClearTlsPin({ port: 21 }, stored), true);
+  assert.equal(shouldClearTlsPin({ port: null }, stored), true);
+  assert.equal(shouldClearTlsPin({ trustSelfSigned: false }, stored), true);
+  assert.equal(shouldClearTlsPin({ trustSelfSigned: true }, { ...stored, trustSelfSigned: false }), true);
 });

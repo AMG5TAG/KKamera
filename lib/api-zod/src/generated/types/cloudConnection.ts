@@ -40,5 +40,7 @@ export interface CloudConnection {
   /** @nullable */
   accountLabel?: string | null;
   hasCredentials: boolean;
+  /** Self-signed TLS certificates are accepted for this connection (FTPS / WebDAV / Nextcloud), pinned on first use. The pinned fingerprint is never returned. */
+  trustSelfSigned?: boolean;
   createdAt: string;
 }

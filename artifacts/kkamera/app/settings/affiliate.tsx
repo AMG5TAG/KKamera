@@ -155,7 +155,7 @@ export default function AffiliateScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   center: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
   codeCard: { backgroundColor: "rgba(177,152,112,0.1)", borderRadius: 18, padding: 24, alignItems: "center", marginBottom: 16, borderWidth: 1, borderColor: "rgba(177,152,112,0.3)" },
   linkRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 14, maxWidth: "100%" },
   linkText: { fontSize: 12, color: "#666", fontFamily: "Inter_400Regular", flex: 1 },

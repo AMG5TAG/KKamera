@@ -85,6 +85,13 @@
       "when": 1790595994752,
       "tag": "0011_early_human_torch",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794483699470,
+      "tag": "0012_lean_ultimates",
+      "breakpoints": true
     }
   ]
 }

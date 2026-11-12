@@ -99,6 +99,8 @@ export interface RCEvent {
   cancel_reason?: unknown;
   transferred_from?: unknown;
   transferred_to?: unknown;
+  /** Store purchase this event belongs to (stable across renewals). */
+  original_transaction_id?: unknown;
 }
 
 export interface MapOptions {
@@ -111,14 +113,15 @@ export interface MapOptions {
 // `referrals` is false for sandbox events: they may touch access (when allowed)
 // but must never complete or reverse a referral. `eventAt` is the webhook's
 // event_timestamp_ms (absent for REST snapshots and events that don't carry it)
-// and drives out-of-order protection in mergeDecision.
+// and drives out-of-order protection in mergeDecision. `transactionId` is the
+// event's original_transaction_id (see isForeignTransaction).
 export type RCDecision =
   | { kind: "ignore"; reason: string; userId?: number }
-  | { kind: "grant"; userId: number; periodEnd: Date; referrals: boolean; eventAt?: Date | null }
+  | { kind: "grant"; userId: number; periodEnd: Date; referrals: boolean; eventAt?: Date | null; transactionId?: string | null }
   | { kind: "cancel"; userId: number; periodEnd: Date | null; referrals: boolean; eventAt?: Date | null }
-  | { kind: "refund"; userId: number; periodEnd: Date; referrals: boolean; eventAt?: Date | null }
+  | { kind: "refund"; userId: number; periodEnd: Date; referrals: boolean; eventAt?: Date | null; transactionId?: string | null }
   | { kind: "past_due"; userId: number; periodEnd: Date | null; referrals: boolean; eventAt?: Date | null }
-  | { kind: "expire"; userId: number; referrals: boolean; eventAt?: Date | null }
+  | { kind: "expire"; userId: number; referrals: boolean; eventAt?: Date | null; transactionId?: string | null }
   | { kind: "transfer"; fromUserIds: number[]; toUserIds: number[] };
 
 /**
@@ -134,6 +137,52 @@ export function eventIdOf(ev: RCEvent): string | null {
 export function eventTimeOf(ev: RCEvent): Date | null {
   const ms = Number(ev?.event_timestamp_ms);
   return Number.isFinite(ms) && ms > 0 ? new Date(ms) : null;
+}
+
+/** The event's original_transaction_id (bounded), or null. */
+export function originalTransactionIdOf(ev: RCEvent): string | null {
+  const id = ev?.original_transaction_id;
+  if (typeof id === "number" && Number.isSafeInteger(id)) return String(id);
+  return typeof id === "string" && id.length > 0 && id.length <= 200 ? id : null;
+}
+
+/**
+ * True when a refund / expiration is for a different store purchase than the
+ * one that last granted this user access (e.g. an older purchase that was
+ * transferred away, or a superseded product). Such an event must not revoke
+ * the current purchase's access or reverse its referral. Unknown on either
+ * side (legacy rows, events without the field) → not foreign, so the event
+ * applies as before.
+ */
+export function isForeignTransaction(recorded: string | null | undefined, eventTransactionId: string | null | undefined): boolean {
+  return !!recorded && !!eventTransactionId && recorded !== eventTransactionId;
+}
+
+/**
+ * What subscriptions.store_original_transaction_id should become after applying
+ * `d` — a new id, null (forget it), or undefined (leave it unchanged).
+ *
+ *  - REST snapshots (/subscriptions/sync, TRANSFER re-sync): the v1 subscriber
+ *    API doesn't expose the store's original_transaction_id (its
+ *    store_transaction_id is the latest renewal's, a different value), so a
+ *    snapshot can't say which purchase is granting access. It forgets the
+ *    recorded id instead: a snapshot stamps lastEventAt with now, so the id
+ *    of a purchase it just picked up may only arrive in a later webhook — and
+ *    until one does, a refund must not be dismissed as foreign on the strength
+ *    of an id recorded before the snapshot. Fail safe: refunds apply.
+ *  - Webhook grants record their id even when stale (stale only means "don't
+ *    regress status"), but a stale grant never displaces an id recorded by a
+ *    newer event — it is most likely the older purchase's.
+ */
+export function nextRecordedTransactionId(
+  recorded: string | null | undefined,
+  d: { kind: string; transactionId?: string | null },
+  ctx: { stale: boolean; snapshot: boolean },
+): string | null | undefined {
+  if (ctx.snapshot) return recorded ? null : undefined;
+  if (d.kind !== "grant" || !d.transactionId || d.transactionId === recorded) return undefined;
+  if (ctx.stale && recorded) return undefined;
+  return d.transactionId;
 }
 
 /** A valid positive-integer user id, or null (anonymous / malformed). */
@@ -210,23 +259,24 @@ export function mapRevenueCatEvent(ev: RCEvent, nowMs: number, opts: MapOptions)
   const expMs = Number(ev.expiration_at_ms);
   const periodEnd = Number.isFinite(expMs) && expMs > 0 ? new Date(expMs) : null;
   const eventAt = eventTimeOf(ev);
+  const transactionId = originalTransactionIdOf(ev);
 
   if (GRANTING.has(ev.type)) {
     if (!periodEnd) return { kind: "ignore", reason: "grant without expiration", userId };
-    return { kind: "grant", userId, periodEnd, referrals, eventAt };
+    return { kind: "grant", userId, periodEnd, referrals, eventAt, transactionId };
   }
   if (ev.type === "CANCELLATION") {
     // A refund ends access at the refund's expiration (which RevenueCat may send
     // as null/negative — then it ends now), never later.
     if (ev.cancel_reason === REFUND_CANCEL_REASON) {
-      return { kind: "refund", userId, periodEnd: periodEnd ?? new Date(nowMs), referrals, eventAt };
+      return { kind: "refund", userId, periodEnd: periodEnd ?? new Date(nowMs), referrals, eventAt, transactionId };
     }
     return { kind: "cancel", userId, periodEnd, referrals, eventAt };
   }
   if (ev.type === "BILLING_ISSUE") return { kind: "past_due", userId, periodEnd, referrals, eventAt };
   if (ev.type === "EXPIRATION") {
     // Only expire if the entitlement has actually lapsed by now.
-    if (!periodEnd || periodEnd.getTime() <= nowMs) return { kind: "expire", userId, referrals, eventAt };
+    if (!periodEnd || periodEnd.getTime() <= nowMs) return { kind: "expire", userId, referrals, eventAt, transactionId };
     return { kind: "ignore", reason: "future-dated expiration (stale)", userId };
   }
   return { kind: "ignore", reason: "no state change for event type", userId };
@@ -404,7 +454,11 @@ export function mapSubscriberEntitlement(
 
   const productId = typeof ent.product_identifier === "string" ? ent.product_identifier : null;
   const sub = productId ? subscriber.subscriptions?.[productId] ?? null : null;
-  const sandbox = sub?.is_sandbox === true;
+  // Fail closed: when the entitlement's product has no subscriptions entry (a
+  // non-subscription purchase, or a payload we don't understand) its
+  // environment is unknown, so treat it as sandbox — honoured only for
+  // allowlisted testers / ALLOW_SANDBOX_IAP. Previously this read as production.
+  const sandbox = sub ? sub.is_sandbox !== false : true;
   if (sandbox && !sandboxHonoured(opts, [userId])) {
     return { kind: "none", reason: "sandbox entitlement (ALLOW_SANDBOX_IAP off, user not in SANDBOX_IAP_USER_IDS)" };
   }

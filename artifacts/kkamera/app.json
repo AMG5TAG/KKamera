@@ -35,7 +35,8 @@
         "android.permission.READ_MEDIA_AUDIO",
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
         "android.permission.READ_EXTERNAL_STORAGE"
-      ]
+      ],
+      "allowBackup": false
     },
     "plugins": [
       "expo-router",
@@ -61,7 +62,7 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "KKamera can embed GPS location in your photos.",
+          "locationWhenInUsePermission": "When 'Embed GPS in Photos' is on, KKamera adds your GPS position to the photos and videos you capture.",
           "locationAlwaysAndWhenInUsePermission": false,
           "locationAlwaysPermission": false,
           "isIosBackgroundLocationEnabled": false,
@@ -77,8 +78,8 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "KKamera saves the photos and videos you capture to your photo library.",
-          "savePhotosPermission": "KKamera saves the photos and videos you capture to your photo library.",
+          "photosPermission": "KKamera only adds the photos and videos you capture to your library when 'Save to Photos' is on. It does not read your existing photos.",
+          "savePhotosPermission": "When 'Save to Photos' is on, KKamera adds the photos and videos you capture to your photo library.",
           "isAccessMediaLocationEnabled": false,
           "granularPermissions": [
             "photo",
@@ -101,7 +102,8 @@
         }
       ],
       "./plugins/withPodsDeploymentTarget",
-      "@sentry/react-native"
+      "@sentry/react-native",
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -112,6 +114,14 @@
         "projectId": "8f9afb54-3ba8-4641-a2e1-c23166b759fb"
       }
     },
-    "owner": "koasoft"
+    "owner": "koasoft",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/8f9afb54-3ba8-4641-a2e1-c23166b759fb",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    }
   }
 }
