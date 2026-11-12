@@ -8,5 +8,6 @@
 
 export interface OAuthNotConfigured {
   message: string;
+  /** Always empty — which server settings are missing is logged, never returned. Kept so clients can recognise this response. */
   missingEnv: string[];
 }

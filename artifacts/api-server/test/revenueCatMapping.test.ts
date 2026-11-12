@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  eventIdOf, eventTimeOf, isStaleDecision, mapRevenueCatEvent as mapWith, mapSubscriberEntitlement, mergeDecision, numericUserIds,
+  eventIdOf, eventTimeOf, isForeignTransaction, isStaleDecision, originalTransactionIdOf, mapRevenueCatEvent as mapWith, mapSubscriberEntitlement, mergeDecision, nextRecordedTransactionId, numericUserIds,
   parseSandboxUserIds,
   resolveUserId, secretsEqual, touchesProEntitlement, type MirrorDecision, type MirrorRow, type RCEvent,
 } from "../src/lib/revenueCatMapping.ts";
@@ -406,4 +406,78 @@ test("REST snapshot (sync) is never blocked by lastEventAt and stamps it with no
   // A webhook generated before the snapshot and delivered after it is stale.
   const r = { ...cancelledLater, ...snap! };
   assert.equal(mergeDecision(r, ev<"cancel">({ kind: "cancel", userId: 5, periodEnd: future, referrals: true, eventAt: T2 }), now), null);
+});
+
+// --- Unknown-environment entitlements and foreign transactions ---------------
+
+test("subscriber sync: entitlement whose product isn't in subscriptions is treated as sandbox", () => {
+  const body = {
+    subscriber: {
+      entitlements: { pro: { product_identifier: "kk_lifetime_promo", expires_date: future.toISOString() } },
+      subscriptions: {},
+      non_subscriptions: { kk_lifetime_promo: [{ is_sandbox: true }] },
+    },
+  };
+  assert.equal(mapSubscriberEntitlement(body, 5, now, PROD).kind, "none");
+  const testers = { allowSandbox: false, sandboxUserIds: parseSandboxUserIds("5") };
+  const ok = mapSubscriberEntitlement(body, 5, now, testers);
+  assert.equal(ok.kind, "entitled");
+  if (ok.kind === "entitled") assert.equal(ok.sandbox, true);
+});
+
+test("subscriber sync: subscription entry without is_sandbox is treated as sandbox", () => {
+  const body = {
+    subscriber: {
+      entitlements: { pro: { product_identifier: "kk_annual", expires_date: future.toISOString() } },
+      subscriptions: { kk_annual: { store: "app_store" } },
+    },
+  };
+  assert.equal(mapSubscriberEntitlement(body, 5, now, PROD).kind, "none");
+});
+
+test("original_transaction_id is carried on grant / refund / expire decisions", () => {
+  const grant = mapRevenueCatEvent({ type: "RENEWAL", app_user_id: "5", expiration_at_ms: FUTURE, original_transaction_id: "1000" }, NOW);
+  assert.equal(grant.kind === "grant" && grant.transactionId, "1000");
+  const refund = mapRevenueCatEvent({ type: "CANCELLATION", cancel_reason: "CUSTOMER_SUPPORT", app_user_id: "5", original_transaction_id: "GPA.1-2" }, NOW);
+  assert.equal(refund.kind === "refund" && refund.transactionId, "GPA.1-2");
+  const expire = mapRevenueCatEvent({ type: "EXPIRATION", app_user_id: "5", expiration_at_ms: PAST, original_transaction_id: 77 }, NOW);
+  assert.equal(expire.kind === "expire" && expire.transactionId, "77");
+});
+
+test("originalTransactionIdOf: bounded strings / safe integers only", () => {
+  assert.equal(originalTransactionIdOf({ original_transaction_id: "abc" }), "abc");
+  assert.equal(originalTransactionIdOf({ original_transaction_id: 12 }), "12");
+  assert.equal(originalTransactionIdOf({ original_transaction_id: "" }), null);
+  assert.equal(originalTransactionIdOf({ original_transaction_id: "x".repeat(201) }), null);
+  assert.equal(originalTransactionIdOf({ original_transaction_id: { a: 1 } }), null);
+  assert.equal(originalTransactionIdOf({}), null);
+});
+
+test("isForeignTransaction: only when both ids are known and differ", () => {
+  assert.equal(isForeignTransaction("1000", "2000"), true);
+  assert.equal(isForeignTransaction("1000", "1000"), false);
+  assert.equal(isForeignTransaction(null, "2000"), false); // legacy row — apply as before
+  assert.equal(isForeignTransaction("1000", null), false); // event without the field
+  assert.equal(isForeignTransaction(undefined, undefined), false);
+});
+
+test("nextRecordedTransactionId: a sync snapshot forgets the recorded id so a later refund isn't dismissed as foreign", () => {
+  const grant = { kind: "grant", transactionId: null };
+  assert.equal(nextRecordedTransactionId("1000", grant, { stale: false, snapshot: true }), null);
+  assert.equal(nextRecordedTransactionId(null, grant, { stale: false, snapshot: true }), undefined);
+  // Sync snapshot then the purchase's INITIAL_PURCHASE (stale vs the snapshot's
+  // lastEventAt) — the new purchase's id is recorded; its refund then applies.
+  const recorded = nextRecordedTransactionId(null, { kind: "grant", transactionId: "2000" }, { stale: true, snapshot: false });
+  assert.equal(recorded, "2000");
+  assert.equal(isForeignTransaction(recorded, "2000"), false);
+});
+
+test("nextRecordedTransactionId: webhook grants keep the id current; a stale grant never displaces a newer one", () => {
+  const g = (id: string | null) => ({ kind: "grant", transactionId: id });
+  assert.equal(nextRecordedTransactionId(null, g("1000"), { stale: false, snapshot: false }), "1000");
+  assert.equal(nextRecordedTransactionId("1000", g("2000"), { stale: false, snapshot: false }), "2000");
+  assert.equal(nextRecordedTransactionId("1000", g("1000"), { stale: false, snapshot: false }), undefined);
+  assert.equal(nextRecordedTransactionId("2000", g("1000"), { stale: true, snapshot: false }), undefined);
+  assert.equal(nextRecordedTransactionId("1000", g(null), { stale: false, snapshot: false }), undefined);
+  assert.equal(nextRecordedTransactionId("1000", { kind: "refund", transactionId: "2000" }, { stale: false, snapshot: false }), undefined);
 });

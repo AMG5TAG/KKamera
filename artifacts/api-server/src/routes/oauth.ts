@@ -4,12 +4,17 @@ import { z } from "zod";
 import jwt from "jsonwebtoken";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
-import { eq, and, desc, inArray, isNull, ne } from "drizzle-orm";
+import { eq, and, count, desc, gt, inArray, isNull, isNotNull, ne } from "drizzle-orm";
 import { requireAuth, JWT_SECRET } from "../middlewares/auth.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { getPublicBaseUrl } from "../lib/appUrl.js";
 import { fetchAccountIdentity } from "../lib/cloudIdentity.js";
-import { DEFAULT_UPLOAD_PATH, hasParentSegment, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
+import {
+  DEFAULT_UPLOAD_PATH, MAX_CONNECTIONS_PER_USER, hasParentSegment, normalizeUploadPath,
+} from "../lib/cloudUploadPolicy.js";
+import { CONNECTION_LIMIT_MESSAGE, connectionCountLocked } from "../lib/connectionLimits.js";
+import { logger } from "../lib/logger.js";
+import { sharedRateLimit } from "../lib/rateLimitStore.js";
 import { purgeExpiredPendingConnections, revokeRemovedConnectionIfUnshared } from "../lib/cloudUpload.js";
 import {
   PENDING_CONNECTION_TTL_MS, bindingHashFor, generateCallbackCode, generateOAuthNonce, hashOAuthNonce,
@@ -17,6 +22,20 @@ import {
 } from "../lib/oauthPending.js";
 
 const router = Router();
+
+// Each initiate can end in a stored connection (and a provider token
+// exchange), so bound how often one account can start the flow.
+const initiateLimiter = sharedRateLimit("oauth.initiateLimiter", {
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many connection attempts. Please try again later." },
+});
+
+/** Unconfirmed OAuth rows one user may hold at once (each expires after 10 min). */
+const MAX_PENDING_PER_USER = 5;
 
 // ─── PKCE ────────────────────────────────────────────────────────────────────
 
@@ -231,7 +250,7 @@ function oauthErrorReason(err: unknown): string {
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 // POST /api/oauth/:provider/initiate  — authenticated, returns authorizeUrl
-router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
+router.post("/oauth/:provider/initiate", requireAuth, initiateLimiter, async (req, res) => {
   try {
     const provider = String(req.params["provider"] ?? "");
     const cfg = PROVIDERS[provider];
@@ -239,9 +258,12 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
 
     const clientId = process.env[cfg.clientIdEnv];
     if (!clientId) {
+      // Env var names are operator detail — logged, never sent to clients.
+      // `missingEnv` stays (always empty) for app builds that key off it.
+      logger.error({ provider, missingEnv: [cfg.clientIdEnv, cfg.clientSecretEnv] }, "OAuth provider not configured");
       res.status(503).json({
-        message: `${cfg.label} OAuth is not configured. Set the ${cfg.clientIdEnv} and ${cfg.clientSecretEnv} environment variables.`,
-        missingEnv: [cfg.clientIdEnv, cfg.clientSecretEnv],
+        message: `${cfg.label} isn't available right now. Please try again later.`,
+        missingEnv: [],
       });
       return;
     }
@@ -256,7 +278,7 @@ router.post("/oauth/:provider/initiate", requireAuth, async (req, res) => {
         .optional(),
     }).safeParse(req.body ?? {});
     if (!parsedBody.success) {
-      const issue = parsedBody.error.errors[0];
+      const issue = parsedBody.error.issues[0];
       res.status(400).json({ message: issue?.path[0] === "uploadPath" ? issue.message : "Invalid request" });
       return;
     }
@@ -324,6 +346,21 @@ router.get("/oauth/:provider/callback", async (req, res) => {
   if (!cfg) { errorRedirect("Unknown provider"); return; }
 
   try {
+    // Bound stacked pending rows (each holds live tokens until it expires).
+    // Checked BEFORE the code is exchanged, so tripping it never mints provider
+    // tokens we'd then drop unrevoked. Expired rows (awaiting the purge) don't
+    // count. The redirect uses an error key the app already maps.
+    const [pendingCount] = await db.select({ n: count() }).from(cloudConnectionsTable).where(and(
+      eq(cloudConnectionsTable.userId, entry.userId),
+      isNotNull(cloudConnectionsTable.pendingNonceHash),
+      gt(cloudConnectionsTable.pendingExpiresAt, new Date()),
+    ));
+    if ((pendingCount?.n ?? 0) >= MAX_PENDING_PER_USER) {
+      req.log.warn({ userId: entry.userId, provider }, "OAuth callback refused: too many pending connections");
+      errorRedirect("Failed to save connection");
+      return;
+    }
+
     const redirectUri = getCallbackUrl(provider);
     const tokens = await exchangeCode(provider, cfg, code, redirectUri, entry.verifier);
 
@@ -419,7 +456,7 @@ router.post("/oauth/complete", requireAuth, async (req, res) => {
       return;
     }
 
-    const conn = await db.transaction(async (tx): Promise<ConnectionRow | undefined> => {
+    const conn = await db.transaction(async (tx): Promise<ConnectionRow | "limit" | undefined> => {
       // Reconnecting the SAME account refreshes that connection in place (keeps
       // its id, so any saved upload-target selection stays valid) rather than
       // stacking a duplicate. "Same account" is the provider's account id when
@@ -447,6 +484,11 @@ router.post("/oauth/complete", requireAuth, async (req, res) => {
 
       const [existing, ...superseded] = matches;
       if (!existing) {
+        // A new account adds a connection — enforce the per-user cap (a
+        // reconnect of an existing account just refreshes it, so it's exempt).
+        if (await connectionCountLocked(tx, userId, { confirmedOnly: true }) >= MAX_CONNECTIONS_PER_USER) {
+          return "limit";
+        }
         // New account: confirm the pending row itself. Conditional on the
         // binding so two concurrent completes can't both succeed.
         const [activated] = await tx.update(cloudConnectionsTable).set({
@@ -490,6 +532,15 @@ router.post("/oauth/complete", requireAuth, async (req, res) => {
       return updated;
     });
 
+    if (conn === "limit") {
+      const [gone] = await db.delete(cloudConnectionsTable).where(and(
+        eq(cloudConnectionsTable.id, pending.id),
+        eq(cloudConnectionsTable.pendingNonceHash, binding),
+      )).returning();
+      if (gone) void revokeRemovedConnectionIfUnshared(gone);
+      res.status(409).json({ message: CONNECTION_LIMIT_MESSAGE });
+      return;
+    }
     if (!conn) { res.status(404).json({ message: COMPLETE_FAILED }); return; }
     res.json({ connectionId: conn.id, type: conn.type, name: conn.name, accountLabel: conn.accountLabel ?? null });
   } catch (err) {

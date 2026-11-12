@@ -84,3 +84,17 @@ export function milestoneClawback(
   if (newEnd < now) newEnd = now;
   return { targetYears, yearsToRemove, newEnd };
 }
+
+/**
+ * A referral code must not credit its own owner: same account, or the same
+ * mailbox under another alias (+tag / Gmail dots — `canonical` is
+ * emailHash.normalizeEmailForTrial, injected to keep this module pure).
+ */
+export function isSelfReferral(
+  referrer: { id: number; email: string },
+  referred: { id?: number | null; email: string },
+  canonical: (email: string) => string,
+): boolean {
+  if (referred.id != null && referred.id === referrer.id) return true;
+  return canonical(referrer.email) === canonical(referred.email);
+}

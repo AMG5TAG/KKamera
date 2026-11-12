@@ -16,6 +16,11 @@ export const subscriptionsTable = pgTable("subscriptions", {
   // Event time of the newest RevenueCat webhook applied to this row, so an older
   // event delivered late (or replayed) can't overwrite newer state.
   lastEventAt: timestamp("last_event_at", { withTimezone: true }),
+  // original_transaction_id of the newest production store purchase that
+  // granted access (from the webhook). A refund / expiration for a different
+  // transaction (e.g. an old purchase that was moved to this user and away
+  // again) must not revoke access or claw back referrals. Null = unknown.
+  storeOriginalTransactionId: text("store_original_transaction_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

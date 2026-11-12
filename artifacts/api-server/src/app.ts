@@ -4,8 +4,9 @@ import helmet from "helmet";
 import pinoHttp from "pino-http";
 import router from "./routes/index.js";
 import appLinksRouter from "./routes/appLinks.js";
-import { requireMigratedSchema } from "./routes/health.js";
-import { logger } from "./lib/logger.js";
+import legalRouter from "./routes/legal.js";
+import { isShuttingDown, requireMigratedSchema } from "./routes/health.js";
+import { errSerializer, logger } from "./lib/logger.js";
 import { getPublicHost } from "./lib/appUrl.js";
 
 const app: Express = express();
@@ -14,6 +15,13 @@ const app: Express = express();
 // (rate limiting would otherwise share one bucket across ALL users) and
 // req.protocol reflects https.
 app.set("trust proxy", 1);
+
+// While draining for shutdown (index.ts), ask keep-alive clients to reconnect
+// elsewhere so their sockets close once the in-flight response finishes.
+app.use((_req, res, next) => {
+  if (isShuttingDown()) res.set("Connection", "close");
+  next();
+});
 
 // Allowed origins: the canonical app host (app.kkamera.app, incl. subdomains) plus an
 // optional explicit ALLOWED_ORIGINS whitelist; localhost is allowed in dev only.
@@ -30,8 +38,10 @@ function originHost(origin: string): string {
   try { return new URL(origin).hostname; } catch { return origin; }
 }
 
-// This is a JSON API for the native iOS/Android apps — it serves no HTML, so a
-// content security policy is not required. Keep helmet's other hardening headers.
+// This is a JSON API for the native iOS/Android apps — a global content
+// security policy is not required. The few HTML pages (routes/appLinks.ts,
+// routes/legal.ts) are self-contained; legal.ts sets its own strict CSP.
+// Keep helmet's other hardening headers.
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
@@ -72,6 +82,9 @@ app.use(
       res(res) {
         return { statusCode: res.statusCode };
       },
+      // Keep the redacting err serializer on req.log (pino-http's child
+      // loggers would otherwise install the standard one).
+      err: errSerializer,
     },
   })
 );
@@ -81,6 +94,12 @@ app.use(
 // these parsers, so this limit doesn't affect them.
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+
+// Public legal pages (static, no DB): /privacy, /terms, /account-deletion, also
+// reachable as /api/legal/... through the /api-only dev proxy. Mounted before
+// the migration gate so they stay up even if the schema is broken.
+app.use(legalRouter);
+app.use("/api/legal", legalRouter);
 
 // After a definitive migration failure every /api route except healthz/readyz
 // answers 503 instead of running against a stale schema.

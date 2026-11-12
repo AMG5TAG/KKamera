@@ -4,7 +4,7 @@ import bcryptjs from "bcryptjs";
 import { z } from "zod";
 import { authenticator } from "@otplib/preset-default";
 import QRCode from "qrcode";
-import rateLimit from "express-rate-limit";
+import { sharedRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable, passwordResetTokensTable, emailVerificationsTable,
@@ -18,8 +18,10 @@ import {
 } from "../lib/emailVerification.js";
 import {
   grantTrialIfEligible, invalidateUnusedVerifications, issueVerificationCode, sendAccountExistsNotice,
-  maybeSweepStaleVerifications,
+  maybeSweepStaleVerifications, applyReferralAttribution,
 } from "../lib/emailVerificationStore.js";
+import { normalizeEmailForTrial } from "../lib/emailHash.js";
+import { isSelfReferral } from "../lib/referralRules.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { logger } from "../lib/logger.js";
 import {
@@ -28,27 +30,22 @@ import {
 import {
   newPasswordSchema, normalizedEmailSchema, normalizeReferralCode,
   isLoginLocked, loginLockDurationMs, LOGIN_LOCKED_MESSAGE,
+  isLoginIpThrottled, loginFailureKey, LOGIN_IP_WINDOW_MS,
+  isLoginAddressLimited, loginAddressKey, LOGIN_ADDRESS_LIMITED_MESSAGE,
 } from "../lib/accountRules.js";
+import { hitAndPeekCounters, hitCounter, releaseCounters } from "../lib/rateLimitStore.js";
 
 const router = Router();
 
 // ─── Rate limiters ────────────────────────────────────────────────────────────
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  // Only failed attempts count, so a shared IP (office / carrier NAT) isn't
-  // locked out by its own successful sign-ins. Per-account lockout (below)
-  // bounds guessing against any one account across IPs.
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many login attempts. Please try again in 15 minutes." },
-});
+// Sign-in is throttled inside the handler (not by an express-rate-limit
+// middleware) so the per-address attempt count and the per-(account, address)
+// failure count cost one DB round trip together — see countLoginAttempt.
 
 // Generous enough for many people behind one carrier-NAT / office IP; bulk
 // sign-up abuse is still bounded (and trials are keyed per mailbox).
-const registerLimiter = rateLimit({
+const registerLimiter = sharedRateLimit("auth.registerLimiter", {
   windowMs: 60 * 60 * 1000,
   max: 20,
   standardHeaders: true,
@@ -59,7 +56,7 @@ const registerLimiter = rateLimit({
 // Email verification codes are 6 digits; each code dies after 5 wrong tries
 // and at most 5 codes/hour are sent per account, so this per-IP bound is a
 // second layer against spraying guesses across many pending sign-ups.
-const verifyEmailLimiter = rateLimit({
+const verifyEmailLimiter = sharedRateLimit("auth.verifyEmailLimiter", {
   windowMs: 15 * 60 * 1000,
   max: 30,
   standardHeaders: true,
@@ -68,7 +65,7 @@ const verifyEmailLimiter = rateLimit({
 });
 
 // Sends email — bound per IP (the per-account send throttle bounds per victim).
-const resendVerificationLimiter = rateLimit({
+const resendVerificationLimiter = sharedRateLimit("auth.resendVerificationLimiter", {
   windowMs: 60 * 60 * 1000,
   max: 20,
   standardHeaders: true,
@@ -79,7 +76,7 @@ const resendVerificationLimiter = rateLimit({
 // TOTP codes (and legacy 32-bit backup codes) are low-entropy enough to
 // brute-force without a limiter. These routes are authenticated, so bound
 // per authenticated session/IP.
-const twoFactorLimiter = rateLimit({
+const twoFactorLimiter = sharedRateLimit("auth.twoFactorLimiter", {
   windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
@@ -89,7 +86,7 @@ const twoFactorLimiter = rateLimit({
 
 // Change-password verifies the current password (and 2FA), so bound guesses per
 // account — not just per IP — so rotating IPs can't brute-force it.
-const changePasswordLimiter = rateLimit({
+const changePasswordLimiter = sharedRateLimit("auth.changePasswordLimiter", {
   windowMs: 15 * 60 * 1000,
   max: 5,
   standardHeaders: true,
@@ -101,7 +98,7 @@ const changePasswordLimiter = rateLimit({
 // Per-account bound on sensitive authenticated routes: password
 // re-authentication for 2FA setup / enable / disable, plus "sign out
 // everywhere" (which takes no password — the limit just caps token churn).
-const reauthLimiter = rateLimit({
+const reauthLimiter = sharedRateLimit("auth.reauthLimiter", {
   windowMs: 15 * 60 * 1000,
   max: 10,
   standardHeaders: true,
@@ -146,17 +143,17 @@ const changePasswordSchema = z.object({
 });
 
 const passwordConfirmSchema = z.object({
-  password: z.string({ required_error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
+  password: z.string({ error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
 });
 
 const twoFAEnableSchema = z.object({
   code: z.string().length(6, "Code must be 6 digits").regex(/^\d+$/, "Code must be numeric"),
-  password: z.string({ required_error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
+  password: z.string({ error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
 });
 
 const twoFADisableSchema = z.object({
-  code: z.string({ required_error: "Code is required" }).min(1, "Code is required"),
-  password: z.string({ required_error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
+  code: z.string({ error: "Code is required" }).min(1, "Code is required"),
+  password: z.string({ error: "Enter your password to continue." }).min(1, "Enter your password to continue."),
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -271,17 +268,51 @@ export async function verifyReauth(
 }
 
 /**
- * Record a failed sign-in for an existing account. The increment is one atomic
- * UPDATE ... RETURNING, and the lockout length is derived from the resulting
- * consecutive-failure count. Returns true when this failure locked the account.
+ * One DB round trip per sign-in attempt: count it against the caller's
+ * address bucket (given back by releaseLoginAttempt if it succeeds, so only
+ * unsuccessful attempts accumulate — a shared NAT isn't locked out by its own
+ * sign-ins) and read the (account, address) failure count. Fails open on a DB
+ * error — the per-account ceiling (users table) still applies.
  */
-async function recordLoginFailure(userId: number): Promise<boolean> {
+async function countLoginAttempt(addressKey: string, failureKey: string | null): Promise<{ addressHits: number; accountFailures: number }> {
+  try {
+    const { hits, peeked } = await hitAndPeekCounters(addressKey, LOGIN_IP_WINDOW_MS, failureKey);
+    return { addressHits: hits, accountFailures: peeked };
+  } catch (err) {
+    logger.warn({ err }, "Login throttle check failed (allowing)");
+    return { addressHits: 0, accountFailures: 0 };
+  }
+}
+
+/**
+ * A sign-in step succeeded: give the attempt back to the address bucket and,
+ * on full success, clear this (account, address) failure bucket — always, not
+ * only when the account-wide counter is non-zero. One statement, off the
+ * response path.
+ */
+function releaseLoginAttempt(addressKey: string, failureKey: string | null): void {
+  releaseCounters(addressKey, failureKey).catch((err) => logger.warn({ err }, "Login throttle release failed"));
+}
+
+/**
+ * Record a failed sign-in for an existing account: against this address's
+ * throttle, and the account-wide consecutive-failure count (one atomic
+ * UPDATE ... RETURNING; the lockout length is derived from the result).
+ * Returns true when this failure throttled the address or locked the account.
+ */
+async function recordLoginFailure(userId: number, failureKey: string): Promise<boolean> {
+  let ipThrottled = false;
+  try {
+    ipThrottled = isLoginIpThrottled((await hitCounter(failureKey, LOGIN_IP_WINDOW_MS)).totalHits);
+  } catch (err) {
+    logger.warn({ err }, "Login throttle update failed");
+  }
   const [row] = await db.update(usersTable)
     .set({ failedLoginCount: sql`${usersTable.failedLoginCount} + 1` })
     .where(eq(usersTable.id, userId))
     .returning({ failedLoginCount: usersTable.failedLoginCount });
   const lockMs = row ? loginLockDurationMs(row.failedLoginCount) : 0;
-  if (lockMs <= 0) return false;
+  if (lockMs <= 0) return ipThrottled;
   await db.update(usersTable)
     .set({ loginLockedUntil: new Date(Date.now() + lockMs) })
     .where(eq(usersTable.id, userId));
@@ -319,7 +350,7 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
   try {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const { email, password, name, referralCode } = parsed.data;
@@ -331,20 +362,23 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
 
     let [existing] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
 
-    if (!existing) {
-      let referrerId: number | undefined;
-      const normalizedReferral = normalizeReferralCode(referralCode);
-      if (normalizedReferral) {
-        // Only verified accounts can refer (an unverified account can't sign in
-        // to see its code, and may be swept after 30 days).
-        const referrer = await db.select({ id: usersTable.id }).from(usersTable)
-          .where(and(
-            sql`upper(${usersTable.referralCode}) = ${normalizedReferral}`,
-            isNotNull(usersTable.emailVerifiedAt),
-          )).limit(1);
-        if (referrer.length > 0) referrerId = referrer[0]!.id;
+    let referrerId: number | undefined;
+    const normalizedReferral = normalizeReferralCode(referralCode);
+    if (normalizedReferral) {
+      // Only verified accounts can refer (an unverified account can't sign in
+      // to see its code, and may be swept after 30 days) — and never themselves
+      // (same account, or another alias of the same mailbox).
+      const [referrer] = await db.select({ id: usersTable.id, email: usersTable.email }).from(usersTable)
+        .where(and(
+          sql`upper(${usersTable.referralCode}) = ${normalizedReferral}`,
+          isNotNull(usersTable.emailVerifiedAt),
+        )).limit(1);
+      if (referrer && !isSelfReferral(referrer, { id: existing?.id ?? null, email }, normalizeEmailForTrial)) {
+        referrerId = referrer.id;
       }
+    }
 
+    if (!existing) {
       try {
         // One transaction: a failure part-way must never leave a user without a
         // subscription row. No trial yet — it starts when the email is verified
@@ -364,7 +398,7 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
           }
           return row;
         });
-        const { nonce } = await issueVerificationCode({ user: created, passwordHash, name });
+        const { nonce } = await issueVerificationCode({ user: created, passwordHash, name, referrerId });
         res.status(202).json({ status: "verification_required", nonce, email });
         return;
       } catch (err) {
@@ -376,7 +410,7 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
       }
     }
 
-    const nonce = await registerExistingAddress(existing, passwordHash, name);
+    const nonce = await registerExistingAddress(existing, passwordHash, name, referrerId ?? null);
     res.status(202).json({ status: "verification_required", nonce, email });
   } catch (err) {
     req.log.error({ err }, "Register error");
@@ -387,14 +421,17 @@ router.post("/auth/register", registerLimiter, async (req, res) => {
 /**
  * Registration for an address that already has an account. Unverified: the
  * account row is left untouched and a new code is issued carrying THIS
- * registration's password/name — whoever can read the inbox and holds the
- * nonce decides which credentials the account ends up with. Verified: nothing
+ * registration's password/name/referrer — whoever can read the inbox and holds
+ * the nonce decides which credentials (and referral) the account ends up with.
+ * Earlier outstanding codes stay valid (see issueVerificationCode). Verified: nothing
  * that grants access is created; the owner gets a (throttled) heads-up email
  * and the caller a dummy nonce that verifies like a wrong code.
  */
-async function registerExistingAddress(existing: RegisteredUser, passwordHash: string, name: string): Promise<string> {
+async function registerExistingAddress(
+  existing: RegisteredUser, passwordHash: string, name: string, referrerId: number | null,
+): Promise<string> {
   if (!existing.emailVerifiedAt) {
-    const { nonce } = await issueVerificationCode({ user: existing, passwordHash, name });
+    const { nonce } = await issueVerificationCode({ user: existing, passwordHash, name, referrerId });
     return nonce;
   }
   const dummyNonce = generateVerificationNonce();
@@ -469,6 +506,9 @@ router.post("/auth/verify-email", verifyEmailLimiter, async (req, res) => {
         .where(eq(usersTable.id, user.id))
         .returning();
       if (!updated) return null;
+      // A registration's code also settles the referral: the registration
+      // being verified decides it, not whichever registered the address first.
+      if (row.passwordHash) await applyReferralAttribution(tx, updated, row.referrerId ?? null, updated.name);
       const trialGranted = await grantTrialIfEligible(tx, updated);
       return { user: updated, trialGranted };
     });
@@ -498,7 +538,7 @@ router.post("/auth/resend-verification", resendVerificationLimiter, async (req, 
   try {
     const parsed = resendVerificationSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const [row] = await db.select().from(emailVerificationsTable)
@@ -506,7 +546,9 @@ router.post("/auth/resend-verification", resendVerificationLimiter, async (req, 
     if (row && row.codeHash !== NOTICE_CODE_MARKER) {
       const [user] = await db.select().from(usersTable).where(eq(usersTable.id, row.userId)).limit(1);
       if (user && !user.emailVerifiedAt) {
-        const { nonce } = await issueVerificationCode({ user, passwordHash: row.passwordHash, name: row.name });
+        const { nonce } = await issueVerificationCode({
+          user, passwordHash: row.passwordHash, name: row.name, referrerId: row.referrerId,
+        });
         res.json({ nonce });
         return;
       }
@@ -520,17 +562,28 @@ router.post("/auth/resend-verification", resendVerificationLimiter, async (req, 
 
 // ─── Login ────────────────────────────────────────────────────────────────────
 
-router.post("/auth/login", loginLimiter, async (req, res) => {
+router.post("/auth/login", async (req, res) => {
   try {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const { email, password, totpCode } = parsed.data;
 
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    if (!user) {
+
+    // Throttles are checked before the password so a throttled address / pair /
+    // locked account gives no password oracle to an attacker rotating IPs.
+    const addressKey = loginAddressKey(req.ip);
+    const failureKey = user ? loginFailureKey(user.id, req.ip) : null;
+    const { addressHits, accountFailures } = await countLoginAttempt(addressKey, failureKey);
+    if (isLoginAddressLimited(addressHits)) {
+      res.status(429).json({ message: LOGIN_ADDRESS_LIMITED_MESSAGE });
+      return;
+    }
+
+    if (!user || !failureKey) {
       // Spend comparable time so timing doesn't reveal whether the email exists.
       // Unknown emails never see the lockout response — only a real account
       // can reveal itself, and only after LOGIN_LOCK_THRESHOLD failures.
@@ -539,16 +592,14 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
       return;
     }
 
-    // Per-account lockout: checked before the password so a locked account
-    // gives no password oracle to an attacker rotating IPs.
-    if (isLoginLocked(user.loginLockedUntil, new Date())) {
+    if (isLoginLocked(user.loginLockedUntil, new Date()) || isLoginIpThrottled(accountFailures)) {
       res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
       return;
     }
 
     const valid = await bcryptjs.compare(password, user.passwordHash);
     if (!valid) {
-      if (await recordLoginFailure(user.id)) {
+      if (await recordLoginFailure(user.id, failureKey)) {
         res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
         return;
       }
@@ -572,11 +623,15 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
     }
 
     if (user.twoFAEnabled && user.twoFASecret) {
-      if (!totpCode) { res.status(200).json({ requires2FA: true }); return; }
+      if (!totpCode) {
+        releaseLoginAttempt(addressKey, null); // password was right
+        res.status(200).json({ requires2FA: true });
+        return;
+      }
 
       // Try TOTP first, then (single-use) backup codes
       if (!(await verifySecondFactor(user, totpCode))) {
-        if (await recordLoginFailure(user.id)) {
+        if (await recordLoginFailure(user.id, failureKey)) {
           res.status(429).json({ message: LOGIN_LOCKED_MESSAGE });
           return;
         }
@@ -585,12 +640,14 @@ router.post("/auth/login", loginLimiter, async (req, res) => {
       }
     }
 
-    // Full success: clear the consecutive-failure counter (no write when clean).
+    // Full success: clear the consecutive-failure counters (no write when
+    // clean), and always this address's failure bucket for the account.
     if (user.failedLoginCount > 0 || user.loginLockedUntil) {
       await db.update(usersTable)
         .set({ failedLoginCount: 0, loginLockedUntil: null })
         .where(eq(usersTable.id, user.id));
     }
+    releaseLoginAttempt(addressKey, failureKey);
 
     const token = issueToken(user);
     res.json({ token, user: formatUser(user) });
@@ -633,7 +690,7 @@ router.post("/auth/change-password", requireAuth, changePasswordLimiter, async (
   try {
     const parsed = changePasswordSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const { currentPassword, newPassword, totpCode } = parsed.data;
@@ -697,7 +754,7 @@ router.post("/auth/2fa/setup", requireAuth, reauthLimiter, async (req, res) => {
   try {
     const parsed = passwordConfirmSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
@@ -750,7 +807,7 @@ router.post("/auth/2fa/verify", twoFactorLimiter, requireAuth, async (req, res) 
   try {
     const parsed = twoFAEnableSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid code" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid code" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);
@@ -778,7 +835,7 @@ router.post("/auth/2fa/disable", twoFactorLimiter, requireAuth, async (req, res)
   try {
     const parsed = twoFADisableSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.userId!)).limit(1);

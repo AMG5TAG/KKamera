@@ -2,6 +2,7 @@ import net from "net";
 import dns from "dns";
 import http from "http";
 import https from "https";
+import type { TLSSocket } from "tls";
 
 // ─── SSRF address classification ──────────────────────────────────────────────
 // User-supplied FTP/WebDAV hosts are attacker-controlled. Without this guard a
@@ -133,6 +134,12 @@ export function connectTargetViolation(host: unknown, allowedHost?: string | nul
 export interface SafeAgentOptions {
   /** When set, every connection must target exactly this hostname. */
   allowedHost?: string | null;
+  /**
+   * HTTPS only: called on every new socket once its TLS handshake completes
+   * (synchronously, before any request bytes are sent). Returning an error
+   * destroys the socket — used for certificate pinning (see tlsPin.ts).
+   */
+  onSecureConnect?: ((socket: TLSSocket) => Error | null) | null;
 }
 
 type CreateConn = (options: any, cb?: (err: Error | null, socket?: net.Socket) => void) => net.Socket | undefined;
@@ -143,7 +150,11 @@ type CreateConn = (options: any, cb?: (err: Error | null, socket?: net.Socket) =
  * is how http.Agent expects an async createConnection to fail — the request
  * then emits 'error' instead of crashing the process.
  */
-function guardedCreateConnection(original: CreateConn, allowedHost: string | null): CreateConn {
+function guardedCreateConnection(
+  original: CreateConn,
+  allowedHost: string | null,
+  onSecureConnect: SafeAgentOptions["onSecureConnect"] = null,
+): CreateConn {
   return function (this: unknown, options: any, cb?: (err: Error | null, socket?: net.Socket) => void) {
     const violation = connectTargetViolation(options?.host ?? options?.hostname, allowedHost);
     if (violation) {
@@ -162,6 +173,12 @@ function guardedCreateConnection(original: CreateConn, allowedHost: string | nul
           socket.destroy(Object.assign(new Error(`Blocked connection to private address ${remote}`), { code: "ERR_SSRF_BLOCKED" }));
         }
       });
+      if (onSecureConnect) {
+        socket.once("secureConnect", () => {
+          const err = onSecureConnect(socket as TLSSocket);
+          if (err) socket.destroy(err);
+        });
+      }
     }
     return socket;
   };
@@ -170,7 +187,7 @@ function guardedCreateConnection(original: CreateConn, allowedHost: string | nul
 /** http.Agent that refuses private / non-allowed targets (see above). */
 export class SafeHttpAgent extends http.Agent {
   constructor(opts: http.AgentOptions & SafeAgentOptions = {}) {
-    const { allowedHost = null, ...rest } = opts;
+    const { allowedHost = null, onSecureConnect: _ignored, ...rest } = opts;
     super({ ...rest, lookup: safeLookup as any });
     (this as any).createConnection = guardedCreateConnection((http.Agent.prototype as any).createConnection, allowedHost);
   }
@@ -179,8 +196,10 @@ export class SafeHttpAgent extends http.Agent {
 /** https.Agent that refuses private / non-allowed targets (see above). */
 export class SafeHttpsAgent extends https.Agent {
   constructor(opts: https.AgentOptions & SafeAgentOptions = {}) {
-    const { allowedHost = null, ...rest } = opts;
+    const { allowedHost = null, onSecureConnect = null, ...rest } = opts;
     super({ ...rest, lookup: safeLookup as any });
-    (this as any).createConnection = guardedCreateConnection((https.Agent.prototype as any).createConnection, allowedHost);
+    (this as any).createConnection = guardedCreateConnection(
+      (https.Agent.prototype as any).createConnection, allowedHost, onSecureConnect,
+    );
   }
 }

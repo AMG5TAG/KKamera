@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextcloudDavUrl } from "../src/lib/nextcloud.ts";
+import { nextcloudDavUrl, usesPlainHttp } from "../src/lib/nextcloud.ts";
 
 test("derives the files endpoint from a plain server URL", () => {
   assert.equal(
@@ -121,4 +121,12 @@ test("webdavBaseUrl applies the separate port field and defaults to https", asyn
   assert.equal(webdavBaseUrl("https://nas.example.com", null), "https://nas.example.com");
   assert.throws(() => webdavBaseUrl("", 5006), /required/);
   assert.throws(() => webdavBaseUrl("ftp://nas.example.com", 5006), /https/);
+});
+
+test("usesPlainHttp: only an explicit http:// scheme", () => {
+  assert.equal(usesPlainHttp("http://nas.example.com"), true);
+  assert.equal(usesPlainHttp("  HTTP://nas.example.com:5005/dav"), true);
+  assert.equal(usesPlainHttp("https://nas.example.com"), false);
+  assert.equal(usesPlainHttp("nas.example.com"), false); // defaults to https
+  assert.equal(usesPlainHttp(null), false);
 });

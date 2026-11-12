@@ -2,7 +2,7 @@ import { Router } from "express";
 import { createHash, randomBytes } from "crypto";
 import bcryptjs from "bcryptjs";
 import { z } from "zod";
-import rateLimit from "express-rate-limit";
+import { sharedRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import { usersTable, passwordResetTokensTable } from "@workspace/db";
 import { eq, and, gt, lt, isNull, count, sql } from "drizzle-orm";
@@ -18,7 +18,7 @@ const router = Router();
 // Unauthenticated + email-sending / token-guessing endpoints — rate limit per IP
 // so they can't be used to email-bomb a victim, burn Resend quota, or brute-force
 // reset tokens.
-const forgotPasswordLimiter = rateLimit({
+const forgotPasswordLimiter = sharedRateLimit("passwordReset.forgotPasswordLimiter", {
   windowMs: 60 * 60 * 1000,
   max: 5,
   standardHeaders: true,
@@ -26,7 +26,7 @@ const forgotPasswordLimiter = rateLimit({
   message: { message: "Too many password reset requests. Please try again in an hour." },
 });
 
-const resetPasswordLimiter = rateLimit({
+const resetPasswordLimiter = sharedRateLimit("passwordReset.resetPasswordLimiter", {
   windowMs: 15 * 60 * 1000,
   max: 10,
   standardHeaders: true,
@@ -131,7 +131,7 @@ router.post("/auth/forgot-password", forgotPasswordLimiter, (req, res) => {
 router.post("/auth/reset-password", resetPasswordLimiter, async (req, res) => {
   const parsed = resetSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+    res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
     return;
   }
 

@@ -29,6 +29,14 @@ export const cloudConnectionsTable = pgTable("cloud_connections", {
   refreshToken: text("refresh_token"),
   tokenExpiry: timestamp("token_expiry", { withTimezone: true }),
   active: boolean("active").notNull().default(true),
+  // FTPS / WebDAV over TLS: accept a certificate that doesn't chain to a public
+  // CA (e.g. a NAS's self-signed cert). Opt-in per connection; off = fail closed.
+  // When on, the first successful handshake pins the leaf certificate's
+  // SHA-256 fingerprint in tlsPinSha256 (trust on first use) and any later
+  // mismatch is refused. The pin is server-only (never returned to clients) and
+  // is cleared whenever host, port or trustSelfSigned change.
+  trustSelfSigned: boolean("trust_self_signed").notNull().default(false),
+  tlsPinSha256: text("tls_pin_sha256"),
   // Set while an OAuth connection awaits confirmation from the device that
   // started the flow (hash of a one-time nonce). Null once confirmed; pending
   // rows are never used for uploads and expire at pendingExpiresAt.

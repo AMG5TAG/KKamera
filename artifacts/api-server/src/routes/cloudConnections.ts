@@ -3,16 +3,18 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable, usersTable } from "@workspace/db";
 import { eq, and, isNull } from "drizzle-orm";
-import rateLimit from "express-rate-limit";
+import { localRateLimit, sharedRateLimit } from "../lib/rateLimitStore.js";
 import { requireAuth } from "../middlewares/auth.js";
 import { encrypt } from "../lib/crypto.js";
 import {
-  purgeExpiredPendingConnections, revokeRemovedConnectionIfUnshared, testCloudConnection,
+  allowInsecureWebdav, purgeExpiredPendingConnections, revokeRemovedConnectionIfUnshared, testCloudConnection,
 } from "../lib/cloudUpload.js";
-import { DEFAULT_UPLOAD_PATH, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
+import { DEFAULT_UPLOAD_PATH, MAX_CONNECTIONS_PER_USER, normalizeUploadPath } from "../lib/cloudUploadPolicy.js";
+import { CONNECTION_LIMIT_MESSAGE, connectionCountLocked } from "../lib/connectionLimits.js";
 import {
-  connectionUpdatePlan, createConnectionSchema, retargetNeedsPassword, updateConnectionSchema,
+  connectionUpdatePlan, createConnectionSchema, retargetNeedsPassword, shouldClearTlsPin, updateConnectionSchema,
 } from "../lib/cloudConnectionSchemas.js";
+import { INSECURE_DAV_MESSAGE, usesPlainHttp } from "../lib/nextcloud.js";
 import { retainTargetIds } from "../lib/accountRules.js";
 
 const router = Router();
@@ -51,7 +53,7 @@ function ownConfirmed(id: number, userId: number) {
 // A connection test makes the server connect to a user-chosen public host and
 // port and reports whether it answered — a port-scan oracle if unthrottled.
 // Keyed by the authenticated user (many users can share a carrier NAT).
-const testLimiter = rateLimit({
+const testLimiter = localRateLimit("cloudConnections.testLimiter", {
   windowMs: 60 * 1000,
   max: 10,
   standardHeaders: true,
@@ -60,13 +62,30 @@ const testLimiter = rateLimit({
   message: { success: false, message: "Too many connection tests. Please wait a minute and try again." },
 });
 
+// Creating connections is cheap for a client but each one multiplies upload
+// fan-out and outbound connection tests, so bound the rate per account as well
+// as the total (MAX_CONNECTIONS_PER_USER).
+const createLimiter = sharedRateLimit("cloudConnections.createLimiter", {
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `user:${req.userId}`,
+  message: { message: "Too many new connections. Please try again later." },
+});
+
+/** WebDAV / Nextcloud over plain http:// sends Basic auth in cleartext — refused unless opted in. */
+function insecureDavHost(type: string, host: string | null | undefined): boolean {
+  return (type === "webdav" || type === "nextcloud") && usesPlainHttp(host) && !allowInsecureWebdav();
+}
+
 /**
  * Render the first validation issue, prefixed with the offending field. Zod's
  * default text ("Expected string, received null") is useless on its own when a
  * body has nine fields.
  */
 function firstIssueMessage(error: z.ZodError): string {
-  const issue = error.errors[0];
+  const issue = error.issues[0];
   if (!issue) return "Invalid request";
   const path = issue.path.join(".");
   return path ? `${path}: ${issue.message}` : issue.message;
@@ -87,6 +106,8 @@ function formatConn(c: typeof cloudConnectionsTable.$inferSelect) {
     hasPassword: !!c.passwordEncrypted,
     accountLabel: c.accountLabel ?? null,
     hasCredentials: !!(c.passwordEncrypted || c.accessTokenEncrypted),
+    // The pinned certificate fingerprint itself stays server-side.
+    trustSelfSigned: c.trustSelfSigned,
     createdAt: c.createdAt.toISOString(),
   };
 }
@@ -103,7 +124,7 @@ router.get("/cloud-connections", requireAuth, async (req, res) => {
   }
 });
 
-router.post("/cloud-connections", requireAuth, async (req, res) => {
+router.post("/cloud-connections", requireAuth, createLimiter, async (req, res) => {
   try {
     const parsed = createConnectionSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -113,16 +134,26 @@ router.post("/cloud-connections", requireAuth, async (req, res) => {
     // OAuth providers (Drive/OneDrive/Dropbox) are rejected by the schema: their
     // connections are created only by the OAuth callback + /oauth/complete, so
     // this route never stores an access token.
-    const { type, provider, name, host, port, username, password, uploadPath } = parsed.data;
-    const [conn] = await db.insert(cloudConnectionsTable).values({
-      userId: req.userId!, type, provider: provider ?? null, name,
-      host: host ?? null,
-      port: port ?? null,
-      username: username || null,
-      passwordEncrypted: password ? encrypt(password) : null,
-      uploadPath: normalizeUploadPath(uploadPath ?? DEFAULT_UPLOAD_PATH),
-      active: true,
-    }).returning();
+    const { type, provider, name, host, port, username, password, uploadPath, trustSelfSigned } = parsed.data;
+    if (insecureDavHost(type, host)) {
+      res.status(400).json({ message: `host: ${INSECURE_DAV_MESSAGE}` });
+      return;
+    }
+    const conn = await db.transaction(async (tx) => {
+      if (await connectionCountLocked(tx, req.userId!, { confirmedOnly: true }) >= MAX_CONNECTIONS_PER_USER) return "limit" as const;
+      const [row] = await tx.insert(cloudConnectionsTable).values({
+        userId: req.userId!, type, provider: provider ?? null, name,
+        host: host ?? null,
+        port: port ?? null,
+        username: username || null,
+        passwordEncrypted: password ? encrypt(password) : null,
+        uploadPath: normalizeUploadPath(uploadPath ?? DEFAULT_UPLOAD_PATH),
+        trustSelfSigned: trustSelfSigned ?? false,
+        active: true,
+      }).returning();
+      return row;
+    });
+    if (conn === "limit") { res.status(409).json({ message: CONNECTION_LIMIT_MESSAGE }); return; }
     if (!conn) { res.status(500).json({ message: "Failed to create connection" }); return; }
     res.status(201).json(formatConn(conn));
   } catch (err) {
@@ -150,6 +181,7 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
     if (plan.port !== undefined) updates.port = plan.port;
     if (plan.username !== undefined) updates.username = plan.username;
     if (plan.password !== undefined) updates.passwordEncrypted = plan.password === null ? null : encrypt(plan.password);
+    if (plan.trustSelfSigned !== undefined) updates.trustSelfSigned = plan.trustSelfSigned;
 
     // Checks against the stored row run under a row lock so a concurrent PATCH
     // can't change host/password between the check and this update.
@@ -169,6 +201,12 @@ router.patch("/cloud-connections/:id", requireAuth, async (req, res) => {
         host: existing.host, port: existing.port, hasPassword: !!existing.passwordEncrypted,
       });
       if (retarget) return { status: 400, message: retarget };
+      if (plan.host !== undefined && insecureDavHost(existing.type, plan.host)) {
+        return { status: 400, message: `host: ${INSECURE_DAV_MESSAGE}` };
+      }
+      if (shouldClearTlsPin(plan, {
+        host: existing.host, port: existing.port, trustSelfSigned: existing.trustSelfSigned,
+      })) updates.tlsPinSha256 = null;
       if (Object.keys(updates).length === 0) return { conn: existing };
       const [conn] = await tx.update(cloudConnectionsTable).set(updates)
         .where(ownConfirmed(id, req.userId!))

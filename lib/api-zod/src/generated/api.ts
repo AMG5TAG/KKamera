@@ -412,6 +412,12 @@ export const ListCloudConnectionsResponseItem = zod.object({
     ),
   accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
+  trustSelfSigned: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Self-signed TLS certificates are accepted for this connection (FTPS \/ WebDAV \/ Nextcloud), pinned on first use. The pinned fingerprint is never returned.",
+    ),
   createdAt: zod.string(),
 });
 export const ListCloudConnectionsResponse = zod.array(
@@ -451,9 +457,15 @@ export const CreateCloudConnectionBody = zod
       .string()
       .max(createCloudConnectionBodyUploadPathMax)
       .nullish(),
+    trustSelfSigned: zod
+      .boolean()
+      .nullish()
+      .describe(
+        "Accept a self-signed (or otherwise untrusted) TLS certificate for FTPS \/ WebDAV \/ Nextcloud. The first certificate seen is pinned and any later different certificate is refused. Default false: an untrusted certificate fails the connection.",
+      ),
   })
   .describe(
-    "Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (\/oauth\/initiate → callback → \/oauth\/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).",
+    "Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (\/oauth\/initiate → callback → \/oauth\/complete) and are rejected here. Strings are trimmed; name, host, username, password and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host). WebDAV\/Nextcloud hosts must not use http:\/\/ unless the server sets ALLOW_INSECURE_WEBDAV. At most 10 connections per account.",
   );
 
 /**
@@ -497,9 +509,13 @@ export const UpdateCloudConnectionBody = zod
     port: zod.number().min(1).max(updateCloudConnectionBodyPortMax).nullish(),
     username: zod.string().max(updateCloudConnectionBodyUsernameMax).nullish(),
     password: zod.string().max(updateCloudConnectionBodyPasswordMax).nullish(),
+    trustSelfSigned: zod
+      .boolean()
+      .optional()
+      .describe("Accept a self-signed TLS certificate (pinned on first use)."),
   })
   .describe(
-    'Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default \"\/KKamera\"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username.',
+    'Partial update. A field that is absent is left unchanged; an explicit null clears it (password → no saved password, port → protocol default, username → none, uploadPath → the default \"\/KKamera\"). name, active and host cannot be cleared, and host must not be blank. Nextcloud connections cannot clear their username. Changing host, port or trustSelfSigned drops the pinned TLS certificate (the next connection pins again).',
   );
 
 export const UpdateCloudConnectionResponse = zod.object({
@@ -544,6 +560,12 @@ export const UpdateCloudConnectionResponse = zod.object({
     ),
   accountLabel: zod.string().nullish(),
   hasCredentials: zod.boolean(),
+  trustSelfSigned: zod
+    .boolean()
+    .optional()
+    .describe(
+      "Self-signed TLS certificates are accepted for this connection (FTPS \/ WebDAV \/ Nextcloud), pinned on first use. The pinned fingerprint is never returned.",
+    ),
   createdAt: zod.string(),
 });
 
@@ -847,6 +869,7 @@ export const ExecuteUploadResponse = zod.object({
 });
 
 /**
+ * Requires an active subscription. Limited per IP and to 30 emails per user per rolling 24 hours.
  * @summary Email a witness that a file was captured and uploaded
  */
 export const notifyWitnessBodyFileNameMax = 500;

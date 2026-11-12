@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  earnedFreeYears, milestoneAward, milestoneClawback, nextReferralStatus, type ReferralEvent,
+  earnedFreeYears, isSelfReferral, milestoneAward, milestoneClawback, nextReferralStatus, type ReferralEvent,
 } from "../src/lib/referralRules.ts";
 
 const DAY = 86_400_000;
@@ -148,4 +148,16 @@ test("lapse claws back but a pending (price-0 trial) referral survives a lapse",
   assert.equal(w.referrer.freeYearsAwarded, 1);
   w.deliver("exp-12", 12, "lapsed");
   assert.equal(w.referrer.freeYearsAwarded, 0);
+});
+
+// ─── Self-referral ────────────────────────────────────────────────────────────
+
+test("isSelfReferral: same account, or the same mailbox under an alias", async () => {
+  const { normalizeEmailForTrial } = await import("../src/lib/emailHash.ts");
+  const referrer = { id: 7, email: "jdoe@gmail.com" };
+  assert.equal(isSelfReferral(referrer, { id: 7, email: "other@example.com" }, normalizeEmailForTrial), true);
+  assert.equal(isSelfReferral(referrer, { email: "J.Doe+promo@googlemail.com" }, normalizeEmailForTrial), true);
+  assert.equal(isSelfReferral(referrer, { id: null, email: "jdoe@gmail.com" }, normalizeEmailForTrial), true);
+  assert.equal(isSelfReferral(referrer, { id: 8, email: "friend@gmail.com" }, normalizeEmailForTrial), false);
+  assert.equal(isSelfReferral(referrer, { email: "jdoe@example.com" }, normalizeEmailForTrial), false);
 });

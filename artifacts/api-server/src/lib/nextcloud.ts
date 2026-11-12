@@ -78,3 +78,16 @@ function parseServerUrl(
   // the scheme/host/port survive from whatever was pasted.
   return { base: url.origin, path: url.pathname.replace(/\/+$/, "") };
 }
+
+/**
+ * True when a WebDAV / Nextcloud server URL would be reached over plain
+ * http:// (an explicit scheme — a bare host defaults to https://). Basic auth
+ * sends the password with every request, so the routes and the upload path
+ * refuse these unless ALLOW_INSECURE_WEBDAV=true.
+ */
+export function usesPlainHttp(rawHost: string | null | undefined): boolean {
+  return /^\s*http:\/\//i.test(rawHost ?? "");
+}
+
+export const INSECURE_DAV_MESSAGE =
+  "This server address uses http://, which would send your password unencrypted. Use an https:// address.";

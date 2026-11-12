@@ -5,7 +5,7 @@ import type { FileHandle } from "fs/promises";
 import dns from "dns";
 import { randomUUID } from "crypto";
 import net from "net";
-import type { ConnectionOptions as TlsConnectionOptions } from "tls";
+import { TLSSocket, type ConnectionOptions as TlsConnectionOptions } from "tls";
 import { db } from "@workspace/db";
 import { cloudConnectionsTable } from "@workspace/db";
 import { and, eq, isNotNull, isNull, lt, ne, or } from "drizzle-orm";
@@ -13,7 +13,8 @@ import { logger } from "./logger.js";
 import { encrypt, decrypt, decryptCredential } from "./crypto.js";
 import { isPrivateIp, SafeHttpAgent, SafeHttpsAgent } from "./ssrf.js";
 import { sanitizeFileName } from "./fileNames.js";
-import { nextcloudDavUrl, webdavBaseUrl } from "./nextcloud.js";
+import { INSECURE_DAV_MESSAGE, nextcloudDavUrl, webdavBaseUrl } from "./nextcloud.js";
+import { CA_VALID_PIN, TlsPinGuard, normalizePin, tlsPinMismatchError } from "./tlsPin.js";
 import {
   CONTROL_REQUEST_TIMEOUT_MS,
   DRIVE_CHUNK_SIZE,
@@ -111,6 +112,10 @@ export interface CloudConn {
   refreshToken: string | null;
   tokenExpiry: Date | null;
   uploadPath: string | null;
+  /** Owner opted in to self-signed TLS certificates (FTPS / WebDAV), pinned on first use. */
+  trustSelfSigned?: boolean;
+  /** Pinned leaf-certificate SHA-256 (server-only; see tlsPin.ts). */
+  tlsPinSha256?: string | null;
 }
 
 export type UploadResult = { connectionId: number; success: boolean; error?: string };
@@ -266,6 +271,85 @@ async function getAccessToken(conn: CloudConn, signal?: AbortSignal): Promise<st
 
 // ─── FTP ──────────────────────────────────────────────────────────────────────
 
+// ─── TLS pinning (self-signed opt-in) ─────────────────────────────────────────
+
+/**
+ * Persist a pin learned during an operation (see tlsPin.ts).
+ *
+ * CA_VALID_PIN (the server presented a CA-valid certificate) overwrites
+ * whatever is stored — it only ever makes the connection stricter.
+ *
+ * A first-use fingerprint is conditional on the connection still trusting
+ * self-signed certificates with no pin, so a concurrent first use (or an edit
+ * that cleared the pin) can't be overwritten; if another pin won the race, the
+ * certificate we just trusted must match it.
+ */
+async function persistTlsPin(conn: CloudConn, pin: string): Promise<void> {
+  if (pin === CA_VALID_PIN) {
+    await db.update(cloudConnectionsTable)
+      .set({ tlsPinSha256: CA_VALID_PIN })
+      .where(and(eq(cloudConnectionsTable.id, conn.id), eq(cloudConnectionsTable.trustSelfSigned, true)));
+    conn.tlsPinSha256 = CA_VALID_PIN;
+    logger.info({ connectionId: conn.id }, "Self-signed-trusting connection presented a CA-valid certificate; self-signed certificates now refused");
+    return;
+  }
+  const [row] = await db.update(cloudConnectionsTable)
+    .set({ tlsPinSha256: pin })
+    .where(and(
+      eq(cloudConnectionsTable.id, conn.id),
+      eq(cloudConnectionsTable.trustSelfSigned, true),
+      isNull(cloudConnectionsTable.tlsPinSha256),
+    ))
+    .returning({ id: cloudConnectionsTable.id });
+  if (row) {
+    conn.tlsPinSha256 = pin;
+    logger.info({ connectionId: conn.id }, "Pinned self-signed TLS certificate (trust on first use)");
+    return;
+  }
+  const [current] = await db.select({ pin: cloudConnectionsTable.tlsPinSha256, trust: cloudConnectionsTable.trustSelfSigned })
+    .from(cloudConnectionsTable).where(eq(cloudConnectionsTable.id, conn.id)).limit(1);
+  if (!current?.trust || normalizePin(current.pin) !== pin) throw tlsPinMismatchError();
+}
+
+function tlsUntrustedError(cause: unknown): Error {
+  return Object.assign(new Error("TLS certificate is not trusted and the connection doesn't allow self-signed certificates"), {
+    code: "TLS_UNTRUSTED", cause,
+  });
+}
+
+/**
+ * Check every FTPS *data* connection against the pin too (basic-ftp opens
+ * them itself with the control connection's TLS options). The context's
+ * `dataSocket` setter is wrapped on this client instance so the check is
+ * attached before the transfer waits for the handshake. Returns false if the
+ * library internals changed — the caller then fails closed.
+ */
+function pinFtpDataSockets(client: FtpClient, guard: TlsPinGuard): boolean {
+  const ctx = client.ftp as unknown as Record<string, unknown>;
+  let proto: object | null = Object.getPrototypeOf(ctx);
+  let desc: PropertyDescriptor | undefined;
+  while (proto && !desc) {
+    desc = Object.getOwnPropertyDescriptor(proto, "dataSocket");
+    proto = Object.getPrototypeOf(proto);
+  }
+  if (!desc?.get || !desc.set) return false;
+  const { get, set } = desc;
+  Object.defineProperty(ctx, "dataSocket", {
+    configurable: true,
+    get() { return get.call(this); },
+    set(socket: unknown) {
+      if (socket instanceof TLSSocket) {
+        socket.once("secureConnect", () => {
+          const err = guard.check(socket);
+          if (err) socket.destroy(err);
+        });
+      }
+      set.call(this, socket);
+    },
+  });
+  return true;
+}
+
 /**
  * Connect and log in an FTP client, preferring a certificate-validated FTPS
  * (AUTH TLS) session. Steps are run individually (rather than via
@@ -276,9 +360,12 @@ async function getAccessToken(conn: CloudConn, signal?: AbortSignal): Promise<st
  *    (`servername`, which Node's tls uses for SNI and checkServerIdentity).
  *    Previously the cert was checked against the IP, which always failed, so
  *    every FTPS session silently fell back to an unverified one.
- *  - Only a TLS certificate error falls back to an unverified (still encrypted)
- *    session — e.g. a NAS with a self-signed cert. Auth/network errors are
- *    never retried: each retry is another login and trips fail2ban.
+ *  - A TLS certificate error fails closed unless the connection opted in to
+ *    self-signed certificates (trustSelfSigned). Then the session is retried
+ *    without CA validation, and the certificate is pinned on first use and
+ *    checked against the pin on the control AND every data connection — before
+ *    USER/PASS is sent. Auth/network errors are never retried: each retry is
+ *    another login and trips fail2ban.
  *  - Plaintext is used only when the server refuses AUTH TLS *and* an operator
  *    opted in via ALLOW_INSECURE_FTP; otherwise it fails closed.
  */
@@ -299,12 +386,26 @@ async function ftpConnect(client: FtpClient, conn: CloudConn): Promise<void> {
   await client.connect(pinnedIp, port);
   try {
     await client.useTLS(tlsOpts(true));
+    // CA-valid: remember that, so a later self-signed certificate (an
+    // interception) is never trusted as a "first use" on this connection.
+    if (conn.trustSelfSigned && normalizePin(conn.tlsPinSha256) !== CA_VALID_PIN) {
+      await persistTlsPin(conn, CA_VALID_PIN);
+    }
   } catch (err) {
     if (isTlsCertError(err)) {
+      if (!conn.trustSelfSigned) throw tlsUntrustedError(err);
       // Nothing has been sent yet (no USER/PASS), so reconnecting costs no login.
       await client.connect(pinnedIp, port);
       await client.useTLS(tlsOpts(false));
-      logger.warn({ connectionId: conn.id, code: (err as any).code }, "FTPS certificate not validated — encrypted but unauthenticated");
+      const guard = new TlsPinGuard(conn.tlsPinSha256 ?? null);
+      const control = client.ftp.socket;
+      const pinErr = control instanceof TLSSocket ? guard.check(control) : tlsPinMismatchError();
+      if (pinErr) throw pinErr;
+      if (guard.toPersist) await persistTlsPin(conn, guard.toPersist);
+      if (!pinFtpDataSockets(client, guard)) {
+        throw Object.assign(new Error("Cannot pin FTPS data connections (basic-ftp internals changed)"), { code: "TLS_UNTRUSTED" });
+      }
+      logger.info({ connectionId: conn.id, code: (err as any).code }, "FTPS using pinned self-signed certificate");
     } else if (isTlsUnsupportedError(err)) {
       if (process.env["ALLOW_INSECURE_FTP"] !== "true") {
         throw new Error("FTP server does not support TLS. Refusing to send credentials over an unencrypted connection.");
@@ -379,7 +480,10 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
   } catch (err: any) {
     // Don't surface raw internal errors (resolver text, private-IP guard messages,
     // remote hostnames) to the client — log them, return actionable guidance.
-    logger.warn({ err, connectionId: conn.id }, "FTP connection test failed");
+    logger.warn({ err: err, connectionId: conn.id }, "FTP connection test failed");
+    if (err?.code === "TLS_UNTRUSTED" || err?.code === "TLS_PIN_MISMATCH") {
+      return { success: false, message: publicUploadError(conn.type, err) };
+    }
     return { success: false, message: "Could not connect. Check the host, port, credentials, and that the server supports TLS (FTPS)." };
   }
 }
@@ -399,11 +503,32 @@ async function testFtp(conn: CloudConn): Promise<{ success: boolean; message: st
  * 307/308; there is no per-client redirect switch, so the agents are the guard.
  * Call `dispose()` when done to free the agents' sockets.
  */
+/** ALLOW_INSECURE_WEBDAV=true lets WebDAV/Nextcloud use plain http:// (Basic auth in cleartext). */
+export function allowInsecureWebdav(): boolean {
+  return process.env["ALLOW_INSECURE_WEBDAV"] === "true";
+}
+
+function insecureTransportError(): Error {
+  return Object.assign(new Error(INSECURE_DAV_MESSAGE), { code: "INSECURE_TRANSPORT" });
+}
+
 async function webdavClientFor(conn: CloudConn, baseUrl: string) {
+  // Basic auth goes up-front on every request, so plain http would put the
+  // password on the wire in cleartext. Refused unless an operator opted in.
+  if (new URL(baseUrl).protocol === "http:") {
+    if (!allowInsecureWebdav()) throw insecureTransportError();
+    logger.warn({ connectionId: conn.id }, "WebDAV connection is UNENCRYPTED (ALLOW_INSECURE_WEBDAV opt-in)");
+  }
   const { hostname } = await assertPublicHost(baseUrl);
   const pass = decryptCredential(conn.passwordEncrypted);
   const httpAgent = new SafeHttpAgent({ allowedHost: hostname });
-  const httpsAgent = new SafeHttpsAgent({ allowedHost: hostname });
+  // Self-signed opt-in: CA validation off, replaced by the TOFU pin check on
+  // every socket (run before the request — and its Basic auth — is sent).
+  const pinGuard = conn.trustSelfSigned ? new TlsPinGuard(conn.tlsPinSha256 ?? null) : null;
+  const httpsAgent = new SafeHttpsAgent({
+    allowedHost: hostname,
+    ...(pinGuard ? { rejectUnauthorized: false, onSecureConnect: (socket) => pinGuard.check(socket) } : {}),
+  });
   const client = createWebdavClient(baseUrl, {
     username: conn.username ?? undefined,
     password: pass || undefined,
@@ -412,12 +537,29 @@ async function webdavClientFor(conn: CloudConn, baseUrl: string) {
   });
   return {
     client,
+    /** Store a first-use pin seen during the operation (call after it succeeded). */
+    persistPin: async () => {
+      if (pinGuard?.toPersist) await persistTlsPin(conn, pinGuard.toPersist);
+    },
     dispose: () => { httpAgent.destroy(); httpsAgent.destroy(); },
   };
 }
 
+/**
+ * Surface WebDAV TLS failures (possibly wrapped by node-fetch / webdav) under
+ * the codes publicUploadError explains: a CA/hostname failure on a connection
+ * that didn't opt in → TLS_UNTRUSTED; a pin mismatch → TLS_PIN_MISMATCH.
+ */
+function classifyDavError(err: unknown): unknown {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  if (e?.code === "TLS_PIN_MISMATCH") return err;
+  if (e?.cause?.code === "TLS_PIN_MISMATCH") return tlsPinMismatchError();
+  if (isTlsCertError(e) || isTlsCertError(e?.cause)) return tlsUntrustedError(err);
+  return err;
+}
+
 async function uploadWebdavTo(conn: CloudConn, baseUrl: string, src: UploadSource, fileName: string, signal: AbortSignal): Promise<void> {
-  const { client, dispose } = await webdavClientFor(conn, baseUrl);
+  const { client, persistPin, dispose } = await webdavClientFor(conn, baseUrl);
   try {
     const segments = uploadPathSegments(conn.uploadPath);
     const dir = "/" + segments.join("/");
@@ -442,6 +584,9 @@ async function uploadWebdavTo(conn: CloudConn, baseUrl: string, src: UploadSourc
     } finally {
       stream.destroy();
     }
+    await persistPin();
+  } catch (err) {
+    throw classifyDavError(err);
   } finally {
     dispose();
   }
@@ -463,6 +608,7 @@ async function testWebdavAt(
     const dav = await webdavClientFor(conn, baseUrl);
     dispose = dav.dispose;
     const exists = await dav.client.exists("/" + uploadPathSegments(conn.uploadPath).join("/"), { signal: controlSignal() });
+    await dav.persistPin();
     return {
       success: true,
       message: exists
@@ -470,7 +616,11 @@ async function testWebdavAt(
         : `${label} connected — upload folder will be created on first upload`,
     };
   } catch (err: any) {
-    logger.warn({ err, connectionId: conn.id, type: conn.type }, `${label} connection test failed`);
+    logger.warn({ err: err, connectionId: conn.id, type: conn.type }, `${label} connection test failed`);
+    const classified = classifyDavError(err) as { code?: unknown };
+    if (classified?.code === "INSECURE_TRANSPORT" || classified?.code === "TLS_UNTRUSTED" || classified?.code === "TLS_PIN_MISMATCH") {
+      return { success: false, message: publicUploadError(conn.type, classified) };
+    }
     return { success: false, message: failureHint };
   } finally {
     dispose?.();
@@ -1049,7 +1199,7 @@ export async function uploadToCloud(conn: CloudConn, src: UploadSource, rawFileN
   } catch (err: any) {
     // Full detail (remote status/body, resolver text, IPs) stays in the log;
     // the client — and the stored upload record — only get a generic message.
-    logger.warn({ err, connectionId: conn.id, type: conn.type, deadlineMs, bytes: src.size }, "Cloud upload failed");
+    logger.warn({ err: err, connectionId: conn.id, type: conn.type, deadlineMs, bytes: src.size }, "Cloud upload failed");
     return { connectionId: conn.id, success: false, error: publicUploadError(conn.type, err) };
   }
 }

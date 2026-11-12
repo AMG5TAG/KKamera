@@ -17,6 +17,7 @@ import {
   dropboxPath,
   isAllowedMimeType,
   isTlsCertError,
+  mapWithConcurrency,
   isTlsUnsupportedError,
   parseConnectionIdsField,
   publicUploadError,
@@ -157,4 +158,30 @@ test("OneDrive: fragment size is a 320 KiB multiple under 60 MiB; path segments 
     oneDriveItemPath(["My Photos", "#1?"], "100% café.jpg"),
     "root:/My%20Photos/%231%3F/100%25%20caf%C3%A9.jpg:",
   );
+});
+
+// ─── Fan-out concurrency ──────────────────────────────────────────────────────
+
+test("mapWithConcurrency: preserves order and never exceeds the limit", async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const out = await mapWithConcurrency([5, 1, 4, 2, 3, 0, 6], 3, async (n) => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, n));
+    inFlight--;
+    return n * 10;
+  });
+  assert.deepEqual(out, [50, 10, 40, 20, 30, 0, 60]);
+  assert.ok(peak <= 3, `peak ${peak}`);
+  assert.deepEqual(await mapWithConcurrency([], 3, async (n: number) => n), []);
+  assert.deepEqual(await mapWithConcurrency([1, 2], 0, async (n) => n), [1, 2]); // limit floor of 1
+});
+
+// ─── TLS error messages ───────────────────────────────────────
+
+test("publicUploadError: TLS trust and insecure-transport failures are explained", () => {
+  assert.match(publicUploadError("ftp", { code: "TLS_UNTRUSTED" }), /self-signed/);
+  assert.match(publicUploadError("webdav", { code: "TLS_PIN_MISMATCH" }), /different certificate/);
+  assert.match(publicUploadError("nextcloud", { code: "INSECURE_TRANSPORT" }), /https:\/\//);
 });

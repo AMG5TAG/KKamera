@@ -4,7 +4,7 @@ import path from "path";
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import multer from "multer";
-import rateLimit from "express-rate-limit";
+import { localRateLimit, sharedRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import { uploadsTable, cloudConnectionsTable, usersTable } from "@workspace/db";
 import { eq, and, inArray, desc, lt, isNull } from "drizzle-orm";
@@ -14,7 +14,10 @@ import { logger } from "../lib/logger.js";
 import { uploadToCloud } from "../lib/cloudUpload.js";
 import { sendEmail, escapeHtml } from "../lib/email.js";
 import { normalizeConnectionIds } from "../lib/connectionIds.js";
-import { MAX_UPLOAD_FILENAME_LENGTH, isAllowedMimeType, parseConnectionIdsField } from "../lib/cloudUploadPolicy.js";
+import {
+  MAX_PARALLEL_TARGETS, MAX_TARGETS_PER_UPLOAD, MAX_UPLOAD_FILENAME_LENGTH,
+  isAllowedMimeType, mapWithConcurrency, parseConnectionIdsField,
+} from "../lib/cloudUploadPolicy.js";
 import {
   STALE_UPLOADING_MS, decideExistingUpload, isUniqueViolation, mergeUploadOutcome, parseClientUploadIdField,
 } from "../lib/uploadDedupe.js";
@@ -33,7 +36,16 @@ const upload = multer({
     destination: os.tmpdir(),
     filename: (_req, _file, cb) => cb(null, `${UPLOAD_TMP_PREFIX}${Date.now()}-${Math.round(Math.random() * 1e9)}`),
   }),
-  limits: { fileSize: 200 * 1024 * 1024, files: 1 },
+  // The app sends one file plus four small text fields (fileName, mimeType,
+  // clientUploadId, connectionIds — a JSON array of at most a few ids), so
+  // anything beyond these bounds is junk; multer rejects it before buffering.
+  limits: {
+    fileSize: 200 * 1024 * 1024,
+    files: 1,
+    fields: 8,
+    fieldSize: 8 * 1024,
+    parts: 10,
+  },
 });
 
 // Temp files are unlinked when their request finishes, but a crash or restart
@@ -175,7 +187,7 @@ function uploadAdmission(req: Request, res: Response, next: NextFunction): void 
 
 // Per-user request rate on top of the concurrency cap (keyed by the
 // authenticated user, not IP — many users can share a carrier NAT).
-const executeLimiter = rateLimit({
+const executeLimiter = localRateLimit("uploads.executeLimiter", {
   windowMs: 60 * 1000,
   max: 30,
   standardHeaders: true,
@@ -215,7 +227,7 @@ router.get("/uploads", requireAuth, async (req, res) => {
   try {
     const parsed = listQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid query" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid query" });
       return;
     }
     const { limit, offset } = parsed.data;
@@ -237,7 +249,7 @@ router.post("/uploads", requireAuth, async (req, res) => {
   try {
     const parsed = createUploadSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const { fileName, fileType, connectionIds } = parsed.data;
@@ -415,6 +427,15 @@ router.post(
         return true;
       });
 
+      if (targets.length > MAX_TARGETS_PER_UPLOAD) {
+        // Only reachable for accounts that predate the per-user connection cap.
+        res.status(422).json({
+          code: "too_many_targets",
+          message: `A capture can be sent to at most ${MAX_TARGETS_PER_UPLOAD} cloud destinations. Choose fewer in Settings.`,
+        });
+        return;
+      }
+
       if (targets.length === 0 && connectionIds) {
         // The capture names specific destinations and every one has since been
         // removed or disabled. If the user has other connections, waiting won't
@@ -465,9 +486,10 @@ router.post(
         uploadRecord = claim.row;
         previousRecord = claim.previous;
         const source = { path: file.path, size: file.size };
-        results = await Promise.all(
-          targets.map(conn => uploadToCloud(conn, source, fileName, mimeType))
-        );
+        // Bounded per capture, so an upload with many destinations doesn't
+        // multiply past its one slot (uploadToCloud never throws).
+        results = await mapWithConcurrency(targets, MAX_PARALLEL_TARGETS,
+          conn => uploadToCloud(conn, source, fileName, mimeType));
       } catch (err) {
         // Never leave a claimed row stuck in "uploading" — that would make every
         // retry of this capture 409 until the row goes stale.
@@ -512,7 +534,7 @@ router.patch("/uploads/:id", requireAuth, async (req, res) => {
     if (!id) { res.status(400).json({ message: "Invalid upload ID" }); return; }
     const parsed = updateUploadSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const { status, error } = parsed.data;
@@ -552,9 +574,34 @@ router.delete("/uploads", requireAuth, async (req, res) => {
   }
 });
 
-// Witness emails go to arbitrary addresses from our sending domain — rate limit
-// per IP to prevent the endpoint being used as a spam/phishing relay.
-const witnessLimiter = rateLimit({
+// Witness emails go to arbitrary addresses from our sending domain, so the
+// route is a potential spam/phishing relay. Three layers: an active
+// subscription (no free accounts minted to send mail), a per-IP limiter, and a
+// per-user daily cap held in the DB (rotating IPs can't get around it).
+const WITNESS_WINDOW_MS = 24 * 60 * 60 * 1000;
+const WITNESS_CAP_PER_WINDOW = 30;
+
+/** Reserve one witness email against the user's rolling 24h cap (row-locked). */
+async function reserveWitnessEmail(userId: number): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select({
+      windowStart: usersTable.witnessWindowStart,
+      used: usersTable.witnessCount,
+    }).from(usersTable).where(eq(usersTable.id, userId)).for("update").limit(1);
+    if (!row) return false;
+    const now = Date.now();
+    const windowActive = !!(row.windowStart && now - row.windowStart.getTime() < WITNESS_WINDOW_MS);
+    const used = windowActive ? row.used : 0;
+    if (used >= WITNESS_CAP_PER_WINDOW) return false;
+    await tx.update(usersTable).set({
+      witnessWindowStart: windowActive ? row.windowStart : new Date(now),
+      witnessCount: used + 1,
+    }).where(eq(usersTable.id, userId));
+    return true;
+  });
+}
+
+const witnessLimiter = sharedRateLimit("uploads.witnessLimiter", {
   windowMs: 60 * 60 * 1000,
   max: 20,
   standardHeaders: true,
@@ -567,11 +614,18 @@ const witnessSchema = z.object({
   fileName: z.string().min(1).max(500),
 });
 
-router.post("/uploads/witness-notify", requireAuth, witnessLimiter, async (req, res) => {
+router.post("/uploads/witness-notify", requireAuth, requireSubscription, witnessLimiter, async (req, res) => {
   try {
     const parsed = witnessSchema.safeParse(req.body);
     if (!parsed.success) { res.status(400).json({ message: "Invalid request" }); return; }
     const { witnessEmail, fileName } = parsed.data;
+
+    if (!(await reserveWitnessEmail(req.userId!))) {
+      res.status(429).json({
+        message: `Daily witness notification limit reached (${WITNESS_CAP_PER_WINDOW} per day). Try again later.`,
+      });
+      return;
+    }
 
     const [user] = await db.select({ name: usersTable.name }).from(usersTable)
       .where(eq(usersTable.id, req.userId!)).limit(1);

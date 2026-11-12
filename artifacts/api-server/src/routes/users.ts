@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import rateLimit from "express-rate-limit";
+import { sharedRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import {
   usersTable, subscriptionsTable, referralsTable,
@@ -11,11 +11,15 @@ import { eq, and, ne, inArray, isNull } from "drizzle-orm";
 import { requireAuth } from "../middlewares/auth.js";
 import { verifyReauth } from "./auth.js";
 import { buildUserExport, parseTargetIds } from "../lib/accountRules.js";
+import { revokeRemovedConnectionIfUnshared } from "../lib/cloudUpload.js";
+import { decrypt } from "../lib/crypto.js";
+import { deleteRevenueCatSubscriber, RevenueCatNotConfiguredError } from "../lib/revenueCatApi.js";
+import { logger } from "../lib/logger.js";
 
 const router = Router();
 
 // Account deletion re-verifies the password (+2FA) — bound guesses per account.
-const deleteAccountLimiter = rateLimit({
+const deleteAccountLimiter = sharedRateLimit("users.deleteAccountLimiter", {
   windowMs: 15 * 60 * 1000,
   max: 5,
   standardHeaders: true,
@@ -25,7 +29,7 @@ const deleteAccountLimiter = rateLimit({
 });
 
 const deleteAccountSchema = z.object({
-  password: z.string({ required_error: "Enter your password to delete your account." })
+  password: z.string({ error: "Enter your password to delete your account." })
     .min(1, "Enter your password to delete your account."),
   // Required when 2FA is enabled — a 6-digit TOTP or a backup code.
   totpCode: z.string().nullish(),
@@ -62,7 +66,7 @@ router.patch("/users/me", requireAuth, async (req, res) => {
   try {
     const parsed = updateMeSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const updates: Partial<{ name: string; onboardingCompleted: boolean }> = {};
@@ -121,7 +125,7 @@ router.put("/users/upload-target", requireAuth, async (req, res) => {
   try {
     const parsed = uploadTargetSchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const { mode, connectionIds } = parsed.data;
@@ -209,6 +213,51 @@ router.get("/users/me/export", requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * Best-effort third-party cleanup after an account is deleted (never throws):
+ *  - revoke the provider grants behind its cloud connections (skipped for a
+ *    grant another account's connection still rides on — see
+ *    revokeRemovedConnectionIfUnshared);
+ *  - delete the RevenueCat subscriber — unless a completed referral still
+ *    names this user, because a later refund webhook is what claws that
+ *    referral back (routes/revenuecat.ts) and RevenueCat stops sending events
+ *    for a deleted subscriber. Those are left for the subscription to lapse.
+ */
+async function cleanUpDeletedAccount(
+  userId: number,
+  connections: (typeof cloudConnectionsTable.$inferSelect)[],
+): Promise<void> {
+  // Revoke each distinct grant once. Dedup on the DECRYPTED token: the stored
+  // ciphertext has a random IV, so equal tokens never compare equal encrypted.
+  // A row whose token can't be decrypted is kept (revoke handles/logs it).
+  const seen = new Set<string>();
+  const toRevoke = connections.filter((c) => {
+    const enc = c.refreshToken ?? c.accessTokenEncrypted;
+    if (!enc) return true;
+    const token = decrypt(enc); // "" when it can't be decrypted
+    if (!token) return true;
+    const key = `${c.type}:${token}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  await Promise.allSettled(toRevoke.map((c) => revokeRemovedConnectionIfUnshared(c)));
+
+  try {
+    const [creditAtStake] = await db.select({ id: referralsTable.id }).from(referralsTable)
+      .where(and(eq(referralsTable.referredId, userId), eq(referralsTable.status, "completed"))).limit(1);
+    if (creditAtStake) {
+      logger.info({ userId }, "RevenueCat subscriber kept after account deletion (completed referral pending refund window)");
+      return;
+    }
+    await deleteRevenueCatSubscriber(String(userId));
+    logger.info({ userId }, "RevenueCat subscriber deleted with account");
+  } catch (err) {
+    if (err instanceof RevenueCatNotConfiguredError) return;
+    logger.warn({ err, userId }, "RevenueCat subscriber delete failed (ignored)");
+  }
+}
+
 // GDPR: delete account and all associated data
 // Re-authentication (password, plus TOTP/backup code when 2FA is on) is
 // required so a stolen session token alone can't destroy the account. Wrong
@@ -219,7 +268,7 @@ router.delete("/users/me", requireAuth, deleteAccountLimiter, async (req, res) =
 
     const parsed = deleteAccountSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid request" });
       return;
     }
     const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
@@ -228,16 +277,16 @@ router.delete("/users/me", requireAuth, deleteAccountLimiter, async (req, res) =
     if (!reauth.ok) { res.status(reauth.status).json({ message: reauth.message }); return; }
 
     // Billing is IAP-only; the user cancels the subscription store-side (App Store
-    // / Play). Deleting the account here just removes our data — RevenueCat stops
-    // mirroring once the store subscription lapses.
+    // / Play). Deleting the account here removes our data; RevenueCat's record is
+    // removed after commit (below).
 
     // Delete all PII atomically — a partial delete must not leave orphaned rows
     // (e.g. encrypted cloud credentials) behind if one statement fails.
-    await db.transaction(async (tx) => {
+    const removedConnections = await db.transaction(async (tx) => {
       await tx.delete(passwordResetTokensTable).where(eq(passwordResetTokensTable.userId, userId));
       await tx.delete(feedbackTable).where(eq(feedbackTable.userId, userId));
       await tx.delete(uploadsTable).where(eq(uploadsTable.userId, userId));
-      await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId));
+      const connections = await tx.delete(cloudConnectionsTable).where(eq(cloudConnectionsTable.userId, userId)).returning();
       await tx.delete(subscriptionsTable).where(eq(subscriptionsTable.userId, userId));
       await tx.delete(referralsTable).where(eq(referralsTable.referrerId, userId));
       // Rows where this user was the one referred: a completed referral still
@@ -250,9 +299,11 @@ router.delete("/users/me", requireAuth, deleteAccountLimiter, async (req, res) =
       await tx.delete(referralsTable)
         .where(and(eq(referralsTable.referredId, userId), ne(referralsTable.status, "completed")));
       await tx.delete(usersTable).where(eq(usersTable.id, userId));
+      return connections;
     });
 
     res.json({ message: "Account and all associated data deleted." });
+    void cleanUpDeletedAccount(userId, removedConnections);
   } catch (err) {
     req.log.error({ err }, "Delete account error");
     res.status(500).json({ message: "Failed to delete account" });

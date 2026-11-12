@@ -8,7 +8,7 @@
 import type { CloudConnectionInputType } from "./cloudConnectionInputType";
 
 /**
- * Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (/oauth/initiate → callback → /oauth/complete) and are rejected here. Strings are trimmed; name, host, username and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host).
+ * Manual (self-hosted) connection. OAuth providers (Google Drive, OneDrive, Dropbox) are connected only through the OAuth flow (/oauth/initiate → callback → /oauth/complete) and are rejected here. Strings are trimmed; name, host, username, password and uploadPath must not contain control characters, and host must not embed credentials (user:pass@host). WebDAV/Nextcloud hosts must not use http:// unless the server sets ALLOW_INSECURE_WEBDAV. At most 10 connections per account.
  */
 export interface CloudConnectionInput {
   type: CloudConnectionInputType;
@@ -49,4 +49,9 @@ export interface CloudConnectionInput {
    * @nullable
    */
   uploadPath?: string | null;
+  /**
+   * Accept a self-signed (or otherwise untrusted) TLS certificate for FTPS / WebDAV / Nextcloud. The first certificate seen is pinned and any later different certificate is refused. Default false: an untrusted certificate fails the connection.
+   * @nullable
+   */
+  trustSelfSigned?: boolean | null;
 }

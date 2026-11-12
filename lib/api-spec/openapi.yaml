@@ -176,8 +176,9 @@ paths:
                 $ref: "#/components/schemas/EmailNotVerified"
         "429":
           description: >-
-            Too many sign-in attempts (per-IP limit, or the account is
-            temporarily locked after repeated failures)
+            Too many sign-in attempts: the per-IP limit, too many failures for
+            this account from this address (15 min), or the account-wide
+            ceiling after many failures from many addresses (at most 15 min)
           content:
             application/json:
               schema:
@@ -632,6 +633,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CloudConnection"
+        "400":
+          description: >-
+            Invalid input, including a WebDAV/Nextcloud http:// address (refused
+            unless the server sets ALLOW_INSECURE_WEBDAV)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "409":
+          description: The account already has the maximum number of cloud connections (10)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "429":
+          description: Too many connections created recently
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
     delete:
       operationId: deleteAllCloudConnections
       tags: [cloud-connections]
@@ -935,6 +956,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "409":
+          description: >-
+            Connecting a new account would exceed the per-user limit of 10 cloud
+            connections (the pending connection is discarded)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
         "404":
           description: No matching pending connection for this user (wrong device, already completed, or purged)
           content:
@@ -1050,7 +1079,8 @@ paths:
           description: >
             Every connection named in connectionIds has been removed or disabled while the
             user still has other active connections (body code "targets_removed"). Not
-            retryable as-is; resend without the stale ids.
+            retryable as-is; resend without the stale ids. Also returned (body code
+            "too_many_targets") when a capture would go to more than 10 destinations.
           content:
             application/json:
               schema:
@@ -1081,6 +1111,9 @@ paths:
       operationId: notifyWitness
       tags: [uploads]
       summary: Email a witness that a file was captured and uploaded
+      description: >-
+        Requires an active subscription. Limited per IP and to 30 emails per
+        user per rolling 24 hours.
       security:
         - BearerAuth: []
       requestBody:
@@ -1102,8 +1135,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MessageResponse"
+        "402":
+          description: Active subscription required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
         "429":
-          description: Too many witness notifications
+          description: Too many witness notifications (per-IP limit or the per-user daily cap)
           content:
             application/json:
               schema:
@@ -1190,6 +1229,9 @@ components:
           type: string
         missingEnv:
           type: array
+          description: >-
+            Always empty — which server settings are missing is logged, never
+            returned. Kept so clients can recognise this response.
           items:
             type: string
 
@@ -1674,6 +1716,12 @@ components:
           type: ["string", "null"]
         hasCredentials:
           type: boolean
+        trustSelfSigned:
+          type: boolean
+          description: >-
+            Self-signed TLS certificates are accepted for this connection
+            (FTPS / WebDAV / Nextcloud), pinned on first use. The pinned
+            fingerprint is never returned.
         createdAt:
           type: string
 
@@ -1684,9 +1732,11 @@ components:
         Manual (self-hosted) connection. OAuth providers (Google Drive,
         OneDrive, Dropbox) are connected only through the OAuth flow
         (/oauth/initiate → callback → /oauth/complete) and are rejected here.
-        Strings are trimmed; name, host, username and uploadPath must not
-        contain control characters, and host must not embed credentials
-        (user:pass@host).
+        Strings are trimmed; name, host, username, password and uploadPath
+        must not contain control characters, and host must not embed
+        credentials (user:pass@host). WebDAV/Nextcloud hosts must not use
+        http:// unless the server sets ALLOW_INSECURE_WEBDAV. At most 10
+        connections per account.
       properties:
         type:
           type: string
@@ -1715,6 +1765,13 @@ components:
         uploadPath:
           type: ["string", "null"]
           maxLength: 500
+        trustSelfSigned:
+          type: ["boolean", "null"]
+          description: >-
+            Accept a self-signed (or otherwise untrusted) TLS certificate for
+            FTPS / WebDAV / Nextcloud. The first certificate seen is pinned and
+            any later different certificate is refused. Default false: an
+            untrusted certificate fails the connection.
 
     CloudConnectionUpdate:
       type: object
@@ -1724,7 +1781,9 @@ components:
         null clears it (password → no saved password, port → protocol default,
         username → none, uploadPath → the default "/KKamera"). name, active and
         host cannot be cleared, and host must not be blank. Nextcloud
-        connections cannot clear their username.
+        connections cannot clear their username. Changing host, port or
+        trustSelfSigned drops the pinned TLS certificate (the next connection
+        pins again).
       properties:
         name:
           type: string
@@ -1751,6 +1810,9 @@ components:
         password:
           type: ["string", "null"]
           maxLength: 500
+        trustSelfSigned:
+          type: boolean
+          description: Accept a self-signed TLS certificate (pinned on first use).
 
     TestResult:
       type: object

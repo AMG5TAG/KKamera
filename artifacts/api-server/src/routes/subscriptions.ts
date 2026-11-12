@@ -1,5 +1,5 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
+import { localRateLimit } from "../lib/rateLimitStore.js";
 import { db } from "@workspace/db";
 import { subscriptionsTable, usersTable, trialHistoryTable } from "@workspace/db";
 import { eq, inArray } from "drizzle-orm";
@@ -30,7 +30,7 @@ async function subscriptionJson(userId: number) {
 }
 
 // Each sync is an outbound RevenueCat API call — cap it per user.
-const syncLimiter = rateLimit({
+const syncLimiter = localRateLimit("subscriptions.syncLimiter", {
   windowMs: 60 * 1000,
   max: 10,
   standardHeaders: true,

@@ -30,6 +30,43 @@ export function uploadDeadlineMs(bytes: number): number {
 
 export const MAX_UPLOAD_FILENAME_LENGTH = 255;
 
+// ─── Fan-out bounds ───────────────────────────────────────────────────────────
+// One capture is uploaded to every selected connection, so connections are a
+// work multiplier: without bounds a single request (or a stolen token) could
+// make the server push the same file to hundreds of hosts.
+
+/** Most cloud connections one account may have (manual + OAuth, incl. pending). */
+export const MAX_CONNECTIONS_PER_USER = 10;
+/** Most destinations a single capture is sent to. */
+export const MAX_TARGETS_PER_UPLOAD = MAX_CONNECTIONS_PER_USER;
+/**
+ * Provider transfers run at once for one capture. An upload holds one global
+ * slot, so outbound transfers stay bounded at slots × this however many
+ * targets each capture has.
+ */
+export const MAX_PARALLEL_TARGETS = 3;
+
+/**
+ * Map `items` through `fn` with at most `limit` calls in flight, preserving
+ * order. `fn` must not throw (uploadToCloud returns a result instead).
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+
 export type ConnectionIdsField =
   | { ok: true; ids: number[] | null } // null = field absent → all active connections
   | { ok: false };
@@ -260,8 +297,18 @@ export function publicUploadError(type: string, err: unknown): string {
     return `${label} is out of storage space.`;
   }
   if (status === 429) return `${label} is rate-limiting uploads. It will be retried.`;
+  if (code === "TLS_UNTRUSTED") {
+    return `${label} presented a certificate that isn't trusted. If it's your own server with a self-signed certificate, turn on "Trust self-signed certificate" for this connection.`;
+  }
+  if (code === "TLS_PIN_MISMATCH") {
+    return `${label} presented a different certificate than before. If you replaced it, turn "Trust self-signed certificate" off for this connection, save, then turn it back on.`;
+  }
+  if (code === "INSECURE_TRANSPORT") {
+    return `${label} address uses http://, which would send your password unencrypted. Use an https:// address.`;
+  }
   if (code === "ERR_SSRF_BLOCKED" || code === "HOST_NOT_ALLOWED") {
     return `${label} address is not allowed (private or local network addresses can't be used).`;
   }
   return `Upload to ${label} failed.`;
 }
+
