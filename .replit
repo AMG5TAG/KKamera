@@ -6,8 +6,10 @@ deploymentTarget = "autoscale"
 # Build the workspace libs and bundle the API server (esbuild -> dist/index.mjs).
 # The API server is JSON-only; the iOS/Android apps are built and shipped via EAS.
 build = ["sh", "-c", "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build"]
-# Start the API server.
-run = ["sh", "-c", "pnpm --filter @workspace/api-server run start"]
+# Start the API server. NODE_ENV=production enables JSON logging (no pino-pretty),
+# strict CORS and the fail-fast required-env check (see replit.md). The `start`
+# script also defaults NODE_ENV to production; it's explicit here as well.
+run = ["sh", "-c", "NODE_ENV=production pnpm --filter @workspace/api-server run start"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]

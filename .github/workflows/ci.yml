@@ -32,3 +32,11 @@
 
         - name: Build API server
           run: pnpm --filter @workspace/api-server run build
+
+        - name: Expo config check
+          working-directory: artifacts/kkamera
+          run: npx expo-doctor
+
+        - name: Bundle app (iOS + Android)
+          working-directory: artifacts/kkamera
+          run: npx expo export --platform ios --platform android --output-dir /tmp/expo-export

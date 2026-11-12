@@ -22,7 +22,7 @@ run = "pnpm --filter @workspace/kkamera run dev"
 args = ["pnpm", "--filter", "@workspace/kkamera", "run", "build"]
 
 [services.production.run]
-args = ["pnpm", "--filter", "@workspace/kkamera", "run", "serve"]
+args = ["pnpm", "--filter", "@workspace/kkamera", "run", "serve:web"]
 
 [services.production.run.env]
 PORT = "24623"

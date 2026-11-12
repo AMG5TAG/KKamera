@@ -1,0 +1,27 @@
+# EAS uploads the whole repo (monorepo) for each build. Keep the archive lean
+# and never ship local secrets. Mirrors .gitignore plus repo-only extras.
+node_modules/
+.git/
+attached_assets/
+artifacts/api-server/dist/
+**/.env.local
+**/play-service-account.json
+artifacts/kkamera/ios/
+artifacts/kkamera/android/
+.replit
+.replitignore
+.agents/
+dist/
+.expo/
+*.tsbuildinfo
+.DS_Store
+**/.env
+**/.env*.local
+*.jks
+*.p8
+*.p12
+*.key
+*.keystore
+*.mobileprovision
+*.pem
+.claude/
