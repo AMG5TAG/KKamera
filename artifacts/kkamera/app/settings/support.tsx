@@ -94,7 +94,7 @@ export default function SupportScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
   sectionLabel: {
     fontSize: 11, color: "#555", fontFamily: "Inter_600SemiBold",
     letterSpacing: 1.5, textTransform: "uppercase",

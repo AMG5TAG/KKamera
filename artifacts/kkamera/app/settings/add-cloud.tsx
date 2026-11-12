@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TextInput,
-  Platform, Alert, ActivityIndicator,
+  Platform, Alert, ActivityIndicator, Switch,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -10,9 +10,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
 import {
   useCreateCloudConnection, useUpdateCloudConnection, useListCloudConnections,
-  getListCloudConnectionsQueryKey, getUserFacingMessage, initiateOAuth,
-  type CloudConnectionUpdate, type OAuthNotConfigured,
+  useTestCloudConnection, getListCloudConnectionsQueryKey, getUserFacingMessage, initiateOAuth,
+  type CloudConnectionInput, type CloudConnectionUpdate, type OAuthNotConfigured,
 } from "@workspace/api-client-react";
+import { palette } from "@/components/ui/palette";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
@@ -108,6 +109,26 @@ const CLOUD_TYPES: CloudType[] = [
   },
 ];
 
+type FieldErrors = Partial<Record<"type" | "name" | "host" | "port" | "username" | "password" | "form", string>>;
+
+/** WebDAV-backed types (incl. Synology) and Nextcloud: the server rejects plain http:// URLs. */
+function isHttpDavType(t: CloudType): boolean {
+  const backend = t.backendType ?? t.type;
+  return backend === "webdav" || backend === "nextcloud";
+}
+
+const HTTP_REJECTED =
+  "Plain http:// isn't supported — it would send your password unencrypted. Use the https:// address instead.";
+
+/** Server save errors, with a next step for the per-account connection cap. */
+function saveErrorMessage(e: unknown, fallback: string): string {
+  const msg = getUserFacingMessage(e, fallback);
+  if (/(limit|maximum|at most|too many)/i.test(msg) && /connection/i.test(msg)) {
+    return `${msg}\n\nRemove a connection you no longer use in Cloud Storage, then try again.`;
+  }
+  return msg;
+}
+
 export default function AddCloudScreen() {
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
@@ -115,10 +136,15 @@ export default function AddCloudScreen() {
   const { retryQueued } = useUpload();
   const createMutation = useCreateCloudConnection();
   const updateMutation = useUpdateCloudConnection();
+  const testMutation = useTestCloudConnection();
 
   // `?edit=<id>` opens this screen as the edit form for an existing connection.
   const { edit } = useLocalSearchParams<{ edit?: string }>();
-  const editId = edit && /^\d+$/.test(edit) ? Number(edit) : null;
+  const routeEditId = edit && /^\d+$/.test(edit) ? Number(edit) : null;
+  // Set after a new server connection is created, so a failed test leaves the
+  // form editing that connection instead of creating another one.
+  const [createdId, setCreatedId] = useState<number | null>(null);
+  const editId = routeEditId ?? createdId;
   const { data: connections } = useListCloudConnections({
     query: { enabled: editId != null, queryKey: getListCloudConnectionsQueryKey() },
   });
@@ -137,6 +163,10 @@ export default function AddCloudScreen() {
   const [oauthStatus, setOauthStatus] = useState<Record<string, boolean>>({});
   // Edit mode: a blank password field keeps the saved one; this clears it.
   const [clearPassword, setClearPassword] = useState(false);
+  const [trustSelfSigned, setTrustSelfSigned] = useState(false);
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     if (!editing || prefilled.current) return;
@@ -149,6 +179,7 @@ export default function AddCloudScreen() {
     setUsername(editing.username ?? "");
     setPassword("");
     setClearPassword(false);
+    setTrustSelfSigned(Boolean(editing.trustSelfSigned));
     setUploadPath(editing.uploadPath ?? "/KKamera");
   }, [editing]);
 
@@ -273,100 +304,135 @@ export default function AddCloudScreen() {
     }
   };
 
-  const handleSaveFtpWebdav = async () => {
-    if (!selectedType || !name.trim()) {
-      Alert.alert("Missing Info", "Please choose a storage type and give it a name.");
-      return;
+  /** Client-side checks, shown inline under each field. Returns null when valid. */
+  const validate = (): FieldErrors | null => {
+    const next: FieldErrors = {};
+    if (!selectedType || !selected) next.type = "Choose a storage type.";
+    if (!name.trim()) next.name = "Give this connection a name.";
+    if (selected && !selected.oAuth) {
+      const h = host.trim();
+      if (!h) next.host = `Enter the ${selected.hostLabel?.toLowerCase() ?? "server host or URL"}.`;
+      else if (isHttpDavType(selected) && /^http:\/\//i.test(h)) next.host = HTTP_REJECTED;
+      if (selected.requiresUsername && !username.trim()) next.username = `Enter your ${selected.label} username.`;
+      const portNum = port.trim() ? Number(port.trim()) : null;
+      if (portNum !== null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
+        next.port = "Port must be a number between 1 and 65535.";
+      }
+      if (editing && editing.hasPassword && !clearPassword && !password) {
+        const retargeted = h !== (editing.host ?? "") || portNum !== (editing.port ?? null);
+        // The server won't send a saved password to a different host/port
+        // unless it's re-entered in the same save (see retargetNeedsPassword).
+        if (retargeted) next.password = "You changed the server host or port — re-enter the password for the new server (or clear the saved one).";
+      }
     }
-    if (!host.trim()) {
-      Alert.alert("Missing Info", "Please enter the server host / URL.");
-      return;
-    }
-    if (selected?.requiresUsername && !username.trim()) {
-      Alert.alert("Missing Info", `Please enter your ${selected.label} username.`);
-      return;
-    }
+    return Object.keys(next).length ? next : null;
+  };
+
+  const runTest = async (id: number, savedName: string) => {
+    setTesting(true);
     try {
-      await createMutation.mutateAsync({
-        data: {
-          type: (selected?.backendType ?? selectedType) as any,
-          provider: selected?.provider ?? null,
-          name: name.trim(),
-          host: host || null,
-          port: port ? parseInt(port) : null,
-          username: username || null,
-          password: password || null,
-          uploadPath: uploadPath || "/KKamera",
-        },
-      });
-      queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
-      // Captures parked waiting for a cloud can upload now.
-      retryQueued(token);
-      Alert.alert("Connection Added", `"${name}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
-    } catch (e: any) {
-      // This client throws ApiError (custom fetch mutator), not an axios error —
-      // there is no `e.response.data`, so read the server's `{ message }` through
-      // the shared helper or validation failures show up as a bare generic error.
-      Alert.alert("Error", getUserFacingMessage(e, "Failed to add connection."));
+      const result = await testMutation.mutateAsync({ id });
+      setTestResult({ ok: result.success, message: result.message });
+      if (result.success) {
+        Alert.alert("Connected", `"${savedName}" is saved and working.`, [{ text: "Done", onPress: () => router.back() }]);
+      }
+    } catch (e) {
+      // e.g. the per-user test rate limit (429) — show the server's message.
+      setTestResult({ ok: false, message: getUserFacingMessage(e, "Could not test the connection.") });
+    } finally {
+      setTesting(false);
     }
   };
 
-  const handleSaveEdit = async () => {
-    if (!editing || !selected) return;
-    if (!name.trim()) {
-      Alert.alert("Missing Info", "Please give the connection a name.");
+  /** Create (or update) a server connection, then test it before leaving. */
+  const handleSaveAndTest = async () => {
+    if (busy) return;
+    const invalid = validate();
+    if (invalid) { setErrors(invalid); return; }
+    if (!selected || !selectedType) return;
+    setErrors({});
+    setTestResult(null);
+    const trimmedName = name.trim();
+    let id: number;
+    try {
+      if (editing) {
+        const portNum = port.trim() ? parseInt(port, 10) : null;
+        // Explicit null clears a saved port / username (the server treats a
+        // missing field as "unchanged" and null as "clear").
+        const data: CloudConnectionUpdate = {
+          name: trimmedName,
+          // Blank folder → null → the server resets it to the default folder.
+          uploadPath: uploadPath.trim() || null,
+          host: host.trim(),
+          port: portNum,
+          username: username.trim() || null,
+          trustSelfSigned,
+        };
+        // Blank password = keep the saved one (field omitted); "Clear saved
+        // password" sends null; anything typed replaces it.
+        if (clearPassword) data.password = null;
+        else if (password) data.password = password;
+        await updateMutation.mutateAsync({ id: editing.id, data });
+        id = editing.id;
+      } else {
+        const data: CloudConnectionInput = {
+          type: (selected.backendType ?? selectedType) as CloudConnectionInput["type"],
+          provider: selected.provider ?? null,
+          name: trimmedName,
+          host: host.trim() || null,
+          port: port.trim() ? parseInt(port, 10) : null,
+          username: username.trim() || null,
+          password: password || null,
+          uploadPath: uploadPath || "/KKamera",
+          trustSelfSigned,
+        };
+        const created = await createMutation.mutateAsync({ data });
+        id = created.id;
+        // From here on this screen edits the connection it just created, so a
+        // failed test can be fixed and re-tested without making a duplicate.
+        prefilled.current = true;
+        setCreatedId(created.id);
+        // Captures parked waiting for a cloud can upload now.
+        retryQueued(token);
+      }
+    } catch (e) {
+      setErrors({ form: saveErrorMessage(e, editing ? "Failed to update connection." : "Failed to add connection.") });
       return;
     }
-    const data: CloudConnectionUpdate = {
-      name: name.trim(),
-      // Blank folder → null → the server resets it to the default folder.
-      uploadPath: uploadPath.trim() || null,
-    };
-    if (!selected.oAuth) {
-      if (!host.trim()) {
-        Alert.alert("Missing Info", "Please enter the server host / URL.");
-        return;
-      }
-      if (selected.requiresUsername && !username.trim()) {
-        Alert.alert("Missing Info", `Please enter your ${selected.label} username.`);
-        return;
-      }
-      const portNum = port.trim() ? parseInt(port, 10) : null;
-      if (portNum !== null && (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535)) {
-        Alert.alert("Invalid Port", "Port must be a number between 1 and 65535.");
-        return;
-      }
-      data.host = host.trim();
-      // Explicit null clears a saved port / username (the server treats a
-      // missing field as "unchanged" and null as "clear").
-      data.port = portNum;
-      data.username = username.trim() || null;
-      // Blank password = keep the saved one (field omitted); "Clear saved
-      // password" sends null; anything typed replaces it.
-      if (clearPassword) data.password = null;
-      else if (password) data.password = password;
-      // The server won't send a saved password to a different host/port
-      // unless it's re-entered in the same save (see retargetNeedsPassword).
-      const retargeted = data.host !== (editing.host ?? "") || portNum !== (editing.port ?? null);
-      if (retargeted && editing.hasPassword && data.password === undefined) {
-        Alert.alert("Re-enter Password", "You changed the server host or port. Please re-enter the password for the new server (or clear the saved one).");
-        return;
-      }
-    }
+    queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+    await runTest(id, trimmedName);
+  };
+
+  /** OAuth connections: only the name and folder are editable here. */
+  const handleSaveOAuthEdit = async () => {
+    if (!editing || updateMutation.isPending) return;
+    if (!name.trim()) { setErrors({ name: "Give this connection a name." }); return; }
+    setErrors({});
     try {
-      await updateMutation.mutateAsync({ id: editing.id, data });
-      queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
-      Alert.alert("Connection Updated", `"${name.trim()}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
-    } catch (e: any) {
-      Alert.alert("Error", getUserFacingMessage(e, "Failed to update connection."));
+      await updateMutation.mutateAsync({
+        id: editing.id,
+        data: { name: name.trim(), uploadPath: uploadPath.trim() || null },
+      });
+    } catch (e) {
+      setErrors({ form: saveErrorMessage(e, "Failed to update connection.") });
+      return;
     }
+    queryClient.invalidateQueries({ queryKey: getListCloudConnectionsQueryKey() });
+    Alert.alert("Connection Updated", `"${name.trim()}" saved.`, [{ text: "OK", onPress: () => router.back() }]);
+  };
+
+  const clearError = (key: keyof FieldErrors) => {
+    if (errors[key] || errors.form) setErrors(prev => ({ ...prev, [key]: undefined, form: undefined }));
   };
 
   const isOAuthConfigured = selectedType ? oauthStatus[selectedType] !== false : true;
+  const busy = testing || createMutation.isPending || updateMutation.isPending;
+  const showHttpHint = !!selected && !selected.oAuth && isHttpDavType(selected)
+    && /^http:\/\//i.test(host.trim()) && !errors.host;
 
   return (
     <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 0) }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
         <Ionicons name="chevron-back" size={24} color={PRIMARY} />
       </TouchableOpacity>
       <KeyboardAwareScrollViewCompat contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -381,7 +447,13 @@ export default function AddCloudScreen() {
             key={opt.type}
             style={[styles.typeCard, selectedType === opt.type && styles.typeCardSelected]}
             disabled={editId != null}
-            onPress={() => { setSelectedType(opt.type); setName(opt.label); setPort(opt.defaultPort ?? ""); }}
+            onPress={() => {
+              setSelectedType(opt.type); setName(opt.label); setPort(opt.defaultPort ?? "");
+              setErrors({}); setTestResult(null);
+            }}
+            accessibilityRole="radio"
+            accessibilityLabel={`${opt.label}. ${opt.desc}`}
+            accessibilityState={{ selected: selectedType === opt.type, disabled: editId != null }}
           >
             <View style={[styles.typeIcon, { backgroundColor: opt.color + "22" }]}>
               {opt.set === "mci"
@@ -408,28 +480,34 @@ export default function AddCloudScreen() {
               </View>
             )}
 
-            <Field label="Connection Name">
+            <Field label="Connection Name" error={errors.name}>
               <TextInput
-                style={styles.input} value={name} onChangeText={setName}
-                placeholder={`e.g. My ${selected.label}`} placeholderTextColor="#555"
+                style={[styles.input, errors.name && styles.inputError]} value={name}
+                onChangeText={v => { setName(v); clearError("name"); }}
+                placeholder={`e.g. My ${selected.label}`} placeholderTextColor="#777"
+                accessibilityLabel="Connection name"
               />
             </Field>
 
             <Field label="Upload Folder" hint="Where photos and videos will be saved">
               <TextInput
                 style={styles.input} value={uploadPath} onChangeText={setUploadPath}
-                placeholder="/KKamera" placeholderTextColor="#555" autoCapitalize="none"
+                placeholder="/KKamera" placeholderTextColor="#777" autoCapitalize="none"
+                accessibilityLabel="Upload folder"
               />
             </Field>
 
             {/* ── OAuth providers ── */}
             {selected.oAuth && (
               <>
+                {!!errors.form && <FormError message={errors.form} />}
                 {editing && (
                   <TouchableOpacity
                     style={[styles.saveBtn, { marginBottom: 16 }, updateMutation.isPending && { opacity: 0.6 }]}
-                    onPress={handleSaveEdit}
+                    onPress={handleSaveOAuthEdit}
                     disabled={updateMutation.isPending}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: updateMutation.isPending, busy: updateMutation.isPending }}
                   >
                     {updateMutation.isPending
                       ? <ActivityIndicator color="white" />
@@ -456,6 +534,8 @@ export default function AddCloudScreen() {
                   onPress={handleOAuth}
                   disabled={oauthLoading}
                   activeOpacity={0.85}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: oauthLoading, busy: oauthLoading }}
                 >
                   {oauthLoading
                     ? <ActivityIndicator color="white" />
@@ -481,45 +561,60 @@ export default function AddCloudScreen() {
                 <Field
                   label={selected.hostLabel ?? "Server Host / URL"}
                   hint={selected.hostHint ?? "host or URL"}
+                  error={errors.host}
                 >
                   <TextInput
-                    style={styles.input} value={host} onChangeText={setHost}
-                    placeholder="host or URL" placeholderTextColor="#555"
-                    autoCapitalize="none" keyboardType="url"
+                    style={[styles.input, errors.host && styles.inputError]} value={host}
+                    onChangeText={v => { setHost(v); clearError("host"); }}
+                    placeholder="host or URL" placeholderTextColor="#777"
+                    autoCapitalize="none" autoCorrect={false} keyboardType="url"
+                    accessibilityLabel={selected.hostLabel ?? "Server host or URL"}
                   />
+                  {showHttpHint && (
+                    <View style={styles.inlineWarn} accessibilityLiveRegion="polite">
+                      <Ionicons name="warning-outline" size={14} color="#f59e0b" accessible={false} />
+                      <Text style={styles.inlineWarnText}>{HTTP_REJECTED}</Text>
+                    </View>
+                  )}
                 </Field>
 
-                <Field label="Port (optional)" hint={selected.portHint ?? "Leave blank for default"}>
+                <Field label="Port (optional)" hint={selected.portHint ?? "Leave blank for default"} error={errors.port}>
                   <TextInput
-                    style={styles.input} value={port} onChangeText={setPort}
-                    placeholder="Leave blank for default" placeholderTextColor="#555"
+                    style={[styles.input, errors.port && styles.inputError]} value={port}
+                    onChangeText={v => { setPort(v); clearError("port"); }}
+                    placeholder="Leave blank for default" placeholderTextColor="#777"
                     keyboardType="number-pad"
+                    accessibilityLabel="Port, optional"
                   />
                 </Field>
 
-                <Field label="Username" hint={selected.usernameHint}>
+                <Field label="Username" hint={selected.usernameHint} error={errors.username}>
                   <TextInput
-                    style={styles.input} value={username} onChangeText={setUsername}
-                    placeholder="username" placeholderTextColor="#555" autoCapitalize="none"
+                    style={[styles.input, errors.username && styles.inputError]} value={username}
+                    onChangeText={v => { setUsername(v); clearError("username"); }}
+                    placeholder="username" placeholderTextColor="#777" autoCapitalize="none" autoCorrect={false}
+                    accessibilityLabel="Username"
                   />
                 </Field>
 
                 <Field
                   label={selected.passwordLabel ?? "Password"}
                   hint={selected.passwordHint ?? "Stored encrypted on the server"}
+                  error={errors.password}
                 >
-                  <View style={styles.inputRow}>
+                  <View style={[styles.inputRow, errors.password && styles.inputError]}>
                     <TextInput
                       style={[styles.input, { flex: 1, borderWidth: 0 }]}
                       value={password}
-                      onChangeText={(v) => { setPassword(v); if (v) setClearPassword(false); }}
+                      onChangeText={(v) => { setPassword(v); if (v) setClearPassword(false); clearError("password"); }}
+                      accessibilityLabel={selected.passwordLabel ?? "Password"}
                       editable={!clearPassword}
                       placeholder={
                         clearPassword ? "Saved password will be removed"
                           : editing?.hasPassword ? "Leave blank to keep (re-enter if you change the host)"
                           : "password"
                       }
-                      placeholderTextColor="#555"
+                      placeholderTextColor="#777"
                       secureTextEntry={!showPassword}
                       autoComplete="off"
                       textContentType="password"
@@ -527,6 +622,7 @@ export default function AddCloudScreen() {
                     <TouchableOpacity
                       onPress={() => setShowPassword(v => !v)}
                       style={styles.eyeBtn}
+                      hitSlop={8}
                       accessibilityRole="button"
                       accessibilityLabel={showPassword ? "Hide password" : "Show password"}
                     >
@@ -536,8 +632,9 @@ export default function AddCloudScreen() {
                   {editing?.hasPassword && (
                     <TouchableOpacity
                       style={styles.clearPwBtn}
-                      onPress={() => { setClearPassword(v => !v); setPassword(""); }}
+                      onPress={() => { setClearPassword(v => !v); setPassword(""); clearError("password"); }}
                       accessibilityRole="checkbox"
+                      accessibilityLabel="Clear saved password"
                       accessibilityState={{ checked: clearPassword }}
                     >
                       <Ionicons name={clearPassword ? "checkbox" : "square-outline"} size={18} color={clearPassword ? "#ef4444" : "#888"} />
@@ -546,24 +643,79 @@ export default function AddCloudScreen() {
                   )}
                 </Field>
 
-                {(() => {
-                  const pending = editing ? updateMutation.isPending : createMutation.isPending;
-                  return (
-                    <TouchableOpacity
-                      style={[styles.saveBtn, pending && { opacity: 0.6 }]}
-                      onPress={editing ? handleSaveEdit : handleSaveFtpWebdav}
-                      disabled={pending || (editId != null && !editing)}
-                    >
-                      {pending
-                        ? <ActivityIndicator color="white" />
-                        : <>
-                            <Ionicons name={editing ? "save-outline" : "cloud-upload-outline"} size={18} color="white" />
-                            <Text style={styles.saveText}>{editing ? "Save Changes" : "Save Connection"}</Text>
-                          </>
-                      }
-                    </TouchableOpacity>
-                  );
-                })()}
+                <View style={styles.switchRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.fieldLabel} nativeID="trustSelfSignedLabel">Trust self-signed certificate</Text>
+                    <Text style={styles.fieldHint}>
+                      Only turn this on for your own server that uses a certificate you created. It skips the
+                      check that proves you're talking to the real server, so a network attacker could
+                      intercept your password and files.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={trustSelfSigned}
+                    onValueChange={v => { setTrustSelfSigned(v); setTestResult(null); }}
+                    trackColor={{ false: "#3a352c", true: "#f59e0b" }}
+                    thumbColor="white"
+                    accessibilityLabel="Trust self-signed certificate"
+                    accessibilityHint="Less secure. Only for your own server."
+                  />
+                </View>
+
+                {!!errors.form && <FormError message={errors.form} />}
+
+                {testResult && (
+                  <View
+                    style={[styles.testCard, testResult.ok ? styles.testCardOk : styles.testCardFail]}
+                    accessibilityLiveRegion="polite"
+                  >
+                    <Ionicons
+                      name={testResult.ok ? "checkmark-circle-outline" : "close-circle-outline"}
+                      size={18} color={testResult.ok ? palette.success : palette.dangerText} accessible={false}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.testTitle, { color: testResult.ok ? palette.success : palette.dangerText }]}>
+                        {testResult.ok ? "Connection works" : "Connection test failed"}
+                      </Text>
+                      <Text style={styles.testMsg}>{testResult.message}</Text>
+                      {!testResult.ok && createdId != null && (
+                        <Text style={styles.testMsg}>
+                          The connection was saved. Fix the details above and tap “Save & Test” again, or keep it as is.
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.saveBtn, busy && { opacity: 0.6 }]}
+                  onPress={handleSaveAndTest}
+                  disabled={busy || (editId != null && !editing)}
+                  accessibilityRole="button"
+                  accessibilityHint="Saves the connection, then checks KKamera can reach it"
+                  accessibilityState={{ disabled: busy, busy }}
+                >
+                  {busy
+                    ? <>
+                        <ActivityIndicator color="white" />
+                        <Text style={styles.saveText}>{testing ? "Testing connection…" : "Saving…"}</Text>
+                      </>
+                    : <>
+                        <Ionicons name={editing ? "save-outline" : "cloud-upload-outline"} size={18} color="white" />
+                        <Text style={styles.saveText}>{testResult && !testResult.ok ? "Save & Test Again" : "Save & Test"}</Text>
+                      </>
+                  }
+                </TouchableOpacity>
+                {testResult && !testResult.ok && (
+                  <TouchableOpacity
+                    style={styles.keepBtn}
+                    onPress={() => router.back()}
+                    disabled={busy}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.keepText}>Keep without a working test</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </>
@@ -573,12 +725,24 @@ export default function AddCloudScreen() {
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string; children: React.ReactNode }) {
   return (
     <View style={{ marginBottom: 14 }}>
       <Text style={styles.fieldLabel}>{label}</Text>
       {hint && <Text style={styles.fieldHint}>{hint}</Text>}
       {children}
+      {!!error && (
+        <Text style={styles.fieldError} accessibilityRole="alert" accessibilityLiveRegion="polite">{error}</Text>
+      )}
+    </View>
+  );
+}
+
+function FormError({ message }: { message: string }) {
+  return (
+    <View style={styles.formError} accessibilityRole="alert" accessibilityLiveRegion="polite">
+      <Ionicons name="alert-circle-outline" size={18} color={palette.dangerText} accessible={false} />
+      <Text style={styles.formErrorText}>{message}</Text>
     </View>
   );
 }
@@ -587,7 +751,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   content: { padding: 16, paddingBottom: 40 },
   sectionTitle: {
-    fontSize: 12, color: "#666", fontFamily: "Inter_600SemiBold",
+    fontSize: 12, color: palette.textSubtle, fontFamily: "Inter_600SemiBold",
     letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 12,
   },
   typeCard: {
@@ -599,7 +763,7 @@ const styles = StyleSheet.create({
   typeIcon: { width: 44, height: 44, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   typeInfo: { flex: 1 },
   typeLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
-  typeDesc: { fontSize: 11, color: "#888", fontFamily: "Inter_400Regular", lineHeight: 16 },
+  typeDesc: { fontSize: 12, color: "#9a948b", fontFamily: "Inter_400Regular", lineHeight: 16 },
   warnCard: {
     flexDirection: "row", alignItems: "flex-start", gap: 10,
     backgroundColor: "rgba(245,158,11,0.08)", borderRadius: 10, padding: 12, marginBottom: 14,
@@ -618,11 +782,33 @@ const styles = StyleSheet.create({
   },
   oauthBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   oauthHint: {
-    fontSize: 11, color: "#555", fontFamily: "Inter_400Regular",
+    fontSize: 12, color: palette.textSubtle, fontFamily: "Inter_400Regular",
     textAlign: "center", marginTop: 10, lineHeight: 16,
   },
   fieldLabel: { fontSize: 13, color: "#aaa", fontFamily: "Inter_500Medium", marginBottom: 4 },
-  fieldHint: { fontSize: 11, color: "#666", fontFamily: "Inter_400Regular", marginBottom: 8 },
+  fieldHint: { fontSize: 12, color: palette.textSubtle, fontFamily: "Inter_400Regular", marginBottom: 8, lineHeight: 16 },
+  fieldError: { fontSize: 12, color: palette.dangerText, fontFamily: "Inter_500Medium", marginTop: 6, lineHeight: 16 },
+  inputError: { borderWidth: 1, borderColor: palette.dangerText },
+  inlineWarn: { flexDirection: "row", alignItems: "flex-start", gap: 6, marginTop: 6 },
+  inlineWarnText: { flex: 1, fontSize: 12, color: "#fbbf24", fontFamily: "Inter_400Regular", lineHeight: 16 },
+  switchRow: {
+    flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 14,
+    backgroundColor: CARD, borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.06)",
+  },
+  formError: {
+    flexDirection: "row", alignItems: "flex-start", gap: 8, marginBottom: 12,
+    backgroundColor: "rgba(239,68,68,0.08)", borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: "rgba(239,68,68,0.3)",
+  },
+  formErrorText: { flex: 1, fontSize: 13, color: palette.dangerText, fontFamily: "Inter_400Regular", lineHeight: 18 },
+  testCard: { flexDirection: "row", alignItems: "flex-start", gap: 8, marginBottom: 12, borderRadius: 10, padding: 12, borderWidth: 1 },
+  testCardOk: { backgroundColor: "rgba(34,197,94,0.08)", borderColor: "rgba(34,197,94,0.3)" },
+  testCardFail: { backgroundColor: "rgba(239,68,68,0.08)", borderColor: "rgba(239,68,68,0.3)" },
+  testTitle: { fontSize: 13, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  testMsg: { fontSize: 12, color: palette.textMuted, fontFamily: "Inter_400Regular", lineHeight: 17, marginTop: 2 },
+  keepBtn: { alignItems: "center", justifyContent: "center", minHeight: 44, marginTop: 8 },
+  keepText: { fontSize: 14, color: palette.textMuted, fontFamily: "Inter_500Medium" },
   input: {
     backgroundColor: "#222", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
     color: "white", fontSize: 14, fontFamily: "Inter_400Regular",
@@ -632,13 +818,13 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", backgroundColor: "#222", borderRadius: 10,
     borderWidth: 1, borderColor: "rgba(177,152,112,0.18)", paddingHorizontal: 14,
   },
-  eyeBtn: { paddingLeft: 8 },
-  clearPwBtn: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10 },
+  eyeBtn: { paddingLeft: 8, paddingVertical: 10 },
+  clearPwBtn: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6, minHeight: 44 },
   clearPwText: { fontSize: 13, color: "#aaa", fontFamily: "Inter_400Regular" },
   saveBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10,
     backgroundColor: PRIMARY, borderRadius: 14, paddingVertical: 15, marginTop: 8,
   },
   saveText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
 });

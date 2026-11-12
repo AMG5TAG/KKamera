@@ -28,7 +28,7 @@ function firstParam(v: string | string[] | undefined): string {
 // this device — it's never in the email itself.
 export default function VerifyEmailScreen() {
   const insets = useSafeAreaInsets();
-  const { login, hasCompletedWizard } = useAuth();
+  const { login, logout, hasCompletedWizard, user: currentUser } = useAuth();
   const verifyMutation = useVerifyEmail();
   const resendMutation = useResendVerification();
   const params = useLocalSearchParams<{ nonce?: string | string[]; email?: string | string[] }>();
@@ -42,6 +42,15 @@ export default function VerifyEmailScreen() {
   // A code was just sent by the screen that brought us here.
   const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_S);
   const lastSubmitted = useRef("");
+  // Verified while ANOTHER account is signed in on this device. This screen is
+  // reachable by deep link, so a crafted link + a code read out by someone else
+  // must never silently swap the session — ask first, naming the account.
+  const [pendingSwitch, setPendingSwitch] = useState<{ token: string; user: AuthUser } | null>(null);
+
+  const finishSignIn = async (newToken: string, user: AuthUser) => {
+    await login(newToken, user);
+    router.replace(user.onboardingCompleted || hasCompletedWizard ? "/camera" : "/wizard");
+  };
 
   // Params can arrive after first render on web.
   useEffect(() => {
@@ -68,8 +77,11 @@ export default function VerifyEmailScreen() {
       const result = await verifyMutation.mutateAsync({ data: { nonce, code: digits } });
       if (result.token && result.user) {
         const user = result.user as AuthUser;
-        await login(result.token, user);
-        router.replace(user.onboardingCompleted || hasCompletedWizard ? "/camera" : "/wizard");
+        if (currentUser && currentUser.id !== user.id) {
+          setPendingSwitch({ token: result.token, user });
+          return;
+        }
+        await finishSignIn(result.token, user);
       }
     } catch (e) {
       const status = (e as { status?: number } | null)?.status;
@@ -109,6 +121,47 @@ export default function VerifyEmailScreen() {
   };
 
   const busy = verifyMutation.isPending;
+
+  if (pendingSwitch && currentUser) {
+    const confirmSwitch = async () => {
+      const next = pendingSwitch;
+      setPendingSwitch(null);
+      // Sign the current account out properly (listeners, caches) first.
+      await logout();
+      await finishSignIn(next.token, next.user);
+    };
+    const keepCurrent = () => {
+      setPendingSwitch(null);
+      if (router.canGoBack()) router.back();
+      else router.replace("/");
+    };
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <KeyboardAwareScrollViewCompat
+          contentContainerStyle={[styles.content, { paddingTop: 48, paddingBottom: 40 + insets.bottom }]}
+          showsVerticalScrollIndicator={false}
+          bottomOffset={24}
+        >
+          <View style={styles.iconWrap}>
+            <Ionicons name="swap-horizontal-outline" size={40} color={PRIMARY} accessible={false} />
+          </View>
+          <Text style={styles.title} accessibilityRole="header">Switch account?</Text>
+          <Text style={styles.subtitle}>
+            <Text style={styles.email}>{pendingSwitch.user.email}</Text>
+            {" "}has been verified, but you're signed in on this device as{" "}
+            <Text style={styles.email}>{currentUser.email}</Text>
+            . Only switch if you created the new account yourself.
+          </Text>
+          <TouchableOpacity style={styles.verifyBtn} onPress={keepCurrent} accessibilityRole="button">
+            <Text style={styles.verifyText}>Stay signed in as {currentUser.email}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.linkBtn} onPress={() => void confirmSwitch()} accessibilityRole="button">
+            <Text style={styles.linkText}>Sign out and continue as {pendingSwitch.user.email}</Text>
+          </TouchableOpacity>
+        </KeyboardAwareScrollViewCompat>
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>

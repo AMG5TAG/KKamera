@@ -85,21 +85,56 @@ export function viewShotSize(pxW: number, pxH: number) {
   };
 }
 
+/** Outcome of a witness notification. `null` from notifyWitness = nothing was sent (off / no email / signed out). */
+export type WitnessResult =
+  | { ok: true }
+  | { ok: false; reason: "subscription" | "rate-limited" | "invalid" | "auth" | "server" | "network"; message: string };
+
+/** Loose email shape check, matching what the server's z.string().email() accepts in practice. */
+export function isValidWitnessEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
+}
+
 /**
  * Witness mode: email the configured witness that `fileName` was uploaded.
  * Callers must only invoke this once the upload has really completed (see the
- * `onUploaded` callback of executeUpload). Fire-and-forget; never throws.
+ * `onUploaded` callback of executeUpload) and should RETURN its promise from
+ * that callback: the upload queue then marks the entry with a "Witness email
+ * failed" note when the result is not ok. Never throws.
  */
-export function notifyWitness(opts: {
+export async function notifyWitness(opts: {
   enabled: boolean;
   witnessEmail: string;
   token: string | null | undefined;
   fileName: string;
-}) {
-  if (!opts.enabled || !opts.witnessEmail || !opts.token) return;
-  fetch(`${API_BASE_URL}/api/uploads/witness-notify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
-    body: JSON.stringify({ witnessEmail: opts.witnessEmail, fileName: opts.fileName }),
-  }).catch(() => {});
+}): Promise<WitnessResult | null> {
+  if (!opts.enabled || !opts.witnessEmail || !opts.token) return null;
+  const witnessEmail = opts.witnessEmail.trim();
+  if (!isValidWitnessEmail(witnessEmail)) {
+    return { ok: false, reason: "invalid", message: "the witness email address is invalid — fix it in Privacy & Security" };
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/uploads/witness-notify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
+      body: JSON.stringify({ witnessEmail, fileName: opts.fileName }),
+    });
+  } catch {
+    return { ok: false, reason: "network", message: "no connection" };
+  }
+  if (res.ok) return { ok: true };
+  switch (res.status) {
+    case 402:
+      return { ok: false, reason: "subscription", message: "witness emails need an active subscription" };
+    case 429:
+      return { ok: false, reason: "rate-limited", message: "too many witness emails — try again later" };
+    case 400:
+      return { ok: false, reason: "invalid", message: "the witness email address was rejected" };
+    case 401:
+      // Not reported to AuthContext: the upload queue's own requests handle 401s.
+      return { ok: false, reason: "auth", message: "signed out" };
+    default:
+      return { ok: false, reason: "server", message: `server error (${res.status})` };
+  }
 }

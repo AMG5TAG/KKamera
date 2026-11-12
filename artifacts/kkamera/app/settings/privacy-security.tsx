@@ -6,13 +6,16 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
 import {
-  authenticateWithDevice, clearPin, hasPin, isBiometricEnrolled, isDeviceAuthAvailable, savePin, RELOCK_GRACE_MS,
+  authenticateWithDevice, hasPin, isBiometricEnrolled, isDeviceAuthAvailable, savePin, RELOCK_GRACE_MS,
 } from "@/lib/appLock";
 import { API_BASE_URL } from "@/lib/config";
+import { isValidWitnessEmail } from "@/lib/captureStorage";
+import { wipeAllLocalData } from "@/lib/localWipe";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 
 const PRIMARY = "#b19870";
@@ -32,6 +35,10 @@ export default function PrivacySecurityScreen() {
   const { settings, updateSetting, resetSettings } = useSettings();
   const { logout, token } = useAuth();
   const { discardQueue } = useUpload();
+  const queryClient = useQueryClient();
+  // The witness email is edited locally and only persisted when valid.
+  const [witnessDraft, setWitnessDraft] = useState(settings.witnessEmail);
+  const [witnessError, setWitnessError] = useState("");
   const [deviceAuthAvailable, setDeviceAuthAvailable] = useState(false);
   const [biometricEnrolled, setBiometricEnrolled] = useState(false);
   const [pinStored, setPinStored] = useState(false);
@@ -130,41 +137,84 @@ export default function PrivacySecurityScreen() {
     cancelPinSetup();
   };
 
+  // Validate on blur (inline error); only a valid address — or an empty field,
+  // which turns notifications into a no-op — is ever saved.
+  const commitWitnessEmail = () => {
+    const v = witnessDraft.trim();
+    if (v && !isValidWitnessEmail(v)) {
+      setWitnessError("Enter a valid email address, e.g. name@example.com");
+      return;
+    }
+    setWitnessError("");
+    if (v !== witnessDraft) setWitnessDraft(v);
+    if (v !== settings.witnessEmail) updateSetting("witnessEmail", v);
+  };
+
   const handlePanic = () => {
     const message =
-      "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign you out\n• Reset all settings\n\nThis cannot be undone.";
-    // Server-side wipe. True only when both deletes succeeded (or there is no
-    // session to wipe); a network error or non-2xx response counts as failure.
-    const wipeServer = async (): Promise<boolean> => {
+      "This will immediately:\n\n• Disconnect all cloud accounts\n• Clear all upload history\n• Sign out every device signed in to your account\n• Delete queued uploads and all KKamera files and settings on this device\n\nCopies already saved to your Photos library are not removed.\n\nThis cannot be undone.";
+    // Server-side wipe: delete clouds + history, then revoke every session
+    // (logout-all bumps the account's token version, so this device's 30-day
+    // token — and any copy of it — stops working). Returns the failed steps.
+    // Steps that already succeeded are remembered so a Retry only re-runs
+    // what failed. logout-all runs only once both deletes have succeeded:
+    // it revokes the token the deletes (and any retry of them) need.
+    const done = { clouds: false, history: false, logoutAll: false };
+    const wipeServer = async (): Promise<string[]> => {
       // Use the in-memory auth token from context. Reading it from
       // AsyncStorage broke on native, where the token lives in SecureStore
       // — so the server-side wipe silently no-op'd on the exact platforms
       // we ship.
-      if (!token) return true;
-      const results = await Promise.allSettled([
-        fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }),
+      if (!token) return [];
+      const auth = { Authorization: `Bearer ${token}` };
+      const failed: string[] = [];
+      const [clouds, history] = await Promise.allSettled([
+        done.clouds ? Promise.resolve(null) : fetch(`${API_BASE_URL}/api/cloud-connections`, { method: "DELETE", headers: auth }),
+        done.history ? Promise.resolve(null) : fetch(`${API_BASE_URL}/api/uploads`, { method: "DELETE", headers: auth }),
       ]);
-      return results.every(r => r.status === "fulfilled" && r.value.ok);
+      if (!done.clouds) {
+        if (clouds.status === "fulfilled" && clouds.value?.ok) done.clouds = true;
+        else failed.push("disconnect cloud accounts");
+      }
+      if (!done.history) {
+        if (history.status === "fulfilled" && history.value?.ok) done.history = true;
+        else failed.push("delete upload history");
+      }
+      if (!done.logoutAll) {
+        if (!done.clouds || !done.history) {
+          // Not attempted yet — revoking the token now would make every retry 401.
+          failed.push("sign out other devices (not attempted until the steps above succeed)");
+        } else {
+          // Its response carries a fresh token for "this device" — deliberately never read.
+          try {
+            const res = await fetch(`${API_BASE_URL}/api/auth/logout-all`, { method: "POST", headers: auth });
+            if (res.ok) done.logoutAll = true;
+            else failed.push(res.status === 429 ? "sign out other devices (too many attempts — wait a few minutes)" : "sign out other devices");
+          } catch {
+            failed.push("sign out other devices");
+          }
+        }
+      }
+      return failed;
     };
     const wipeLocalAndSignOut = async () => {
-      // Reset all local settings (clears the app-lock PIN too), as the
-      // confirmation dialog promises, then sign out.
-      await resetSettings();
-      await clearPin();
+      // Everything KKamera keeps on this device (queue, cached captures,
+      // settings, PIN, tokens, caches, RevenueCat identity), then sign out.
+      await wipeAllLocalData({ discardQueue, resetSettings, queryClient });
       setPinStored(false);
-      await discardQueue();
       await logout();
     };
     const wipe = async () => {
-      if (await wipeServer()) {
+      const failed = await wipeServer();
+      if (failed.length === 0) {
         await wipeLocalAndSignOut();
         return;
       }
-      // Don't sign out silently: the cloud accounts / history may still be on
-      // the server, and once signed out the user can't retry from here.
+      // Don't sign out silently: the cloud accounts / history / other sessions
+      // may still be live on the server, and once signed out the user can't
+      // retry from here.
       const failMsg =
-        "Your cloud connections and upload history could not be deleted from the server. Check your connection and try again, or sign out anyway (the server data will remain).";
+        `These steps could not be completed on the server: ${failed.join("; ")}. Check your connection and try again, or sign out anyway (that server data and any other signed-in devices will remain).`;
       if (Platform.OS === "web") {
         if (window.confirm(`Server wipe didn't complete\n\n${failMsg}\n\nOK = Retry, Cancel = Sign out anyway`)) void wipe();
         else void wipeLocalAndSignOut();
@@ -373,10 +423,24 @@ export default function PrivacySecurityScreen() {
                   placeholderTextColor="#555"
                   keyboardType="email-address"
                   autoCapitalize="none"
-                  value={settings.witnessEmail}
-                  onChangeText={v => updateSetting("witnessEmail", v)}
+                  autoCorrect={false}
+                  value={witnessDraft}
+                  onChangeText={v => {
+                    setWitnessDraft(v);
+                    if (witnessError) setWitnessError("");
+                    // Save as soon as it's valid (leaving the screen needn't blur first).
+                    const t = v.trim();
+                    if ((!t || isValidWitnessEmail(t)) && t !== settings.witnessEmail) updateSetting("witnessEmail", t);
+                  }}
+                  onBlur={commitWitnessEmail}
+                  onSubmitEditing={commitWitnessEmail}
+                  returnKeyType="done"
+                  accessibilityHint={witnessError || undefined}
                 />
               </View>
+              {witnessError ? (
+                <Text style={styles.fieldError} accessibilityRole="alert" accessibilityLiveRegion="polite">{witnessError}</Text>
+              ) : null}
             </>
           )}
         </View>
@@ -416,7 +480,7 @@ export default function PrivacySecurityScreen() {
             </View>
             <View style={styles.rowBody}>
               <Text style={[styles.rowLabel, { color: DANGER }]}>Panic Wipe</Text>
-              <Text style={styles.rowHint}>Disconnect all clouds, clear history, sign out</Text>
+              <Text style={styles.rowHint}>Disconnect all clouds, clear history, sign out everywhere</Text>
             </View>
             <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
           </TouchableOpacity>
@@ -473,6 +537,7 @@ const styles = StyleSheet.create({
   pinBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold", color: "white" },
   pinCancelBtn: { alignItems: "center", paddingVertical: 12, marginTop: 4 },
   pinCancelText: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular" },
+  fieldError: { fontSize: 12, color: DANGER, fontFamily: "Inter_400Regular", paddingHorizontal: 14, paddingBottom: 10, marginLeft: 46 },
   inlineInput: {
     flex: 1, color: "white", fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 4,
   },

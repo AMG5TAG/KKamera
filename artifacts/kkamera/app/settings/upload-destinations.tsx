@@ -188,7 +188,7 @@ export default function UploadDestinationsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
   center: { flex: 1, backgroundColor: BG, alignItems: "center", justifyContent: "center" },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
   pageTitle: { fontSize: 20, fontFamily: "Inter_700Bold", color: "white", marginBottom: 6, paddingHorizontal: 4 },
   pageSubtitle: { fontSize: 13, color: "#888", fontFamily: "Inter_400Regular", marginBottom: 16, paddingHorizontal: 4 },
   sectionLabel: {

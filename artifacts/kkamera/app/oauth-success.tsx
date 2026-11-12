@@ -6,7 +6,7 @@ import { getListCloudConnectionsQueryKey } from "@workspace/api-client-react";
 import { Ionicons } from "@expo/vector-icons";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
-import { completeOAuthConnection } from "@/lib/oauthPending";
+import { completeOAuthConnection, oauthErrorMessage } from "@/lib/oauthPending";
 
 const PRIMARY = "#b19870";
 const BG = "#0d0b08";
@@ -38,13 +38,14 @@ export default function OAuthSuccessScreen() {
   const started = useRef(false);
 
   // Only known providers get a label — the params arrive via a deep link anyone
-  // can craft, so nothing from them is echoed verbatim except the error text.
+  // can craft, so nothing from them is echoed verbatim (an error is mapped to a
+  // fixed message).
   const providerKey = typeof provider === "string" && PROVIDER_LABELS[provider] ? provider : null;
   const providerLabel = providerKey ? PROVIDER_LABELS[providerKey]! : "Cloud Storage";
 
   const [phase, setPhase] = useState<Phase>(() =>
     error
-      ? { kind: "failed", message: String(error).slice(0, 300) }
+      ? { kind: "failed", message: oauthErrorMessage(error) }
       : !code || !providerKey
         ? { kind: "failed", message: "The sign-in did not return a confirmation. Please connect the account again from Settings." }
         : { kind: "completing" }

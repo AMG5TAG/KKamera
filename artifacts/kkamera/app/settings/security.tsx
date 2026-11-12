@@ -154,7 +154,7 @@ export default function SecurityScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+    <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back">
       <Ionicons name="chevron-back" size={24} color={PRIMARY} />
     </TouchableOpacity>
     <KeyboardAwareScrollViewCompat style={{ flex: 1 }} contentContainerStyle={{ padding: 20, paddingBottom: insets.bottom + (Platform.OS === "web" ? 34 : 20) + 20 }}>
@@ -174,7 +174,7 @@ export default function SecurityScreen() {
       {mode === "idle" && (
         <>
           <Text style={styles.sectionTitle}>Password</Text>
-          <TouchableOpacity style={styles.rowCard} onPress={() => router.push("/settings/change-password" as Href)}>
+          <TouchableOpacity style={styles.rowCard} onPress={() => router.push("/settings/change-password" as Href)} accessibilityRole="button">
             <Ionicons name="lock-closed-outline" size={18} color={PRIMARY} />
             <Text style={styles.rowCardText}>Change Password</Text>
             <Ionicons name="chevron-forward" size={16} color="#555" />
@@ -225,6 +225,8 @@ export default function SecurityScreen() {
             style={[styles.actionBtn, setup2FAMutation.isPending && styles.btnDisabled]}
             onPress={handleSetup}
             disabled={setup2FAMutation.isPending}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: setup2FAMutation.isPending, busy: setup2FAMutation.isPending }}
           >
             {setup2FAMutation.isPending ? <ActivityIndicator color="white" /> : (
               <>
@@ -245,14 +247,14 @@ export default function SecurityScreen() {
             <Image source={{ uri: setupData.qrCodeUrl }} style={styles.qrCode} resizeMode="contain" accessibilityLabel="Two-factor authentication QR code" />
           </View>
           {Platform.OS !== "web" && (
-            <TouchableOpacity style={styles.secondaryBtn} onPress={() => void handleOpenAuthenticator()}>
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => void handleOpenAuthenticator()} accessibilityRole="button">
               <Ionicons name="open-outline" size={16} color={PRIMARY} />
               <Text style={styles.secondaryBtnText}>Open in authenticator app</Text>
             </TouchableOpacity>
           )}
           <Text style={styles.manualSecret}>Or enter this key manually (press and hold to copy):</Text>
           <Text selectable style={styles.secretText}>{setupData.secret}</Text>
-          <TouchableOpacity style={styles.linkBtn} onPress={handleShareSecret}>
+          <TouchableOpacity style={styles.linkBtn} onPress={handleShareSecret} hitSlop={8} accessibilityRole="button">
             <Ionicons name="share-outline" size={14} color={PRIMARY} />
             <Text style={styles.linkBtnText}>Copy / share key</Text>
           </TouchableOpacity>
@@ -264,7 +266,7 @@ export default function SecurityScreen() {
               <View key={i} style={styles.backupCode}><Text selectable style={styles.backupCodeText}>{c}</Text></View>
             ))}
           </View>
-          <TouchableOpacity style={styles.secondaryBtn} onPress={handleShareBackupCodes}>
+          <TouchableOpacity style={styles.secondaryBtn} onPress={handleShareBackupCodes} accessibilityRole="button">
             <Ionicons name="share-outline" size={16} color={PRIMARY} />
             <Text style={styles.secondaryBtnText}>Save / share backup codes</Text>
           </TouchableOpacity>
@@ -284,12 +286,14 @@ export default function SecurityScreen() {
             style={[styles.actionBtn, verify2FAMutation.isPending && styles.btnDisabled]}
             onPress={handleVerify}
             disabled={verify2FAMutation.isPending}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: verify2FAMutation.isPending, busy: verify2FAMutation.isPending }}
           >
             {verify2FAMutation.isPending ? <ActivityIndicator color="white" /> : (
               <Text style={styles.actionBtnText}>Confirm & Enable 2FA</Text>
             )}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelBtn} onPress={() => { setMode("idle"); setSetupData(null); setCode(""); setPassword(""); }}>
+          <TouchableOpacity style={styles.cancelBtn} onPress={() => { setMode("idle"); setSetupData(null); setCode(""); setPassword(""); }} accessibilityRole="button">
             <Text style={styles.cancelBtnText}>Cancel</Text>
           </TouchableOpacity>
         </>
@@ -331,6 +335,8 @@ export default function SecurityScreen() {
             style={[styles.disableBtn, disable2FAMutation.isPending && styles.btnDisabled]}
             onPress={handleDisable}
             disabled={disable2FAMutation.isPending}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: disable2FAMutation.isPending, busy: disable2FAMutation.isPending }}
           >
             {disable2FAMutation.isPending ? <ActivityIndicator color="white" /> : (
               <Text style={styles.disableBtnText}>Disable 2FA</Text>
@@ -372,7 +378,7 @@ const styles = StyleSheet.create({
   cancelBtnText: { fontSize: 14, color: "#888", fontFamily: "Inter_400Regular" },
   disableBtn: { alignItems: "center", justifyContent: "center", borderRadius: 14, paddingVertical: 15, borderWidth: 1, borderColor: "rgba(239,68,68,0.3)", marginBottom: 10 },
   disableBtnText: { fontSize: 15, fontFamily: "Inter_500Medium", color: "#ef4444" },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
   rowCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14, marginBottom: 24, borderWidth: 1, borderColor: "rgba(177,152,112,0.1)" },
   fieldLabel: { fontSize: 13, color: "#aaa", fontFamily: "Inter_500Medium", marginBottom: 8 },
   passwordInput: { backgroundColor: CARD, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, color: "white", fontSize: 15, fontFamily: "Inter_400Regular", borderWidth: 1, borderColor: "rgba(177,152,112,0.2)", marginBottom: 16 },

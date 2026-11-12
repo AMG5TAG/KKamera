@@ -37,9 +37,45 @@ export const FRONT_CAMERA_ZOOM: ZoomValue = 0;
  */
 export const ULTRA_WIDE_LENS_PATTERN = /ultra\s*wide/i;
 
-/** Short label for an arbitrary normalised zoom (e.g. after a pinch). */
-export function zoomLabel(value: number): string {
+/**
+ * The real magnification for a normalised zoom, given the device's zoom range
+ * (`minFactor` = the lens's neutral 1×, `maxFactor` = its maximum), using the
+ * same mapping the native layers apply: iOS `min × (max/min)^value`, Android a
+ * linear `value × max` clamped to ≥ 1. Null when the range isn't known.
+ */
+export function zoomFactor(
+  value: number,
+  range: { minFactor?: number; maxFactor: number } | null | undefined,
+  platform: "ios" | "android" | string,
+): number | null {
+  if (!range || !Number.isFinite(range.maxFactor) || range.maxFactor <= 1) return null;
+  const v = Math.min(1, Math.max(0, value));
+  const min = range.minFactor && range.minFactor > 0 ? range.minFactor : 1;
+  if (platform === "ios") return min * Math.pow(range.maxFactor / min, v);
+  if (platform === "android") return Math.max(1, v * range.maxFactor);
+  return null;
+}
+
+/** "2×", "2.5×", "10×" — one decimal below 10×, whole numbers above. */
+function formatFactor(f: number): string {
+  const r = f < 10 ? Math.round(f * 10) / 10 : Math.round(f);
+  return `${r}×`;
+}
+
+/**
+ * Short label for an arbitrary normalised zoom (e.g. after a pinch). With the
+ * device's zoom range it is the real factor ("2×", "5×"); without it — which
+ * is the case today, as expo-camera doesn't report the range to JS — it falls
+ * back to the relative stop labels ("+", "++", "Max") or a percentage.
+ */
+export function zoomLabel(
+  value: number,
+  range?: { minFactor?: number; maxFactor: number } | null,
+  platform?: string,
+): string {
   if (value <= 0.02) return "1×";
+  const f = platform ? zoomFactor(value, range, platform) : null;
+  if (f != null) return formatFactor(f);
   const exact = ZOOM_LEVELS.find(z => Math.abs(z.value - value) < 0.03);
   if (exact) return exact.label;
   return `${Math.round(value * 100)}%`;

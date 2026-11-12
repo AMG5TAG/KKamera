@@ -5,7 +5,12 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import Constants from "expo-constants";
 import { useAuth } from "@/contexts/AuthContext";
-import { useGetSubscription, useGetMe, getGetSubscriptionQueryKey, getGetMeQueryKey } from "@workspace/api-client-react";
+import {
+  useGetSubscription, useGetMe, useListCloudConnections,
+  getGetSubscriptionQueryKey, getGetMeQueryKey, getListCloudConnectionsQueryKey,
+} from "@workspace/api-client-react";
+import { useSettings } from "@/contexts/SettingsContext";
+import { palette } from "@/components/ui/palette";
 import { shareInvite } from "@/lib/shareInvite";
 
 const PRIMARY = "#b19870";
@@ -54,7 +59,7 @@ function MenuRow({
             <Text style={styles.badgeText}>{badge}</Text>
           </View>
         ) : null}
-        <Ionicons name="chevron-forward" size={15} color="#444" accessible={false} />
+        <Ionicons name="chevron-forward" size={15} color="#6b655c" accessible={false} />
       </View>
     </TouchableOpacity>
   );
@@ -65,6 +70,30 @@ export default function SettingsScreen() {
   const { user, logout } = useAuth();
   const { data: sub } = useGetSubscription({ query: { enabled: !!user, queryKey: getGetSubscriptionQueryKey() } });
   const { data: me } = useGetMe({ query: { enabled: !!user, queryKey: getGetMeQueryKey() } });
+  const { data: connections } = useListCloudConnections({
+    query: { enabled: !!user, queryKey: getListCloudConnectionsQueryKey() },
+  });
+  const { settings } = useSettings();
+
+  // One-line status summary, e.g. "2 clouds · Wi-Fi only · Trial: 5 days left".
+  const statusParts: string[] = [];
+  if (connections) {
+    const active = connections.filter(c => c.active).length;
+    statusParts.push(active === 0 ? "No cloud connected" : `${active} cloud${active === 1 ? "" : "s"}`);
+  }
+  statusParts.push(settings.uploadOnlyOnWifi ? "Wi-Fi only" : "Wi-Fi & cellular");
+  if (sub?.status === "trial" && sub.trialEnd) {
+    const days = Math.max(0, Math.ceil((new Date(sub.trialEnd).getTime() - Date.now()) / 86400000));
+    statusParts.push(days === 0 ? "Trial ends today" : `Trial: ${days} day${days === 1 ? "" : "s"} left`);
+  } else if (sub?.status === "active") {
+    statusParts.push("Subscribed");
+  } else if (sub?.status === "past_due") {
+    statusParts.push("Payment issue");
+  } else if (sub && (sub.status === "expired" || sub.status === "cancelled" || sub.status === "none")) {
+    statusParts.push("Not subscribed");
+  }
+  const statusSummary = statusParts.join(" · ");
+  const needsCloud = connections != null && !connections.some(c => c.active);
 
   const subStatus = sub?.status ?? "none";
   const subLabel =
@@ -156,9 +185,27 @@ export default function SettingsScreen() {
             accessibilityRole="button"
             accessibilityLabel="Subscription"
           >
-            <Ionicons name="card-outline" size={18} color={PRIMARY} />
+            <Ionicons name="card-outline" size={18} color={PRIMARY} accessible={false} />
           </TouchableOpacity>
         </View>
+
+        {/* Status summary */}
+        <TouchableOpacity
+          style={[styles.statusBar, needsCloud && styles.statusBarWarn]}
+          onPress={() => router.push(needsCloud ? "/settings/cloud" : "/settings/upload")}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Status: ${statusSummary}`}
+          accessibilityHint={needsCloud ? "Opens Cloud Connections" : "Opens Upload settings"}
+        >
+          <Ionicons
+            name={needsCloud ? "warning-outline" : "pulse-outline"}
+            size={15}
+            color={needsCloud ? palette.warning : PRIMARY}
+            accessible={false}
+          />
+          <Text style={styles.statusText} numberOfLines={2}>{statusSummary}</Text>
+        </TouchableOpacity>
 
         {/* Menu sections */}
         <View style={styles.section}>
@@ -207,21 +254,32 @@ export default function SettingsScreen() {
             hint="Earn free years by inviting friends"
             onPress={() => router.push("/settings/affiliate")}
           />
-          <View style={styles.divider} />
+        </View>
+
+        <Text style={styles.sectionHeader} accessibilityRole="header">Account & Security</Text>
+        <View style={styles.section}>
           <MenuRow
-            icon="shield-checkmark-outline"
+            icon="key-outline"
             iconColor={user?.twoFAEnabled ? "#22c55e" : undefined}
-            label="Security"
-            hint="Two-factor authentication"
+            label="Password & Sign-in"
+            hint="Change password, two-factor, sign out other devices"
             value={user?.twoFAEnabled ? "2FA On" : "2FA Off"}
             onPress={() => router.push("/settings/security")}
           />
           <View style={styles.divider} />
           <MenuRow
             icon="lock-closed-outline"
-            label="Privacy & Security"
+            label="App Lock & Privacy"
             hint="App lock, panic wipe, witness mode"
             onPress={() => router.push("/settings/privacy-security")}
+          />
+          <View style={styles.divider} />
+          <MenuRow
+            icon="trash-outline"
+            iconColor={palette.danger}
+            label="Delete Account"
+            hint="Permanently delete your account and data"
+            onPress={() => router.push("/settings/delete-account")}
           />
         </View>
 
@@ -253,7 +311,19 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  backBtn: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 8, gap: 4 },
+  backBtn: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 10, minHeight: 44, gap: 4 },
+  statusBar: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    marginHorizontal: 16, marginTop: -4, marginBottom: 16, minHeight: 44,
+    paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12,
+    backgroundColor: "rgba(177,152,112,0.08)", borderWidth: 1, borderColor: "rgba(177,152,112,0.18)",
+  },
+  statusBarWarn: { backgroundColor: "rgba(245,158,11,0.08)", borderColor: "rgba(245,158,11,0.3)" },
+  statusText: { flex: 1, fontSize: 13, color: palette.secondary, fontFamily: "Inter_500Medium" },
+  sectionHeader: {
+    marginHorizontal: 20, marginBottom: 8, fontSize: 11, color: palette.textSubtle,
+    fontFamily: "Inter_600SemiBold", letterSpacing: 1.5, textTransform: "uppercase",
+  },
   profileCard: {
     flexDirection: "row", alignItems: "center", gap: 14,
     margin: 16, backgroundColor: CARD, borderRadius: 18, padding: 16,
@@ -265,7 +335,7 @@ const styles = StyleSheet.create({
   },
   avatarText: { fontSize: 20, fontFamily: "Inter_700Bold", color: "#0d0b08" },
   profileName: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white", marginBottom: 2 },
-  profileEmail: { fontSize: 13, color: "#777", fontFamily: "Inter_400Regular", marginBottom: 6 },
+  profileEmail: { fontSize: 13, color: palette.textMuted, fontFamily: "Inter_400Regular", marginBottom: 6 },
   referralPill: {
     flexDirection: "row", alignItems: "center", gap: 5, alignSelf: "flex-start",
     backgroundColor: "rgba(177,152,112,0.12)", paddingHorizontal: 8, paddingVertical: 3,
@@ -273,7 +343,7 @@ const styles = StyleSheet.create({
   },
   referralPillText: { fontSize: 11, color: PRIMARY, fontFamily: "Inter_500Medium" },
   editBtn: {
-    width: 38, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center",
+    width: 44, height: 44, borderRadius: 10, alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(177,152,112,0.1)", borderWidth: 1, borderColor: "rgba(177,152,112,0.2)",
   },
   section: {
@@ -281,21 +351,21 @@ const styles = StyleSheet.create({
     borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: BORDER,
   },
   divider: { height: 1, backgroundColor: BORDER, marginLeft: 56 },
-  row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 13, gap: 12 },
+  row: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, paddingVertical: 13, minHeight: 52, gap: 12 },
   rowIconWrap: {
     width: 34, height: 34, borderRadius: 9, alignItems: "center", justifyContent: "center",
     backgroundColor: "rgba(177,152,112,0.12)", flexShrink: 0,
   },
   rowBody: { flex: 1 },
   rowLabel: { fontSize: 15, fontFamily: "Inter_500Medium", color: "white" },
-  rowHint: { fontSize: 11, color: "#555", fontFamily: "Inter_400Regular", marginTop: 2 },
+  rowHint: { fontSize: 12, color: palette.textSubtle, fontFamily: "Inter_400Regular", marginTop: 2 },
   rowRight: { flexDirection: "row", alignItems: "center", gap: 6 },
-  rowValue: { fontSize: 13, color: "#777", fontFamily: "Inter_400Regular" },
+  rowValue: { fontSize: 13, color: palette.textMuted, fontFamily: "Inter_400Regular" },
   badge: { backgroundColor: "rgba(177,152,112,0.18)", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 20 },
   badgeText: { fontSize: 10, fontFamily: "Inter_700Bold", color: PRIMARY, letterSpacing: 0.5 },
   versionWrap: { alignItems: "center", paddingTop: 28, paddingBottom: 4 },
-  versionText: { fontSize: 13, color: "#444", fontFamily: "Inter_500Medium" },
-  versionSub: { fontSize: 11, color: "#333", fontFamily: "Inter_400Regular", marginTop: 2 },
+  versionText: { fontSize: 13, color: palette.textSubtle, fontFamily: "Inter_500Medium" },
+  versionSub: { fontSize: 12, color: palette.textSubtle, fontFamily: "Inter_400Regular", marginTop: 2 },
   logoutBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8,
     marginHorizontal: 16, marginTop: 16, marginBottom: 8,

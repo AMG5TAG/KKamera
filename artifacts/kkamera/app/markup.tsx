@@ -8,6 +8,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useNavigation, router } from "expo-router";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Svg, { Path } from "react-native-svg";
+import { CommittedStrokes, arrowPath, type DrawnPath } from "@/components/markup/StrokeLayer";
 import { captureRef } from "react-native-view-shot";
 import { useAuth } from "@/contexts/AuthContext";
 import { useUpload } from "@/contexts/UploadContext";
@@ -30,12 +31,7 @@ const BRUSH_NAMES = ["Fine", "Medium", "Thick", "Extra thick"];
 /** Long-edge cap (px) for the exported marked-up image. */
 const MAX_EXPORT_EDGE = 4096;
 
-/** A stroke, in IMAGE pixel coordinates (independent of the screen). */
-interface DrawnPath {
-  d: string;
-  color: string;
-  width: number;
-}
+type Tool = "pen" | "arrow";
 
 interface ExportConfig {
   renderW: number;
@@ -47,13 +43,21 @@ interface ExportConfig {
 export default function MarkupScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
-  const { uri, fileName } = useLocalSearchParams<{ uri: string; fileName: string }>();
+  const { uri, fileName, markedOnly: markedOnlyParam } =
+    useLocalSearchParams<{ uri: string; fileName: string; markedOnly?: string }>();
+  // Opened from the camera's last-capture thumbnail: the original is already
+  // in the upload queue, so only a marked copy can be uploaded from here, and
+  // the (preview) file is never deleted or re-uploaded.
+  const markedOnly = markedOnlyParam === "1";
   const { token } = useAuth();
   const { executeUpload } = useUpload();
   const { settings } = useSettings();
   const { getUploadTarget } = useUploadTargetResolver();
 
   const [paths, setPaths] = useState<DrawnPath[]>([]);
+  // Strokes taken off by Undo, most recent last; any new stroke clears it.
+  const [redoStack, setRedoStack] = useState<DrawnPath[]>([]);
+  const [tool, setTool] = useState<Tool>("pen");
   // The live stroke is mirrored in a ref: gesture callbacks close over the
   // render they were created in, so reading state in onEnd would see a stale
   // (shorter) path and drop the last segment.
@@ -93,12 +97,23 @@ export default function MarkupScreen() {
   // Latest mapping/brush for the gesture callbacks.
   const viewRef = useRef(view);
   viewRef.current = view;
-  const brushRef = useRef({ color, brushSize });
-  brushRef.current = { color, brushSize };
+  const brushRef = useRef({ color, brushSize, tool });
+  brushRef.current = { color, brushSize, tool };
+  // Arrow tool: where the drag started, in image px.
+  const arrowStart = useRef<{ x: number; y: number } | null>(null);
 
-  const toImage = (x: number, y: number) => {
+  const toImagePt = (x: number, y: number) => {
     const v = viewRef.current!;
-    return `${((x - v.x) / v.scale).toFixed(1)},${((y - v.y) / v.scale).toFixed(1)}`;
+    return { x: (x - v.x) / v.scale, y: (y - v.y) / v.scale };
+  };
+  const toImage = (x: number, y: number) => {
+    const p = toImagePt(x, y);
+    return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+  };
+  const arrowTo = (x: number, y: number) => {
+    const start = arrowStart.current!;
+    const end = toImagePt(x, y);
+    return arrowPath(start.x, start.y, end.x, end.y, brushRef.current.brushSize / viewRef.current!.scale);
   };
 
   const panGesture = Gesture.Pan()
@@ -109,16 +124,25 @@ export default function MarkupScreen() {
     .enabled(view != null && !isUploading)
     .minDistance(0)
     .onStart((e) => {
-      currentRef.current = `M${toImage(e.x, e.y)}`;
+      if (brushRef.current.tool === "arrow") {
+        arrowStart.current = toImagePt(e.x, e.y);
+        currentRef.current = arrowTo(e.x, e.y);
+      } else {
+        arrowStart.current = null;
+        currentRef.current = `M${toImage(e.x, e.y)}`;
+      }
       setCurrentPath(currentRef.current);
     })
     .onUpdate((e) => {
-      currentRef.current = `${currentRef.current} L${toImage(e.x, e.y)}`;
+      currentRef.current = arrowStart.current
+        ? arrowTo(e.x, e.y)
+        : `${currentRef.current} L${toImage(e.x, e.y)}`;
       setCurrentPath(currentRef.current);
     })
     .onFinalize(() => {
       const d = currentRef.current;
       currentRef.current = "";
+      arrowStart.current = null;
       setCurrentPath("");
       const v = viewRef.current;
       if (!d || !v) return;
@@ -126,17 +150,28 @@ export default function MarkupScreen() {
       // Stroke width is chosen in screen px; store it in image px so the
       // export looks exactly like the screen.
       setPaths(prev => [...prev, { d, color: c, width: b / v.scale }]);
+      setRedoStack([]);
     });
 
   const handleUndo = useCallback(() => {
-    setPaths(prev => prev.slice(0, -1));
-  }, []);
+    if (paths.length === 0) return;
+    const last = paths[paths.length - 1]!;
+    setPaths(paths.slice(0, -1));
+    setRedoStack(prev => [...prev, last]);
+  }, [paths]);
+
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1]!;
+    setRedoStack(redoStack.slice(0, -1));
+    setPaths(prev => [...prev, next]);
+  }, [redoStack]);
 
   const handleClear = useCallback(() => {
     if (paths.length === 0) return;
     Alert.alert("Clear markup?", "This will erase all drawn annotations.", [
       { text: "Cancel", style: "cancel" },
-      { text: "Clear", style: "destructive", onPress: () => setPaths([]) },
+      { text: "Clear", style: "destructive", onPress: () => { setPaths([]); setRedoStack([]); } },
     ]);
   }, [paths.length]);
 
@@ -207,8 +242,11 @@ export default function MarkupScreen() {
   // back, iOS swipe) always asks — it is never silently dropped.
   const allowLeave = useRef(false);
 
-  const handleUpload = useCallback(async (mode: "original" | "marked" | "both") => {
+  const handleUpload = useCallback(async (requested: "original" | "marked" | "both") => {
     if (!uri || !fileName) return;
+    if (markedOnly && paths.length === 0) return;
+    // With nothing drawn, a "marked" copy would just duplicate the original.
+    const mode = paths.length === 0 && !markedOnly ? "original" : requested;
     setIsUploading(true);
     try {
       // Honour the user's upload-destination default (same as the camera), so a
@@ -223,6 +261,11 @@ export default function MarkupScreen() {
       if (mode === "marked" || mode === "both") {
         markedUri = await captureMarked();
         if (!markedUri) {
+          if (markedOnly) {
+            // The original is already queued — there's nothing to fall back to.
+            Alert.alert("Markup Export Failed", "Could not create the marked-up image. Please try again.");
+            return;
+          }
           Alert.alert("Markup Export Failed", "Could not create the marked-up image. Uploading the original instead.");
         }
       }
@@ -252,10 +295,11 @@ export default function MarkupScreen() {
 
       // The upload queue persists each capture and returns quickly; it also
       // owns the Wi-Fi-only rule, so nothing here waits on the network.
-      const sendOriginal = mode === "original" || mode === "both" || (mode === "marked" && !markedUri);
+      const sendOriginal = !markedOnly
+        && (mode === "original" || mode === "both" || (mode === "marked" && !markedUri));
       if (sendOriginal) {
         void executeUpload(uri, fileName, "image", token, target.ids, onDeleteLocal, witness(fileName));
-      } else if (settings.deleteLocalAfterUpload) {
+      } else if (settings.deleteLocalAfterUpload && !markedOnly) {
         // Marked-only: the unannotated temp file isn't going anywhere.
         deleteTempFile(uri);
       }
@@ -269,15 +313,31 @@ export default function MarkupScreen() {
     } finally {
       setIsUploading(false);
     }
-  }, [uri, fileName, token, executeUpload, getUploadTarget, captureMarked,
+  }, [uri, fileName, token, executeUpload, getUploadTarget, captureMarked, markedOnly, paths.length,
     settings.deleteLocalAfterUpload, settings.saveToCameraRoll, settings.witnessOnSuccess, settings.witnessEmail]);
 
   const handleUploadRef = useRef(handleUpload);
   handleUploadRef.current = handleUpload;
+  const hasStrokesRef = useRef(false);
+  hasStrokesRef.current = paths.length > 0;
 
   useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", (e: any) => {
       if (allowLeave.current || !uri) return;
+      if (markedOnly) {
+        // The original is already uploading; only unsaved strokes are at stake.
+        if (!hasStrokesRef.current) return;
+        e.preventDefault();
+        Alert.alert("Discard markup?", "Your annotations haven't been uploaded.", [
+          { text: "Keep editing", style: "cancel" },
+          {
+            text: "Discard",
+            style: "destructive",
+            onPress: () => { allowLeave.current = true; navigation.dispatch(e.data.action); },
+          },
+        ], { cancelable: true });
+        return;
+      }
       e.preventDefault();
       Alert.alert(
         "Discard this photo?",
@@ -299,31 +359,39 @@ export default function MarkupScreen() {
       );
     });
     return unsubscribe;
-  }, [navigation, uri]);
+  }, [navigation, uri, markedOnly]);
 
   const defaultMode = settings.markupUploadMode;
 
   if (!uri) {
     return (
-      <View style={[styles.container, styles.center]}>
-        <Text style={{ color: "white" }}>No image provided.</Text>
+      <View style={[styles.container, { paddingTop: insets.top }]}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            onPress={() => (router.canGoBack() ? router.back() : router.replace("/camera"))}
+            style={styles.headerBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+          >
+            <Ionicons name="chevron-back" size={24} color="white" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle} accessibilityRole="header">Markup</Text>
+          <View style={styles.headerBtn} />
+        </View>
+        <View style={[styles.container, styles.center]}>
+          <Text style={{ color: "white" }}>No image provided.</Text>
+        </View>
       </View>
     );
   }
 
+  const hasStrokes = paths.length > 0;
+
+  // Committed strokes are a memoised layer; only the live stroke re-renders
+  // on each pan update.
   const strokes = (list: DrawnPath[], live: string) => (
     <>
-      {list.map((p, i) => (
-        <Path
-          key={i}
-          d={p.d}
-          stroke={p.color}
-          strokeWidth={p.width}
-          fill="none"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      ))}
+      <CommittedStrokes paths={list} />
       {live !== "" && view && (
         <Path
           d={live}
@@ -341,27 +409,43 @@ export default function MarkupScreen() {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.headerBtn}
-          disabled={isUploading}
-          accessibilityRole="button"
-          accessibilityLabel="Close markup"
-          accessibilityState={{ disabled: isUploading }}
-        >
-          <Ionicons name="close" size={24} color="white" />
-        </TouchableOpacity>
+        {/* Same width as the undo/redo pair so the title stays centred. */}
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={styles.headerBtn}
+            disabled={isUploading}
+            accessibilityRole="button"
+            accessibilityLabel="Close markup"
+            accessibilityState={{ disabled: isUploading }}
+          >
+            <Ionicons name="close" size={24} color="white" />
+          </TouchableOpacity>
+          <View style={styles.headerBtn} />
+        </View>
         <Text style={styles.headerTitle} accessibilityRole="header">Markup</Text>
-        <TouchableOpacity
-          onPress={handleUndo}
-          style={styles.headerBtn}
-          disabled={paths.length === 0 || isUploading}
-          accessibilityRole="button"
-          accessibilityLabel="Undo last stroke"
-          accessibilityState={{ disabled: paths.length === 0 || isUploading }}
-        >
-          <Ionicons name="arrow-undo-outline" size={22} color={paths.length > 0 ? "white" : "#444"} />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            onPress={handleUndo}
+            style={styles.headerBtn}
+            disabled={!hasStrokes || isUploading}
+            accessibilityRole="button"
+            accessibilityLabel="Undo last stroke"
+            accessibilityState={{ disabled: !hasStrokes || isUploading }}
+          >
+            <Ionicons name="arrow-undo-outline" size={22} color={hasStrokes ? "white" : "#444"} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={handleRedo}
+            style={styles.headerBtn}
+            disabled={redoStack.length === 0 || isUploading}
+            accessibilityRole="button"
+            accessibilityLabel="Redo stroke"
+            accessibilityState={{ disabled: redoStack.length === 0 || isUploading }}
+          >
+            <Ionicons name="arrow-redo-outline" size={22} color={redoStack.length > 0 ? "white" : "#444"} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Canvas */}
@@ -414,6 +498,27 @@ export default function MarkupScreen() {
               <View style={[styles.brushDot, { width: Math.min(s * 1.8, 24), height: Math.min(s * 1.8, 24), borderRadius: s, backgroundColor: brushSize === s ? "#0d0b08" : "white" }]} />
             </TouchableOpacity>
           ))}
+          <View style={styles.toolDivider} />
+          <TouchableOpacity
+            style={[styles.brushBtn, tool === "pen" && styles.brushBtnActive]}
+            onPress={() => setTool("pen")}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel="Pen tool"
+            accessibilityState={{ selected: tool === "pen" }}
+          >
+            <Ionicons name="brush-outline" size={18} color={tool === "pen" ? "#0d0b08" : "white"} accessible={false} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.brushBtn, tool === "arrow" && styles.brushBtnActive]}
+            onPress={() => setTool("arrow")}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel="Arrow tool"
+            accessibilityState={{ selected: tool === "arrow" }}
+          >
+            <Ionicons name="arrow-forward" size={18} color={tool === "arrow" ? "#0d0b08" : "white"} accessible={false} />
+          </TouchableOpacity>
           <TouchableOpacity
             style={styles.clearBtn}
             onPress={handleClear}
@@ -433,6 +538,18 @@ export default function MarkupScreen() {
             <ActivityIndicator color={PRIMARY} />
             <Text style={styles.uploadingText}>Uploading…</Text>
           </View>
+        ) : markedOnly ? (
+          <TouchableOpacity
+            style={[styles.uploadBtnFull, !hasStrokes && styles.btnDisabled]}
+            onPress={() => handleUpload("marked")}
+            disabled={!hasStrokes}
+            accessibilityRole="button"
+            accessibilityHint={hasStrokes ? "The original has already been uploaded" : "Draw on the photo first"}
+            accessibilityState={{ disabled: !hasStrokes }}
+          >
+            <Ionicons name="cloud-upload-outline" size={18} color="white" accessible={false} />
+            <Text style={styles.uploadBtnText}>Upload Marked Copy</Text>
+          </TouchableOpacity>
         ) : defaultMode === "original" ? (
           <TouchableOpacity style={styles.uploadBtnFull} onPress={() => handleUpload("original")} accessibilityRole="button">
             <Ionicons name="cloud-upload-outline" size={18} color="white" accessible={false} />
@@ -441,7 +558,7 @@ export default function MarkupScreen() {
         ) : defaultMode === "marked" ? (
           <TouchableOpacity style={styles.uploadBtnFull} onPress={() => handleUpload("marked")} accessibilityRole="button">
             <Ionicons name="cloud-upload-outline" size={18} color="white" accessible={false} />
-            <Text style={styles.uploadBtnText}>Upload Marked Version</Text>
+            <Text style={styles.uploadBtnText}>{hasStrokes ? "Upload Marked Version" : "Upload Original"}</Text>
           </TouchableOpacity>
         ) : (
           <View style={styles.uploadBtnRow}>
@@ -453,20 +570,25 @@ export default function MarkupScreen() {
             >
               <Text style={styles.uploadBtnSmallText}>Original</Text>
             </TouchableOpacity>
+            {/* With nothing drawn, Both/Marked would only duplicate the original. */}
             <TouchableOpacity
-              style={[styles.uploadBtnSmall, styles.uploadBtnSmallActive]}
+              style={[styles.uploadBtnSmall, styles.uploadBtnSmallActive, !hasStrokes && styles.btnDisabled]}
               onPress={() => handleUpload("both")}
+              disabled={!hasStrokes}
               accessibilityRole="button"
               accessibilityLabel="Upload both original and marked versions"
+              accessibilityState={{ disabled: !hasStrokes }}
             >
               <Ionicons name="cloud-upload-outline" size={16} color="white" accessible={false} />
               <Text style={styles.uploadBtnText}>Upload Both</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={styles.uploadBtnSmall}
+              style={[styles.uploadBtnSmall, !hasStrokes && styles.btnDisabled]}
               onPress={() => handleUpload("marked")}
+              disabled={!hasStrokes}
               accessibilityRole="button"
               accessibilityLabel="Upload marked version only"
+              accessibilityState={{ disabled: !hasStrokes }}
             >
               <Text style={styles.uploadBtnSmallText}>Marked</Text>
             </TouchableOpacity>
@@ -517,6 +639,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: "rgba(177,152,112,0.15)",
   },
   headerBtn: { padding: 8, width: 44, alignItems: "center" },
+  headerActions: { flexDirection: "row" },
+  toolDivider: { width: 1, height: 24, backgroundColor: "rgba(255,255,255,0.12)" },
+  btnDisabled: { opacity: 0.4 },
   headerTitle: { fontSize: 16, fontFamily: "Inter_600SemiBold", color: "white" },
   canvas: { flex: 1, backgroundColor: "#111" },
   toolbar: {

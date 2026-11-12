@@ -79,7 +79,7 @@ export default function ChangePasswordScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
-      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Back to Security">
         <Ionicons name="chevron-back" size={18} color={PRIMARY} />
         <Text style={styles.backBtnText}>Security</Text>
       </TouchableOpacity>
@@ -123,6 +123,7 @@ export default function ChangePasswordScreen() {
             <TouchableOpacity
               onPress={() => setShowPasswords(s => !s)}
               style={styles.eyeBtn}
+              accessibilityRole="button"
               accessibilityLabel={showPasswords ? "Hide passwords" : "Show passwords"}
             >
               <Ionicons name={showPasswords ? "eye-off-outline" : "eye-outline"} size={20} color="#888" />
@@ -189,11 +190,13 @@ export default function ChangePasswordScreen() {
           style={[styles.submitBtn, loading && styles.submitBtnDisabled]}
           onPress={() => void handleSubmit()}
           disabled={loading}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: loading, busy: loading }}
         >
           {loading ? <ActivityIndicator color="white" /> : <Text style={styles.submitText}>Update Password</Text>}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")}>
+        <TouchableOpacity style={styles.forgotLink} onPress={() => router.push("/auth/forgot-password")} hitSlop={8} accessibilityRole="link">
           <Text style={styles.forgotText}>Forgot your current password?</Text>
         </TouchableOpacity>
       </KeyboardAwareScrollViewCompat>

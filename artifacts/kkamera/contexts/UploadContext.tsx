@@ -9,6 +9,7 @@ import { File, Directory, Paths } from "expo-file-system";
 // copyAsync/moveAsync run natively off the JS thread.
 import { copyAsync, moveAsync } from "expo-file-system/legacy";
 import * as Network from "expo-network";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "./AuthContext";
 import { useSettings } from "./SettingsContext";
@@ -25,6 +26,8 @@ export interface UploadEntry {
   status: UploadStatus;
   progress: number; // 0–100
   error?: string;
+  /** Informational note on a finished upload, e.g. "Witness email failed: …". */
+  note?: string;
   timestamp: number;
 }
 
@@ -63,8 +66,13 @@ interface UploadContextValue {
     token: string | null,
     connectionIds?: number[],
     onDeleteLocal?: () => Promise<void>,
-    /** Called once when this capture is confirmed uploaded everywhere (this app session only; not persisted). */
-    onUploaded?: () => void
+    /**
+     * Called once when this capture is confirmed uploaded everywhere (this app
+     * session only; not persisted). If it returns a promise resolving to
+     * `{ ok: false, message }` (e.g. notifyWitness's result), the message is
+     * attached to the upload entry as its `note`.
+     */
+    onUploaded?: OnUploaded
   ) => Promise<void>;
   /** Wake every parked/waiting capture for the signed-in account and try now. */
   retryQueued: (token?: string | null) => void;
@@ -78,7 +86,21 @@ interface UploadContextValue {
   discardQueue: (scope?: "all" | "mine") => Promise<void>;
   /** True while any of the signed-in account's captures is parked on a 402 (subscription required). */
   subscriptionBlocked: boolean;
+  /**
+   * True while one of the signed-in account's captures is actually being sent.
+   * Uploads run in the foreground only (see xhrUpload) — show a "Keep KKamera
+   * open until uploads finish" hint while this is set. The screen is kept awake
+   * meanwhile.
+   */
+  isUploading: boolean;
+  /** Number of the signed-in account's captures being sent right now. */
+  activeUploadCount: number;
+  /** Mean progress (0–100) of the captures being sent right now; 0 when none. */
+  uploadProgress: number;
 }
+
+/** See executeUpload's onUploaded. */
+export type OnUploaded = () => void | Promise<unknown>;
 
 const UploadContext = createContext<UploadContextValue | null>(null);
 
@@ -123,7 +145,7 @@ interface QueuedItem {
    */
   staleTargets?: boolean;
   /** In-memory only (not persisted): fired once when the capture reaches done. */
-  onUploaded?: () => void;
+  onUploaded?: OnUploaded;
 }
 
 const offlineQueue: QueuedItem[] = [];
@@ -273,6 +295,17 @@ function uploadTimeoutMs(size: number | null): number {
   return Math.min(60 * 60 * 1000, Math.max(base, Math.ceil(size / (64 * 1024)) * 1000));
 }
 
+/**
+ * Uploads use XHR in the foreground, not expo-file-system's background
+ * (URLSession) upload task. The background session never fails on a lost
+ * connection or a down server (it waits and retries silently, with no timeout),
+ * which would break the queue's "Waiting for a connection" / backoff /
+ * Retry-After handling; on iOS it also writes a full second copy of the
+ * multipart body (up to ~200 MB) to disk; and its JS promise is lost if the app
+ * is killed, so the queue would resend anyway. Instead the screen is kept awake
+ * while uploads run and the context exposes `isUploading` for a "keep the app
+ * open" hint.
+ */
 async function xhrUpload(
   uri: string,
   fileName: string,
@@ -357,6 +390,14 @@ export async function deleteLocalFile(uri: string) {
 // while an upload waits in the offline queue (especially across an app kill).
 // Put every capture into the durable document directory before the first
 // attempt so a retry (possibly after an app kill) still has its bytes.
+//
+// Backups: Android backup is off (android.allowBackup=false). On iOS, Documents
+// IS included in iCloud/iTunes backups, and expo-file-system (SDK 57) has no
+// "exclude from backup" option and can only write to Documents or Caches. Caches
+// is not backed up but is purged by iOS under storage pressure, which would
+// silently lose captures parked for days (no cloud / subscription / Wi-Fi-only),
+// so the queue stays in Documents for now. Proper fix: a tiny native helper that
+// sets NSURLIsExcludedFromBackupKey on this directory.
 const QUEUE_DIR = Platform.OS === "web" ? null : new Directory(Paths.document, "upload-queue");
 
 function isAppCacheUri(uri: string): boolean {
@@ -401,6 +442,15 @@ async function persistForQueue(uri: string, id: string, keepOriginal: boolean): 
   }
 }
 
+/**
+ * Panic Wipe: delete the whole durable queue directory (every account's queued
+ * copies, including any orphaned file). Call after discardQueue("all").
+ */
+export function wipeUploadQueueDirectory() {
+  if (!QUEUE_DIR) return;
+  try { if (QUEUE_DIR.exists) QUEUE_DIR.delete(); } catch { /* best-effort */ }
+}
+
 function isQueueUri(uri: string): boolean {
   return QUEUE_DIR != null && uri.startsWith(QUEUE_DIR.uri);
 }
@@ -432,7 +482,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [queueReady, setQueueReady] = useState(queueHydrated);
   const [queueVersion, setQueueVersion] = useState(0);
-  const { token, user, isLoading: authLoading, logout } = useAuth();
+  const { token, user, isLoading: authLoading, reportUnauthorized } = useAuth();
   const { settings, isLoading: settingsLoading } = useSettings();
   const userId = user?.id ?? null;
   const userIdRef = useRef<number | null>(userId);
@@ -441,8 +491,8 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   wifiOnlyRef.current = settings.uploadOnlyOnWifi;
   const settingsReadyRef = useRef(!settingsLoading);
   settingsReadyRef.current = !settingsLoading;
-  const logoutRef = useRef(logout);
-  logoutRef.current = logout;
+  const reportUnauthorizedRef = useRef(reportUnauthorized);
+  reportUnauthorizedRef.current = reportUnauthorized;
   const processRef = useRef<() => void>(() => {});
 
   // Keep the latest token available to background retries.
@@ -533,13 +583,15 @@ export function UploadProvider({ children }: { children: ReactNode }) {
 
       if (httpStatus === 401) {
         // Token expired/revoked. Park until the same account signs back in, and
-        // sign out like any other 401 from the API client would.
+        // report it to AuthContext, which signs out only if this attempt's token
+        // is still the current one (a slow upload started under a previous
+        // session must not end a new one) and not just after a sign-in.
         item.state = "parked";
         item.parkReason = "auth";
         item.error = PARK_MESSAGES.auth;
         reflect(item, { status: "queued", error: item.error });
         finish();
-        void logoutRef.current().catch(() => {});
+        reportUnauthorizedRef.current(authToken);
         return;
       }
       if (httpStatus === 402) {
@@ -586,7 +638,18 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       // Exactly once: the item has left the queue, and the callback is cleared.
       const onUploaded = item.onUploaded;
       item.onUploaded = undefined;
-      try { onUploaded?.(); } catch { /* caller's problem, not the queue's */ }
+      try {
+        const ret = onUploaded?.();
+        // Surface a failed follow-up (witness email) on the finished entry.
+        if (ret && typeof (ret as Promise<unknown>).then === "function") {
+          void (ret as Promise<unknown>).then((r) => {
+            const res = r as { ok?: boolean; message?: string } | null | undefined;
+            if (res && res.ok === false) {
+              updateUpload(item.id, { note: `Witness email failed: ${res.message ?? "unknown error"}` });
+            }
+          }, () => { /* caller's problem, not the queue's */ });
+        }
+      } catch { /* caller's problem, not the queue's */ }
       // Delete the original capture after confirmed upload (unless the caller
       // keeps it), then the durable queue copy.
       if (item.onDeleteLocal) {
@@ -668,7 +731,13 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         retryTimerRef.current = setTimeout(() => processRef.current(), 60_000);
         return;
       }
-      if (wifiOnlyRef.current && net && net.type !== Network.NetworkStateType.WIFI) {
+      // "Wi-Fi only" is conservative: only Wi-Fi or Ethernet may upload.
+      // VPN (its own type on Android), UNKNOWN, OTHER — and an unreadable
+      // network state — all wait, because expo-network can't tell a VPN over
+      // Wi-Fi from one over mobile data.
+      const onUnmeteredLink =
+        net?.type === Network.NetworkStateType.WIFI || net?.type === Network.NetworkStateType.ETHERNET;
+      if (wifiOnlyRef.current && !onUnmeteredLink) {
         for (const item of due()) {
           item.error = "Waiting for Wi-Fi";
           reflect(item, { status: "queued", error: item.error });
@@ -729,7 +798,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     token: string | null,
     connectionIds?: number[],
     onDeleteLocal?: () => Promise<void>,
-    onUploaded?: () => void
+    onUploaded?: OnUploaded
   ) => {
     const id = addUpload(fileName, fileType);
     if (token) tokenRef.current = token;
@@ -905,6 +974,9 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     if (userId == null || !token) {
       tokenRef.current = null;
       clearTimer();
+      // Signed out: drop the status rows (file names) — the queue itself stays
+      // on disk, tagged with its owner, and is re-surfaced on sign-in below.
+      setUploads([]);
       return;
     }
 
@@ -984,13 +1056,37 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     // queueVersion bumps whenever the module-level queue mutates.
   }, [queueVersion, userId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const activeUploadCount = useMemo(() => {
+    if (userId == null) return 0;
+    return offlineQueue.filter(i => i.ownerId === userId && inFlight.has(i.id)).length;
+    // queueVersion bumps whenever the module-level queue / inFlight set changes.
+  }, [queueVersion, userId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const isUploading = activeUploadCount > 0;
+
+  const uploadProgress = useMemo(() => {
+    const active = uploads.filter(u => u.status === "uploading");
+    if (active.length === 0) return 0;
+    return Math.round(active.reduce((sum, u) => sum + (u.progress || 0), 0) / active.length);
+  }, [uploads]);
+
+  // Uploads only progress while the app is in the foreground (see xhrUpload),
+  // so don't let the screen auto-lock (which backgrounds the app) mid-upload.
+  useEffect(() => {
+    if (!isUploading) return;
+    const tag = "kkamera-uploads";
+    activateKeepAwakeAsync(tag).catch(() => {});
+    return () => { deactivateKeepAwake(tag).catch(() => {}); };
+  }, [isUploading]);
+
   const lastUpload = uploads[0] ?? null;
 
   const value = useMemo<UploadContextValue>(() => ({
     uploads, lastUpload, addUpload, updateUpload, clearCompleted, executeUpload,
     retryQueued, queuedItems, retryItem, discardItem, discardQueue, subscriptionBlocked,
+    isUploading, activeUploadCount, uploadProgress,
   }), [uploads, lastUpload, addUpload, updateUpload, clearCompleted, executeUpload,
-    retryQueued, queuedItems, retryItem, discardItem, discardQueue, subscriptionBlocked]);
+    retryQueued, queuedItems, retryItem, discardItem, discardQueue, subscriptionBlocked,
+    isUploading, activeUploadCount, uploadProgress]);
 
   return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>;
 }
