@@ -192,7 +192,7 @@ function AppLockGate({ children }: { children: React.ReactNode }) {
       router.replace("/wizard");
     } else if (
       isAuthenticated && !signInNavigating.current &&
-      top === "auth" && AUTH_ONLY_SIGNED_OUT.has(segments[1] as string)
+      top === "auth" && AUTH_ONLY_SIGNED_OUT.has((segments as readonly string[])[1] ?? "")
     ) {
       router.replace("/");
     }
